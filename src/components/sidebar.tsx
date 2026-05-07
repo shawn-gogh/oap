@@ -2,63 +2,45 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
   PanelLeft,
   Search,
-  SquarePen,
-  Workflow,
   Layers,
-  MessageSquarePlus,
+  Workflow,
   Boxes,
   PlugZap,
 } from "lucide-react";
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
-import {
-  ApiError,
-  AgentRow,
-  SessionRow,
-  listAgents,
-  listSessions,
-} from "@/lib/api";
 
-const POLL_INTERVAL_MS = 5000;
 const REPO_URL = "https://github.com/BerriAI/litellm-agent-platform";
 
-interface QuickLink {
+interface NavItem {
   href: string;
   label: string;
-  Icon: typeof SquarePen;
+  Icon: typeof Layers;
   isActive: (pathname: string) => boolean;
 }
 
-const QUICK_LINKS: readonly QuickLink[] = [
-  {
-    href: "/agents/new",
-    label: "New Agent",
-    Icon: SquarePen,
-    isActive: (p) => p === "/agents/new",
-  },
-  {
-    href: "/sessions/new",
-    label: "New Session",
-    Icon: MessageSquarePlus,
-    isActive: (p) => p === "/sessions/new",
-  },
+/**
+ * Single primary nav. Each entry is an entity *list* the user navigates to.
+ * Page-level CTAs ("+ New Agent", "+ New Session") live on the destination
+ * pages, not here, so the sidebar has exactly one hierarchy.
+ */
+const NAV: readonly NavItem[] = [
   {
     href: "/agents",
     label: "Agents",
     Icon: Layers,
-    isActive: (p) => p === "/agents" || (p.startsWith("/agents/") && p !== "/agents/new"),
+    isActive: (p) => p.startsWith("/agents"),
   },
   {
     href: "/sessions",
     label: "Sessions",
     Icon: Workflow,
-    isActive: (p) => p === "/sessions" || (p.startsWith("/sessions/") && p !== "/sessions/new"),
+    isActive: (p) => p.startsWith("/sessions"),
   },
   {
     href: "/models",
@@ -74,88 +56,12 @@ const QUICK_LINKS: readonly QuickLink[] = [
   },
 ];
 
-interface SessionGroup {
-  label: string;
-  items: SessionRow[];
-}
-
-function groupSessionsByAge(sessions: SessionRow[]): SessionGroup[] {
-  const now = Date.now();
-  const day = 1000 * 60 * 60 * 24;
-  const buckets: Record<string, SessionRow[]> = {
-    Today: [],
-    "This Week": [],
-    "This Month": [],
-    Older: [],
-  };
-  for (const s of sessions) {
-    const age = now - new Date(s.created_at).getTime();
-    if (age < day) buckets.Today.push(s);
-    else if (age < 7 * day) buckets["This Week"].push(s);
-    else if (age < 30 * day) buckets["This Month"].push(s);
-    else buckets.Older.push(s);
-  }
-  return [
-    { label: "Today", items: buckets.Today },
-    { label: "This Week", items: buckets["This Week"] },
-    { label: "This Month", items: buckets["This Month"] },
-    { label: "Older", items: buckets.Older },
-  ].filter((g) => g.items.length > 0);
-}
-
-function activeSessionId(pathname: string): string | null {
-  const match = pathname.match(/^\/sessions\/([^/]+)/);
-  if (!match) return null;
-  const sid = match[1];
-  if (sid === "new") return null;
-  return sid;
-}
-
 export function Sidebar() {
   const pathname = usePathname() ?? "";
-  const [sessions, setSessions] = useState<SessionRow[]>([]);
-  const [agents, setAgents] = useState<AgentRow[]>([]);
-  const [, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const [sessionsRes, agentsRes] = await Promise.all([
-        listSessions(100),
-        listAgents(),
-      ]);
-      setSessions(sessionsRes.data);
-      setAgents(agentsRes.data);
-      setError(null);
-    } catch (e) {
-      const msg = e instanceof ApiError ? e.message : (e as Error).message;
-      setError(msg);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    const id = window.setInterval(() => {
-      void load();
-    }, POLL_INTERVAL_MS);
-    return () => {
-      window.clearInterval(id);
-    };
-  }, [load]);
-
-  const agentNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const a of agents) {
-      map.set(a.id, a.name);
-    }
-    return map;
-  }, [agents]);
-
-  const groups = useMemo(() => groupSessionsByAge(sessions), [sessions]);
-  const currentSessionId = activeSessionId(pathname);
 
   return (
     <aside
-      className="sticky top-0 flex h-screen w-[260px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+      className="sticky top-0 flex h-screen w-[240px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
       aria-label="Primary sidebar"
     >
       {/* Logo + product title */}
@@ -176,9 +82,7 @@ export function Sidebar() {
             sizes="120px"
           />
         </Link>
-        <span
-          className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground"
-        >
+        <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
           Agent Platform
         </span>
       </div>
@@ -203,10 +107,10 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Quick links */}
-      <nav aria-label="Quick links" className="px-2 pt-1">
+      {/* Primary nav */}
+      <nav aria-label="Primary navigation" className="flex-1 overflow-y-auto px-2 pt-1">
         <ul className="space-y-0.5">
-          {QUICK_LINKS.map(({ href, label, Icon, isActive }) => {
+          {NAV.map(({ href, label, Icon, isActive }) => {
             const active = isActive(pathname);
             return (
               <li key={href}>
@@ -214,22 +118,16 @@ export function Sidebar() {
                   href={href}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "group relative flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                    "relative flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                     active
                       ? "bg-sidebar-accent text-foreground"
                       : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
                   )}
                 >
-                  {active ? (
-                    <span
-                      aria-hidden
-                      className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r bg-primary"
-                    />
-                  ) : null}
                   <Icon
                     className={cn(
                       "size-4 shrink-0",
-                      active ? "text-primary" : "text-muted-foreground",
+                      active ? "text-foreground" : "text-muted-foreground",
                     )}
                     aria-hidden
                   />
@@ -240,53 +138,6 @@ export function Sidebar() {
           })}
         </ul>
       </nav>
-
-      {/* Sessions list */}
-      <div className="mt-3 flex-1 overflow-y-auto px-2 pb-2">
-        {groups.length === 0 ? (
-          <div className="px-2 py-3 text-xs text-muted-foreground">
-            No sessions yet.
-          </div>
-        ) : (
-          groups.map((group) => (
-            <div key={group.label} className="mt-3 first:mt-0">
-              <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                {group.label}
-              </div>
-              <ul className="space-y-0.5">
-                {group.items.map((s) => {
-                  const active = s.id === currentSessionId;
-                  const name =
-                    agentNameById.get(s.agent_id) ?? s.agent_name ?? s.agent_id;
-                  return (
-                    <li key={s.id}>
-                      <Link
-                        href={`/sessions/${s.id}`}
-                        title={`${name} — ${s.id}`}
-                        aria-current={active ? "page" : undefined}
-                        className={cn(
-                          "relative flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                          active
-                            ? "bg-primary/10 text-foreground"
-                            : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
-                        )}
-                      >
-                        {active ? (
-                          <span
-                            aria-hidden
-                            className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r bg-primary"
-                          />
-                        ) : null}
-                        <span className="truncate">{name}</span>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ))
-        )}
-      </div>
 
       {/* Sticky footer */}
       <div className="sticky bottom-0 flex items-center gap-1 border-t border-sidebar-border bg-sidebar px-3 py-2">

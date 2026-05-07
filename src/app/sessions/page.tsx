@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { RefreshCw } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 
 import {
   Table,
@@ -137,16 +138,26 @@ export default function SessionsListPage() {
             {sessions.length}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void load()}
-          disabled={loading}
-          aria-label="Refresh sessions"
-        >
-          <RefreshCw className={loading ? "animate-spin" : ""} aria-hidden />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void load()}
+            disabled={loading}
+            aria-label="Refresh sessions"
+          >
+            <RefreshCw className={loading ? "animate-spin" : ""} aria-hidden />
+            Refresh
+          </Button>
+          <Link
+            href="/sessions/new"
+            aria-label="Create a new session"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <Plus className="size-4" aria-hidden />
+            New Session
+          </Link>
+        </div>
       </header>
 
       {agentChips.length > 0 ? (
