@@ -1,44 +1,54 @@
-# LiteLLM Agent Platform 🚄
+# LiteLLM Agent Platform
 
-A web UI for managing **agents** and their **sandboxed coding sessions** on a [LiteLLM](https://github.com/BerriAI/litellm) proxy. Each agent is bound to a sandbox template (a harness — opencode, claude-code, etc. — paired with a repo). Spawning a session boots a fresh Fargate task running that harness against that repo, and the proxy handles the lifecycle.
+A control plane for **managed agents** running on a [LiteLLM](https://github.com/BerriAI/litellm) proxy. Create agents, spawn sandboxed sessions, watch them stream events back.
 
-This UI is the front-end half of [BerriAI/litellm#27427](https://github.com/BerriAI/litellm/pull/27427). Point it at a LiteLLM proxy with `general_settings.managed_agents.enabled: true`.
+Each agent is `(harness, repo)` — e.g. opencode + your monorepo. Spawning a session boots a fresh Fargate task running that harness against that repo. The proxy owns the lifecycle. This UI talks to it.
+
+Pairs with [BerriAI/litellm#27427](https://github.com/BerriAI/litellm/pull/27427). Requires `general_settings.managed_agents.enabled: true` on the proxy.
+
+## What you get
 
 ![Agents list](./docs/screenshots/agents.png)
 
-![Agent detail with the 'Call this agent' card](./docs/screenshots/agent-detail.png)
+![Agent detail](./docs/screenshots/agent-detail.png)
+
+## How it works
+
+```
+   browser                this UI                  LiteLLM proxy            Fargate
+   ───────                ───────                  ─────────────            ───────
+
+   click "spawn"   ───►   POST /api/proxy/...
+                          + Authorization header   POST /v1/managed_agents
+                          (server-side)            /agents/{id}/session     boots task
+                                                                            (~50–90s)
+   stream events   ◄───   GET  /api/proxy/...      GET .../sessions/{id}    SSE
+                          (passes SSE through)     /events
+```
+
+The browser never holds the proxy API key. It hits `/api/proxy/[...path]` on this app — a Next.js Route Handler that attaches `Authorization: Bearer $LITELLM_API_KEY` server-side and forwards to `$LITELLM_BASE_URL`. Inspecting the page bundle or the Network tab will not leak the key.
 
 ## Deploy
 
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https%3A%2F%2Fgithub.com%2FBerriAI%2Flitellm-agent-platform)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/BerriAI/litellm-agent-platform)
 
-Set two **server-side** env vars on the host. They must NOT have a
-`NEXT_PUBLIC_` prefix — that would bundle them into the browser JS.
+Set two **server-side** env vars. They must NOT have a `NEXT_PUBLIC_` prefix.
 
-| Var | Example |
-| --- | --- |
-| `LITELLM_BASE_URL` | `https://your-proxy.example.com` |
-| `LITELLM_API_KEY` | `sk-...` (master key or virtual key) |
-
-The browser never talks to the LiteLLM proxy directly. It calls
-`/api/proxy/[...path]` on this app, a Next.js Route Handler that reads
-`LITELLM_API_KEY` server-side and attaches the `Authorization` header on the
-outbound request. Inspecting the page bundle / network tab will not reveal
-the key.
+| Var                | Example                            |
+| ------------------ | ---------------------------------- |
+| `LITELLM_BASE_URL` | `https://your-proxy.example.com`   |
+| `LITELLM_API_KEY`  | `sk-...` (master or virtual key)   |
 
 ## Run locally
 
 ```bash
 npm install
-cp .env.local.example .env.local   # set LITELLM_BASE_URL + LITELLM_API_KEY
+cp .env.local.example .env.local   # fill in LITELLM_BASE_URL + LITELLM_API_KEY
 npm run dev                         # http://localhost:3000
 ```
 
-## Endpoints used
-
-The browser hits `/api/proxy/<path>`. The route handler forwards each request
-to `${LITELLM_BASE_URL}/<path>` with the API key attached:
+## Proxy endpoints used
 
 ```
 GET    /v1/managed_agents/dockerfiles
@@ -47,18 +57,18 @@ POST   /v1/managed_agents/agents
 GET    /v1/managed_agents/agents
 GET    /v1/managed_agents/agents/{id}
 PATCH  /v1/managed_agents/agents/{id}                # name + pfp_url + mcp_servers
-POST   /v1/managed_agents/agents/{id}/session        # ~50–90s spawn
+POST   /v1/managed_agents/agents/{id}/session        # boots Fargate, ~50–90s
 GET    /v1/managed_agents/sessions
 GET    /v1/managed_agents/sessions/{id}
 POST   /v1/managed_agents/sessions/{id}/message
 GET    /v1/managed_agents/sessions/{id}/events       # SSE
 DELETE /v1/managed_agents/sessions/{id}
-GET    /v1/mcp/server                                 # for the MCP picker
-GET    /v1/models                                     # for the model picker
+GET    /v1/mcp/server                                # MCP picker
+GET    /v1/models                                    # model picker
 ```
 
 ## Stack
 
-- Next.js 16 App Router + React 19
-- shadcn/ui + Tailwind v4
+- Next.js 16 App Router · React 19
+- Tailwind v4 · shadcn/ui
 - Server-side proxy route — API key never leaves the server
