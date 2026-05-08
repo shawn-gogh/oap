@@ -7,11 +7,12 @@ import React, {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  Folder,
+  ChevronRight,
   MoreHorizontal,
   PanelRight,
   ArrowUp,
@@ -271,9 +272,7 @@ function MainPanel({
   messagesEndRef,
   scrollContainerRef,
 }: MainPanelProps) {
-  const sandboxLabel = session?.sandbox_url
-    ? session.sandbox_url.replace(/^https?:\/\//, "")
-    : `session: ${session?.id ?? "—"}`;
+  const sessionShortId = session?.id ? session.id.slice(0, 8) : "—";
   const statusLabel = session?.status ?? "unknown";
   const isReady = session?.status === "ready";
 
@@ -281,21 +280,44 @@ function MainPanel({
     <div className="flex-1 flex flex-col h-full min-h-0 bg-white overflow-hidden">
       {/* Header */}
       <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 flex-shrink-0">
-        <div className="flex items-center gap-2 text-[13px] text-gray-600">
+        <div className="flex items-center gap-2 text-[13px] text-gray-600 min-w-0">
           <AgentAvatar
             name={agent?.name ?? agentName}
             pfpUrl={agent?.pfp_url}
             size={22}
           />
-          <span className="font-medium text-gray-800">
-            {agentName || "Session"}
+          {agent ? (
+            <Link
+              href={`/agents/${agent.id}`}
+              className="font-medium text-gray-800 transition-colors hover:underline"
+            >
+              {agentName || "Agent"}
+            </Link>
+          ) : (
+            <span className="font-medium text-gray-800">
+              {agentName || "Session"}
+            </span>
+          )}
+          <ChevronRight className="w-3 h-3 text-gray-300 shrink-0" aria-hidden />
+          <span className="text-gray-700 truncate">
+            Session{" "}
+            <span className="font-mono text-[12px] text-gray-500">
+              {sessionShortId}
+            </span>
           </span>
-          <span className="text-gray-300">/</span>
-          <div className="flex items-center gap-1.5 hover:bg-gray-100 px-1.5 py-1 rounded">
-            <Folder className="w-3.5 h-3.5 text-gray-400" />
-            <span title={session?.sandbox_url ?? undefined}>{sandboxLabel}</span>
-          </div>
-          <span className="text-gray-300">/</span>
+          <span
+            aria-hidden
+            title={statusLabel}
+            className={`shrink-0 size-1.5 rounded-full ${
+              statusLabel === "ready"
+                ? "bg-emerald-500"
+                : statusLabel === "creating"
+                  ? "bg-amber-500"
+                  : statusLabel === "failed"
+                    ? "bg-red-500"
+                    : "bg-gray-300"
+            }`}
+          />
           <span className="mono text-[11px] text-gray-500">{statusLabel}</span>
         </div>
         <div className="flex items-center gap-2 text-gray-400">
