@@ -124,7 +124,7 @@ export default function AgentsListPage() {
               key={agent.id}
               onClick={() => router.push(`/agents/${agent.id}`)}
               className={
-                "flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50 " +
+                "flex cursor-pointer items-center gap-4 px-4 py-4 transition-colors hover:bg-muted/50 " +
                 (i > 0 ? "border-t" : "")
               }
             >
@@ -132,29 +132,35 @@ export default function AgentsListPage() {
                 <AgentAvatar
                   name={agent.name ?? agent.id}
                   pfpUrl={agent.pfp_url}
-                  size={36}
+                  size={48}
                 />
                 {active ? (
                   <span
                     aria-label="active"
                     title="active session"
-                    className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full bg-emerald-500 ring-2 ring-card"
+                    className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full bg-emerald-500 ring-2 ring-card"
                   />
                 ) : null}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[14px] font-medium">
-                  {agent.name?.trim() || (
-                    <span className="text-muted-foreground">Untitled agent</span>
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[15px] font-medium">
+                    {agent.name?.trim() || (
+                      <span className="text-muted-foreground">Untitled agent</span>
+                    )}
+                  </span>
+                  <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">
+                    {agent.model}
+                  </Badge>
+                </div>
+                <div className="mt-0.5 truncate text-[13px] text-muted-foreground">
+                  {agent.prompt?.trim() || (
+                    <span className="font-mono text-[11px] text-muted-foreground/70">
+                      {agent.id}
+                    </span>
                   )}
                 </div>
-                <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                  {agent.id}
-                </div>
               </div>
-              <Badge variant="secondary" className="shrink-0 font-mono text-[11px]">
-                {agent.model}
-              </Badge>
               <span className="hidden shrink-0 font-mono text-[12px] text-muted-foreground sm:inline">
                 {agent.branch}
               </span>
