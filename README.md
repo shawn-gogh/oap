@@ -31,12 +31,6 @@ CONTAINER_ENV_GITHUB_TOKEN=ghp_...   # container sees GITHUB_TOKEN=ghp_...
 
 ## Architecture
 
-The main benefit of using this is that it will manage:
-- Different sandboxes for different teams/contexts
-- Session management across pod restarts/upgrades
-
-We built this because we wanted a managed agent solution, but fully self-hosted. We are excited to have it open sourced and available for everyone to use.
-
 <img width="1997" height="1219" alt="Xnapper-2026-05-08-19 10 50" src="https://raw.githubusercontent.com/BerriAI/litellm-docs/main/static/img/litellm_agent_platform_alpha.png" />
 
 
