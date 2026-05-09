@@ -65,12 +65,31 @@ TASK_DEF_ARN=$(aws ecs register-task-definition --region "$AWS_REGION" \
 JSON
 )" --query "taskDefinition.taskDefinitionArn" --output text)
 
-# 8. Print env block to paste
+# 8. Write outputs into .env in-place (replace if key present, append if not).
+update_env() {
+  local key="$1" val="$2" file=".env"
+  if [ ! -f "$file" ]; then
+    echo "$key=$val" >> "$file"
+    return
+  fi
+  if grep -q "^${key}=" "$file"; then
+    # `|` is a safe sed delimiter — ARNs and image URIs use `:` and `/`.
+    sed -i.bak "s|^${key}=.*|${key}=${val}|" "$file" && rm -f "${file}.bak"
+  else
+    echo "$key=$val" >> "$file"
+  fi
+}
+
+update_env AWS_TASK_DEFINITION_ARN "$TASK_DEF_ARN"
+update_env AWS_SUBNETS              "$SUBNET_ID"
+update_env AWS_SECURITY_GROUP       "$SG_ID"
+update_env OPENCODE_IMAGE_URI       "$IMAGE_URI"
+
 cat <<EOF
 
-# === paste into .env ===
-AWS_TASK_DEFINITION_ARN=$TASK_DEF_ARN
-AWS_SUBNETS=$SUBNET_ID
-AWS_SECURITY_GROUP=$SG_ID
-OPENCODE_IMAGE_URI=$IMAGE_URI
+✓ wrote into .env:
+  AWS_TASK_DEFINITION_ARN=$TASK_DEF_ARN
+  AWS_SUBNETS=$SUBNET_ID
+  AWS_SECURITY_GROUP=$SG_ID
+  OPENCODE_IMAGE_URI=$IMAGE_URI
 EOF

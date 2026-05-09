@@ -6,38 +6,32 @@ Self-hosted control plane for sandboxed coding agents. An agent is a `(model, pr
 
 ---
 
-## For platform admins
+## Quickstart
 
-Prereqs: Docker Desktop, AWS account with default VPC, Postgres, a LiteLLM gateway, Node 20+.
-
-Install:
+Prereqs: Docker Desktop, AWS credentials with ECS/ECR/EC2/IAM/Logs/STS, a LiteLLM gateway, Node 20+.
 
 ```bash
 git clone https://github.com/BerriAI/litellm-agent-platform
 cd litellm-agent-platform
 npm install
-cp .env.example .env
+npm run quickstart
 ```
 
-Fill in `.env`. Required: `DATABASE_URL`, `MASTER_KEY` (≥ 8 chars; users sign in with this), `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `LITELLM_API_BASE`, `LITELLM_API_KEY`. Leave the four `AWS_TASK_DEFINITION_ARN` / `AWS_SUBNETS` / `AWS_SECURITY_GROUP` / `OPENCODE_IMAGE_URI` lines blank.
+First run creates `.env` and exits — fill in `MASTER_KEY` (≥ 8 chars), AWS keys, and `LITELLM_API_BASE` / `LITELLM_API_KEY`, then re-run.
 
-Provision AWS:
-
-```bash
-./setup.sh
-```
-
-Idempotent. Creates ECR repo, builds + pushes `harnesses/opencode/Dockerfile` (`linux/amd64`), creates IAM role + log group + ECS cluster, finds a public subnet, opens port 4096, registers a Fargate task definition. Prints four env values — paste them into `.env`.
-
-Migrate + run:
-
-```bash
-npx prisma db push
-npm run dev       # :3000
-npm run worker    # reconciler, 60s tick
-```
+Second run boots local Postgres (docker-compose), pushes the schema, runs `setup.sh` (writes the AWS task-def / subnet / SG / image URI back into `.env`), and starts Next.js + the reconciler worker side-by-side.
 
 Open `http://localhost:3000`, sign in at `/login`.
+
+### Manual (if you skip quickstart)
+
+```bash
+docker compose up -d        # Postgres on :5432
+cp .env.example .env        # fill in MASTER_KEY, AWS_*, LITELLM_*
+./setup.sh                  # provisions AWS, writes 4 values back to .env
+npx prisma db push
+npm run dev:all             # next dev + worker, one terminal
+```
 
 ### Container env passthrough
 
