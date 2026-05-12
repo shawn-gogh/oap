@@ -21,7 +21,7 @@ FROM node:20-bookworm AS builder
 # source tree so the package.json's `file:../../managed-tools` resolves.
 WORKDIR /build/managed-tools
 COPY managed-tools/package.json managed-tools/tsconfig.json ./
-RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund --legacy-peer-deps
 COPY managed-tools/src ./src
 RUN npx tsc
 
@@ -29,7 +29,7 @@ RUN npx tsc
 # (harnesses/claude-agent-sdk/) so file: resolves up two levels.
 WORKDIR /build/harnesses/claude-agent-sdk
 COPY harnesses/claude-agent-sdk/package.json harnesses/claude-agent-sdk/tsconfig.json ./
-RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund --legacy-peer-deps
 COPY harnesses/claude-agent-sdk/src ./src
 RUN npx tsc
 
@@ -72,7 +72,7 @@ COPY --from=builder /build/managed-tools/dist /opt/managed-tools/dist
 WORKDIR /opt/harnesses/claude-agent-sdk
 COPY --from=builder /build/harnesses/claude-agent-sdk/package.json ./
 COPY --from=builder /build/harnesses/claude-agent-sdk/dist ./dist
-RUN npm install --omit=dev --no-audit --no-fund \
+RUN npm install --omit=dev --no-audit --no-fund --legacy-peer-deps \
     && chown -R sandbox:sandbox /opt/harnesses /opt/managed-tools \
     # Symlink the SDK's bundled `claude` binary into a stable PATH location
     # so the SDK's auto-resolver finds it regardless of cwd, AND so an agent
