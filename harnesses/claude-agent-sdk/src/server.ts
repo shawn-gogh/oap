@@ -195,6 +195,12 @@ async function runTurn(
     // frames carrying Anthropic-API content_block_delta deltas; we splice
     // those into a growing `message.part.updated` below.
     includePartialMessages: true,
+    // AskUserQuestion stalls the agent loop until the user answers a structured
+    // tool call — but neither the web UI nor Slack renders question.asked
+    // events yet, so the loop just parks indefinitely. Disable the tool so the
+    // model has to make its best judgment and proceed. Revisit when both
+    // surfaces render answerable question cards.
+    disallowedTools: ["AskUserQuestion"],
     ...(CLAUDE_BIN ? { pathToClaudeCodeExecutable: CLAUDE_BIN } : {}),
     // Memory tools: only register when the in-process server was built (i.e.
     // LAP env vars are set). Names are namespaced `mcp__<server>__<tool>`.
