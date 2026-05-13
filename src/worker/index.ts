@@ -15,6 +15,7 @@
  * code path.
  */
 
+import { prisma } from "@/server/db";
 import { env } from "@/server/env";
 import { reconcileOrphans } from "@/server/reconcile";
 import { topUpWarmPool } from "@/server/warmPool";
@@ -54,6 +55,24 @@ async function tick() {
     ` ghost_killed=${r.ghost_killed} warm_provisioned=${t.provisioned}` +
     ` warm_recycled=${t.recycled}`,
   );
+}
+
+// On startup: mark warm tasks stuck in 'provisioning' as dead so topUpWarmPool
+// can provision fresh ones. Provisioning promises die when the worker restarts
+// mid-provision; without this cleanup they block the pool indefinitely.
+if (env.WARM_POOL_SIZE > 0) {
+  prisma.warmTask.updateMany({
+    where: {
+      status: "provisioning",
+      created_at: { lt: new Date(Date.now() - 5 * 60 * 1000) },
+    },
+    data: {
+      status: "dead",
+      failure_reason: "provisioning interrupted — worker restarted",
+    },
+  }).then(({ count }: { count: number }) => {
+    if (count > 0) console.log(`startup: cleared ${count} stuck provisioning warm task(s)`);
+  }).catch(() => {});
 }
 
 setInterval(tick, intervalMs);
