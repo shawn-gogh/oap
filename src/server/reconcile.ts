@@ -38,7 +38,7 @@ import {
 
 const DEAD_STATUSES = new Set(["dead", "failed", "stopped"]);
 
-async function safeStopTask(task_arn: string, reason: string): Promise<void> {
+export async function safeStopTask(task_arn: string, reason: string): Promise<void> {
   try {
     await stopTask(task_arn, reason);
   } catch (e) {
@@ -324,13 +324,15 @@ export async function reconcileOrphans(): Promise<ReconcileResult> {
   };
 }
 
-async function markFailed(session_id: string, reason: string): Promise<void> {
+async function markFailed(session_id: string, reason: string, task_arn?: string | null): Promise<void> {
   await prisma.session
     .update({
       where: { session_id },
       data: { status: "failed", failure_reason: reason },
     })
     .catch(() => {});
+  // Stop the pod immediately — don't wait for idle sweep
+  if (task_arn) void safeStopTask(task_arn, `reconciler: ${reason}`).catch(() => {});
 }
 
 /**
@@ -367,6 +369,7 @@ async function recoverStuckCreating(): Promise<void> {
       await markFailed(
         row.session_id,
         `watchdog: no task_arn after ${Math.round(ageMs / 1000)}s`,
+        row.task_arn,
       );
       failed++;
       continue;
@@ -380,6 +383,7 @@ async function recoverStuckCreating(): Promise<void> {
         await markFailed(
           row.session_id,
           `watchdog: readPodPhase threw after ${Math.round(ageMs / 1000)}s`,
+          row.task_arn,
         );
         failed++;
       } else {
@@ -392,6 +396,7 @@ async function recoverStuckCreating(): Promise<void> {
       await markFailed(
         row.session_id,
         `watchdog: pod ${row.task_arn} phase=${phaseInfo?.phase ?? "missing"} reason=${phaseInfo?.reason ?? "?"}`,
+        row.task_arn,
       );
       failed++;
       continue;
@@ -402,6 +407,7 @@ async function recoverStuckCreating(): Promise<void> {
         await markFailed(
           row.session_id,
           `watchdog: pod ${row.task_arn} stuck phase=${phaseInfo.phase} for ${Math.round(ageMs / 1000)}s`,
+          row.task_arn,
         );
         failed++;
       } else {
@@ -416,6 +422,7 @@ async function recoverStuckCreating(): Promise<void> {
         await markFailed(
           row.session_id,
           `watchdog: no NodePort after ${Math.round(ageMs / 1000)}s`,
+          row.task_arn,
         );
         failed++;
       } else {
@@ -435,6 +442,7 @@ async function recoverStuckCreating(): Promise<void> {
         await markFailed(
           row.session_id,
           `watchdog: harness ${sandbox_url} unresponsive after ${Math.round(ageMs / 1000)}s`,
+          row.task_arn,
         );
         failed++;
       } else {
@@ -450,6 +458,7 @@ async function recoverStuckCreating(): Promise<void> {
       await markFailed(
         row.session_id,
         `watchdog: agent ${row.agent_id} not found`,
+        row.task_arn,
       );
       failed++;
       continue;
@@ -479,6 +488,7 @@ async function recoverStuckCreating(): Promise<void> {
       await markFailed(
         row.session_id,
         `watchdog: finish threw — ${reason}`,
+        row.task_arn,
       );
       failed++;
     }

@@ -39,6 +39,7 @@ import {
   harnessOpenEventStream,
   harnessPromptAsync,
 } from "@/server/harness";
+import { safeStopTask } from "@/server/reconcile";
 import {
   HttpError,
   httpError,
@@ -170,6 +171,8 @@ export async function POST(req: Request, ctx: RouteContext) {
               .catch(() => {
                 /* race with reconciler — fine */
               });
+            // Stop the pod immediately — fire-and-forget, don't block the stream
+            if (row.task_arn) void safeStopTask(row.task_arn, "sandbox unreachable").catch(() => {});
           }
           send({ type: "error", message: "harness event stream failed" });
           done();
@@ -203,6 +206,8 @@ export async function POST(req: Request, ctx: RouteContext) {
               .catch(() => {
                 /* race with reconciler — fine */
               });
+            // Stop the pod immediately — fire-and-forget, don't block the stream
+            if (row.task_arn) void safeStopTask(row.task_arn, "sandbox unreachable").catch(() => {});
           }
           send({ type: "error", message: "prompt_async failed" });
           upstreamCtl.abort();

@@ -31,6 +31,7 @@ import { ZodError } from "zod";
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { harnessOpenEventStream } from "@/server/harness";
+import { safeStopTask } from "@/server/reconcile";
 import { HttpError, httpError } from "@/server/types";
 
 export const runtime = "nodejs";
@@ -151,6 +152,8 @@ export async function GET(req: Request, ctx: RouteContext) {
               .catch(() => {
                 /* race with reconciler — fine */
               });
+            // Stop the pod immediately — fire-and-forget, don't block the stream
+            if (row.task_arn) void safeStopTask(row.task_arn, "sandbox unreachable").catch(() => {});
           }
           send({ type: "error", message: "harness event stream failed" });
           done();

@@ -56,6 +56,7 @@ import {
   markClaimedTaskDead,
   topUpWarmPool,
 } from "@/server/warmPool";
+import { safeStopTask } from "@/server/reconcile";
 import { wrap } from "@/server/route-helpers";
 import type { Prisma } from "@prisma/client";
 
@@ -168,6 +169,9 @@ async function runBringUp(
     console.error(
       `session create failed: session_id=${session_id} agent_id=${agent.agent_id} reason=${reason}`,
     );
+    // Stop the underlying pod so it doesn't sit idle for 24h
+    const row = await prisma.session.findUnique({ where: { session_id }, select: { task_arn: true } }).catch(() => null);
+    if (row?.task_arn) void safeStopTask(row.task_arn, "session bring-up failed").catch(() => {});
     await prisma.session
       .update({
         where: { session_id },

@@ -31,6 +31,7 @@ import {
   harnessListMessages,
   harnessSendMessage,
 } from "@/server/harness";
+import { safeStopTask } from "@/server/reconcile";
 import {
   ensureFlushLoop,
   getCachedSession,
@@ -163,6 +164,13 @@ export async function POST(req: Request, ctx: RouteContext) {
             markErr,
           );
         }
+        // Stop the pod immediately — fire-and-forget, don't block the response
+        void prisma.session
+          .findUnique({ where: { session_id }, select: { task_arn: true } })
+          .then((s) => {
+            if (s?.task_arn) return safeStopTask(s.task_arn, "sandbox unreachable");
+          })
+          .catch(() => {});
       }
       throw new HttpError(502, "harness request failed");
     }
