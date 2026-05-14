@@ -19,6 +19,13 @@
  *   POST   /sessions/{id}/message                    — passthrough chat message
  */
 
+import type {
+  VaultInterception,
+  VaultInterceptionFingerprint,
+} from "@/lib/vault-types";
+
+export type { VaultInterception, VaultInterceptionFingerprint };
+
 /**
  * The browser-side base URL — always relative, always points at the local
  * Next.js backend. Don't read NEXT_PUBLIC_LITELLM_* — those leaked the API
@@ -735,21 +742,10 @@ export async function getSandboxLogs(
 }
 
 // ---------- Vault interceptions (credential swap debugger) ----------
-
-export interface VaultInterceptionFingerprint {
-  stub: string;
-  credential: string;
-  real_tail: string;
-}
-
-export interface VaultInterception {
-  timestamp: string;
-  method: string;
-  host: string;
-  path: string;
-  stubs_swapped: string[];
-  real_value_fingerprint: VaultInterceptionFingerprint[];
-}
+//
+// Type definitions are in `src/lib/vault-types.ts` so the server-side k8s
+// helper imports the same shapes. The import + re-export at the top of this
+// file keeps callers using `import { VaultInterception } from "@/lib/api"`.
 
 /**
  * Fetch the vault sidecar's recent credential swaps for the sandbox pod
