@@ -37,12 +37,22 @@ if [ "${VAULT_ENABLED:-}" = "true" ]; then
     # both verification paths work. NODE_EXTRA_CA_CERTS is supplemental
     # (appends to Node's built-in Mozilla bundle) and is left at the vault
     # CA path the platform already set.
-    if [ -r /etc/vault-ca/tls.crt ] && [ -r /etc/ssl/certs/ca-certificates.crt ]; then
-      cat /etc/vault-ca/tls.crt /etc/ssl/certs/ca-certificates.crt > /tmp/lap-ca-bundle.crt
-      export SSL_CERT_FILE=/tmp/lap-ca-bundle.crt
-      export REQUESTS_CA_BUNDLE=/tmp/lap-ca-bundle.crt
-      export CURL_CA_BUNDLE=/tmp/lap-ca-bundle.crt
-      export GIT_SSL_CAINFO=/tmp/lap-ca-bundle.crt
+    if [ -r /etc/vault-ca/tls.crt ]; then
+      # Build combined bundle: vault CA is always needed (all egress is MITM'd
+      # by vault, which presents vault-CA-signed certs). Append system CAs if
+      # present for any non-proxied hosts. Don't require system CAs to exist —
+      # vault CA alone is sufficient when everything routes through the proxy.
+      BUNDLE=/tmp/lap-ca-bundle.crt
+      cat /etc/vault-ca/tls.crt > "$BUNDLE"
+      if [ -r /etc/ssl/certs/ca-certificates.crt ]; then
+        cat /etc/ssl/certs/ca-certificates.crt >> "$BUNDLE"
+      fi
+      export SSL_CERT_FILE="$BUNDLE"
+      export REQUESTS_CA_BUNDLE="$BUNDLE"
+      export CURL_CA_BUNDLE="$BUNDLE"
+      export GIT_SSL_CAINFO="$BUNDLE"
+    else
+      echo "[entrypoint] WARNING: /etc/vault-ca/tls.crt not readable — TLS verification may fail" >&2
     fi
     echo "[entrypoint] vault stubs sourced ($(wc -l </lap-shared/env) keys)"
   fi
@@ -92,11 +102,9 @@ if [ -n "${REPO_URL:-}" ]; then
     if [ -n "$CLONE_TOKEN" ]; then
       git -c credential.helper= \
           -c "credential.helper=!f() { echo username=x-access-token; echo password=$CLONE_TOKEN; }; f" \
-          clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$REPO_DIR" \
-        || echo "[entrypoint] WARNING: git clone failed; continuing without repo" >&2
+          clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$REPO_DIR"
     else
-      git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$REPO_DIR" \
-        || echo "[entrypoint] WARNING: git clone failed; continuing without repo" >&2
+      git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$REPO_DIR"
     fi
   fi
   # Persistent token: global credential store so gh + git push work from any

@@ -320,8 +320,7 @@ async function buildContainerEnv(
     //     bypass the proxy entirely and don't need a real bundle.
     HTTPS_PROXY: "http://127.0.0.1:14322",
     HTTP_PROXY: "http://127.0.0.1:14322",
-    // github.com uses public CA certs — bypass vault MITM so git clone works.
-    NO_PROXY: "localhost,127.0.0.1,.svc.cluster.local,.svc,.cluster.local,github.com,*.github.com",
+    NO_PROXY: "localhost,127.0.0.1,.svc.cluster.local,.svc,.cluster.local",
     NODE_EXTRA_CA_CERTS: "/etc/vault-ca/tls.crt",
     SSL_CERT_FILE: "/etc/vault-ca/tls.crt",
     REQUESTS_CA_BUNDLE: "/etc/vault-ca/tls.crt",
