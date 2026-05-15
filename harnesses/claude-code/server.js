@@ -6,6 +6,16 @@
 //   browser -> server : raw text (keystrokes)  OR  JSON {"type":"resize","cols":N,"rows":M}
 //   server  -> browser: raw bytes (PTY stdout)
 //
+// Auth: every request to /tty (WebSocket upgrade) and every platform-compat
+// endpoint (POST /session, /event, etc.) must present a token matching
+// HARNESS_AUTH_TOKEN. Token is accepted via:
+//   - `Authorization: Bearer <token>` header   (HTTP)
+//   - `?token=<token>` query string             (WebSocket upgrade — browsers
+//                                                can't set arbitrary headers)
+// If HARNESS_AUTH_TOKEN is unset, the harness fails closed: all auth-gated
+// requests are rejected with 401 and the WS upgrade is dropped. `/healthz`
+// remains public so platform liveness probes work.
+//
 // Override the command for testing without an API key:
 //   POC_CMD=bash docker run …
 
@@ -13,6 +23,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import pty from "node-pty";
 
@@ -29,6 +40,42 @@ const MIME = {
 };
 const CMD = process.env.POC_CMD ?? "claude";
 const REPO_DIR = process.env.REPO_DIR ?? process.cwd();
+
+// Auth token. Empty → fail-closed: all auth-gated requests are rejected.
+// The platform is expected to set this per-pod at sandbox-create time and
+// hand the same value back to authenticated session clients.
+const AUTH_TOKEN = (process.env.HARNESS_AUTH_TOKEN ?? "").trim();
+const AUTH_TOKEN_BYTES = Buffer.from(AUTH_TOKEN, "utf8");
+if (!AUTH_TOKEN) {
+  console.warn(
+    "[harness] WARNING: HARNESS_AUTH_TOKEN is empty. /tty and /session* will reject all requests.",
+  );
+}
+
+// Constant-time compare. Length mismatch short-circuits to false without
+// leaking timing on prefix length.
+function tokenMatches(presented) {
+  if (!AUTH_TOKEN) return false;
+  if (typeof presented !== "string" || presented.length === 0) return false;
+  const given = Buffer.from(presented, "utf8");
+  if (given.length !== AUTH_TOKEN_BYTES.length) return false;
+  return timingSafeEqual(given, AUTH_TOKEN_BYTES);
+}
+
+// Extract a bearer token from either Authorization header or ?token= query.
+function extractToken(req) {
+  const auth = req.headers["authorization"];
+  if (typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")) {
+    return auth.slice(7).trim();
+  }
+  const url = req.url ?? "";
+  const q = url.indexOf("?");
+  if (q < 0) return "";
+  const params = new URLSearchParams(url.slice(q + 1));
+  return params.get("token") ?? "";
+}
+
+function isAuthed(req) { return tokenMatches(extractToken(req)); }
 
 // Route Claude Code through the LiteLLM gateway when the platform passes
 // LITELLM_API_BASE / LITELLM_API_KEY in. The `claude` CLI reads
@@ -59,12 +106,23 @@ function readJson(req) {
   });
 }
 
+function unauthorized(res) {
+  res.writeHead(401, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "unauthorized" }));
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, cmd: CMD, repo: REPO_DIR }));
+    // `auth_required` lets callers see whether the harness will demand a
+    // token without having to attempt a 401 first. The token itself is
+    // never returned.
+    res.end(JSON.stringify({ ok: true, cmd: CMD, repo: REPO_DIR, auth_required: AUTH_TOKEN.length > 0 }));
     return;
   }
+
+  // Everything below this point requires the bearer token.
+  if (!isAuthed(req)) return unauthorized(res);
 
   // Platform-compat stubs: the LAP platform expects every harness to expose
   // the same JSON contract (POST /session, GET /session/:id/message, etc.).
@@ -130,7 +188,17 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: "not found" }));
 });
 
-const wss = new WebSocketServer({ server, path: "/tty" });
+// Reject the WebSocket upgrade itself when the bearer token is missing or
+// wrong. ws's verifyClient runs before any frames are exchanged, so an
+// unauthenticated client never sees the PTY at all — no shell, no leakage.
+const wss = new WebSocketServer({
+  server,
+  path: "/tty",
+  verifyClient: ({ req }, cb) => {
+    if (isAuthed(req)) return cb(true);
+    return cb(false, 401, "unauthorized");
+  },
+});
 
 wss.on("connection", (ws) => {
   let term;
