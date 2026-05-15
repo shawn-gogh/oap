@@ -8,13 +8,40 @@ WebSocket. ~80 lines of glue.
 Browser (xterm.js)  ◀── ws ──▶  bridge (node, this image)  ◀── pty ──▶  claude
 ```
 
+## Auth
+
+The `/tty` WebSocket and the platform-compat HTTP endpoints (`POST /session`,
+`/event`, etc.) all require a bearer token matching `HARNESS_AUTH_TOKEN`.
+**The harness fails closed if this env var is empty** — every WS upgrade is
+rejected with `401`, every HTTP request to a session route returns `401`. Only
+`/healthz` is anonymous.
+
+Token is accepted via:
+
+- `Authorization: Bearer <token>` (HTTP)
+- `?token=<token>` query string (WebSocket upgrade, since browsers can't
+  set arbitrary headers on `new WebSocket(...)`)
+
+The platform should generate a per-pod token at sandbox-create time and
+hand the same value back to authenticated session clients (e.g. on the
+session row as `tty_token`). For local dev, set it explicitly:
+
+```bash
+docker run --rm -p 4096:4096 \
+  -e HARNESS_AUTH_TOKEN=dev-token \
+  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  claude-tty-poc
+# then: open http://localhost:4096/?token=dev-token
+```
+
 ## Run
 
 ```bash
 docker build -t claude-tty-poc .
 
-# With your Anthropic key:
+# With your Anthropic key (and an auth token so the harness will accept connections):
 docker run --rm -p 4096:4096 \
+  -e HARNESS_AUTH_TOKEN=$(openssl rand -hex 16) \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   claude-tty-poc
 
