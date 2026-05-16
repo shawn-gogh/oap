@@ -6,6 +6,42 @@ set -euo pipefail
 
 . /opt/lap/common.sh
 
+# Pre-create hermes config + .env so the TUI lands on a working session
+# instead of "No inference provider configured. Run 'hermes model'…".
+#
+# Hermes' integration docs recommend pointing it at LiteLLM via "Custom
+# endpoint" (hermes_cli/providers.py — see resolve_custom_provider and
+# the `custom_providers:` config schema). The fields the parser reads:
+#   name      — provider id; users reference it via --provider <name>
+#               or via config model.provider
+#   base_url  — endpoint URL
+#   key_env   — env var that holds the API key
+#   transport — "openai_chat" (LiteLLM is OpenAI-compatible)
+#
+# LITELLM_API_KEY in .env is the vault stub sourced from /lap-shared/env
+# by common.sh; vault swaps it for the real key at egress, same path as
+# claude-code's ANTHROPIC_API_KEY and codex's OPENAI_API_KEY.
+if [ -n "${LITELLM_API_BASE:-}" ] && [ -n "${LITELLM_API_KEY:-}" ]; then
+  mkdir -p "$HOME/.hermes"
+  cat > "$HOME/.hermes/.env" <<ENV
+LITELLM_API_KEY=$LITELLM_API_KEY
+ENV
+  chmod 600 "$HOME/.hermes/.env"
+
+  cat > "$HOME/.hermes/config.yaml" <<YAML
+model:
+  default: ${LITELLM_DEFAULT_MODEL:-anthropic/claude-haiku-4-5}
+  provider: litellm
+max_turns: 90
+custom_providers:
+  - name: litellm
+    base_url: ${LITELLM_API_BASE%/}/v1
+    key_env: LITELLM_API_KEY
+    transport: openai_chat
+YAML
+  chmod 600 "$HOME/.hermes/config.yaml"
+fi
+
 # Hydrate attached skills as ~/.hermes/skills/<slug>/SKILL.md so hermes's
 # skill loader picks them up on boot. (Hermes uses ~/.hermes/skills/ — see
 # the install layout in the upstream docs. Different from claude-code's
