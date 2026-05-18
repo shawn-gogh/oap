@@ -23,7 +23,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -509,12 +509,27 @@ app.get("/", (c) =>
 app.post("/session", async (c) => {
   let title: string | undefined;
   let prompt: string | undefined;
+  let files: Array<{ sandbox_path: string; content: string }> = [];
   try {
-    const body = (await c.req.json()) as { title?: string; prompt?: string };
+    const body = (await c.req.json()) as {
+      title?: string;
+      prompt?: string;
+      files?: Array<{ sandbox_path: string; content: string }>;
+    };
     title = body?.title;
     prompt = body?.prompt;
+    files = Array.isArray(body?.files) ? body.files : [];
   } catch {
     // empty body is fine — opencode accepts that too.
+  }
+  for (const f of files) {
+    try {
+      const dest = f.sandbox_path.replace(/^~(?=\/|$)/, process.env.HOME ?? "/root");
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, Buffer.from(f.content, "base64"));
+    } catch (err) {
+      console.error(`sandbox file inject failed (${f.sandbox_path}): ${err}`);
+    }
   }
   const id = `ses_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   sessions.set(id, {

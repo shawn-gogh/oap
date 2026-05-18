@@ -138,7 +138,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/session") {
-    await readJson(req).catch(() => null);
+    const body = await readJson(req).catch(() => null);
+    for (const f of (Array.isArray(body?.files) ? body.files : [])) {
+      try {
+        const dest = String(f.sandbox_path ?? "").replace(/^~(?=\/|$)/, process.env.HOME ?? "/root");
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, Buffer.from(String(f.content ?? ""), "base64"));
+      } catch (err) {
+        console.error(`sandbox file inject failed (${f.sandbox_path}): ${err}`);
+      }
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ id: "tty" }));
     return;

@@ -580,6 +580,7 @@ export interface HarnessCreateSessionOpts {
   sandbox_url: string; // http://<task_ip>:<container_port>
   title?: string;
   prompt?: string;
+  files?: SandboxFileSpec[];
   timeout_ms?: number;
 }
 

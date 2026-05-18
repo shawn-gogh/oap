@@ -104,7 +104,7 @@ export async function harnessCreateSession(
     opts;
   let data = await postJson(
     `${sandbox_url}/session`,
-    { title, prompt: opts.prompt },
+    { title, prompt: opts.prompt, files: opts.files ?? [] },
     timeout_ms,
   );
   // Harness may return a bare object OR a single-element array (proto quirk).

@@ -136,9 +136,11 @@ export async function POST(req: Request, ctx: RouteContext) {
       });
       await waitHttpReady(sandbox_url);
 
+      const rawFiles = (agent as Record<string, unknown>).sandbox_files;
       const harness_session_id = await harnessCreateSession({
         sandbox_url,
         title: "restart",
+        files: Array.isArray(rawFiles) ? (rawFiles as import("@/server/types").SandboxFileSpec[]) : undefined,
       });
       await prisma.session.update({
         where: { session_id },

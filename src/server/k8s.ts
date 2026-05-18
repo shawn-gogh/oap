@@ -22,7 +22,6 @@
  */
 
 import { createHmac } from "node:crypto";
-import { PassThrough } from "node:stream";
 
 import * as k8s from "@kubernetes/client-node";
 import { fetch } from "undici";
@@ -39,7 +38,6 @@ import {
   resolveHarnessImage,
   type AgentRow,
   type RunTaskOpts,
-  type SandboxFileSpec,
   type TaggedTask,
 } from "@/server/types";
 import type {
@@ -955,93 +953,6 @@ export async function waitRunningGetUrl(
   throw new Error(
     `sandbox ${task_arn} never reached Running with NodePort within ${timeout_ms}ms (last: ${lastReason})`,
   );
-}
-
-// ---------------------------------------------------------------------------
-// execFilesIntoContainer — write sandbox_files into the harness container
-// after the pod reaches Running, before the harness HTTP probe.
-// ---------------------------------------------------------------------------
-
-/**
- * Write each file from `files` into the harness container at the specified
- * `sandbox_path`. Expands a leading `~` to `/root`. Creates parent directories
- * as needed. Runs sequentially so failures are attributed to a specific file.
- */
-const EXEC_FILE_TIMEOUT_MS = 30_000;
-
-export async function execFilesIntoContainer(
-  task_arn: string,
-  files: SandboxFileSpec[],
-): Promise<void> {
-  if (files.length === 0) return;
-  const kc = loadKubeConfig();
-  const execApi = new k8s.Exec(kc);
-
-  for (const file of files) {
-    // Don't pre-expand ~ in Node — the container may not run as root.
-    // Pass the raw path and let the shell expand ~ via $HOME.
-    const dest = file.sandbox_path;
-    const content = Buffer.from(file.content, "base64");
-
-    const execPromise = new Promise<void>((resolve, reject) => {
-      const wrapExecErr = (prefix: string, err: unknown): Error => {
-        if (err instanceof Error) return err;
-        if (err && typeof err === "object") {
-          const e = err as { message?: string; error?: { message?: string } };
-          const msg = e.message ?? e.error?.message ?? JSON.stringify(err);
-          return new Error(`${prefix}: ${msg}`);
-        }
-        return new Error(`${prefix}: ${String(err)}`);
-      };
-
-      const stdin = new PassThrough();
-      try {
-        void execApi
-          .exec(
-            env.K8S_NAMESPACE,
-            task_arn,
-            CONTAINER_NAME,
-            // Expand a leading ~ to $HOME inside the container, then write.
-            // $1 is passed as a positional arg to avoid shell-quoting issues.
-            ["sh", "-c", 'p=$(echo "$1" | sed "s|^~|$HOME|"); mkdir -p "$(dirname "$p")" && cat > "$p"', "--", dest],
-            null,
-            null,
-            stdin,
-            false,
-            (status: k8s.V1Status) => {
-              if (status.status === "Success") resolve();
-              else
-                reject(
-                  new Error(
-                    `sandbox file inject failed (${dest}): ${status.message ?? JSON.stringify(status)}`,
-                  ),
-                );
-            },
-          )
-          .then(() => {
-            stdin.write(content);
-            stdin.end();
-          })
-          .catch((wsErr: unknown) => {
-            reject(wrapExecErr("exec WebSocket error", wsErr));
-          });
-      } catch (syncErr: unknown) {
-        // execApi.exec() threw synchronously (e.g. invalid kubeconfig).
-        // The Promise constructor would catch this and reject with the raw
-        // value — bypassing the .catch above — so we intercept it here.
-        reject(wrapExecErr("exec connection error", syncErr));
-      }
-    });
-
-    const timeoutPromise = new Promise<void>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`sandbox file inject timed out after ${EXEC_FILE_TIMEOUT_MS}ms (${dest})`)),
-        EXEC_FILE_TIMEOUT_MS,
-      ),
-    );
-
-    await Promise.race([execPromise, timeoutPromise]);
-  }
 }
 
 // ---------------------------------------------------------------------------
