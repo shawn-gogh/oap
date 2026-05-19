@@ -267,22 +267,59 @@ function createProxy() {
         res.end();
         return;
       }
-      // Detach socket from http.createServer and proxy raw TCP to harness.
-      const socket = req.socket;
-      // Reconstruct the raw WS upgrade request for the harness.
+      // Proxy the WS upgrade to the harness using http.request so we don't
+      // need to detach the socket from http.createServer. Node's http.request
+      // 'upgrade' event fires when the upstream responds with 101, at which
+      // point we take over both sockets and pipe WS frames bidirectionally.
       const qIdx = url.indexOf("?");
       const ttyPath = "/tty" + (qIdx >= 0 ? url.slice(qIdx) : "");
-      let rawHeaders = `GET ${ttyPath} HTTP/1.1\r\n`;
-      for (const [k, v] of Object.entries(req.headers)) rawHeaders += `${k}: ${v}\r\n`;
-      rawHeaders += "\r\n";
-      const forwardBuf = Buffer.from(rawHeaders, "latin1");
-      // Tell http.createServer to stop tracking this socket.
-      socket.setTimeout(0);
-      socket.setNoDelay(true);
-      req.socket.removeAllListeners();
-      handleTtyUpgrade(socket, forwardBuf, sessionId, token).catch((e) => {
-        console.error("[tty-proxy] tty error:", e.message);
-        try { socket.destroy(); } catch {}
+      getSandboxUrl(sessionId).then((sandboxUrl) => {
+        if (!sandboxUrl) {
+          res.writeHead(503, { "content-length": "0" }); res.end(); return;
+        }
+        let parsed;
+        try { parsed = new URL(sandboxUrl); } catch {
+          res.writeHead(502, { "content-length": "0" }); res.end(); return;
+        }
+        const hHost = parsed.hostname;
+        const hPort = parseInt(parsed.port || "80", 10);
+        console.log(`[tty-proxy] proxying tty session=${sessionId} → ${hHost}:${hPort}${ttyPath}`);
+        const proxyReq = httpRequest({
+          hostname: hHost, port: hPort, path: ttyPath, method: "GET",
+          headers: {
+            host: `${hHost}:${hPort}`,
+            upgrade: "websocket", connection: "upgrade",
+            "sec-websocket-key": req.headers["sec-websocket-key"] ?? "dGhlIHNhbXBsZSBub25jZQ==",
+            "sec-websocket-version": req.headers["sec-websocket-version"] ?? "13",
+          },
+        });
+        proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+          console.log(`[tty-proxy] 101 session=${sessionId}`);
+          const clientSocket = req.socket;
+          clientSocket.removeAllListeners();
+          let header = "HTTP/1.1 101 Switching Protocols\r\n";
+          for (const [k, v] of Object.entries(proxyRes.headers)) header += `${k}: ${v}\r\n`;
+          header += "\r\n";
+          clientSocket.write(header);
+          if (proxyHead?.length > 0) clientSocket.write(proxyHead);
+          proxySocket.pipe(clientSocket);
+          clientSocket.pipe(proxySocket);
+          proxySocket.on("error", () => { try { clientSocket.destroy(); } catch {} });
+          clientSocket.on("error", () => { try { proxySocket.destroy(); } catch {} });
+        });
+        proxyReq.on("response", (proxyRes) => {
+          console.warn(`[tty-proxy] harness non-101 session=${sessionId} status=${proxyRes.statusCode}`);
+          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          proxyRes.pipe(res);
+        });
+        proxyReq.on("error", (e) => {
+          console.error(`[tty-proxy] harness connect error session=${sessionId}:`, e.message);
+          try { res.writeHead(502, { "content-length": "0" }); res.end(); } catch {}
+        });
+        proxyReq.end();
+      }).catch((e) => {
+        console.error(`[tty-proxy] getSandboxUrl error session=${sessionId}:`, e.message);
+        try { res.writeHead(503, { "content-length": "0" }); res.end(); } catch {}
       });
       return;
     }
