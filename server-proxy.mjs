@@ -274,34 +274,25 @@ function createProxy() {
       }
 
       const { requestLine, headers } = parsed;
-      const isUpgrade = (headers["upgrade"] ?? "").toLowerCase() === "websocket";
+      const urlPart = requestLine.split(" ")[1] ?? "";
+      const match = urlPart.match(TTY_PATH_RE);
 
-      if (isUpgrade) {
-        const urlPart = requestLine.split(" ")[1] ?? "";
-        const match = urlPart.match(TTY_PATH_RE);
-        if (match) {
-          const sessionId = match[1];
-          const qIdx = urlPart.indexOf("?");
-          const qParams = new URLSearchParams(qIdx >= 0 ? urlPart.slice(qIdx + 1) : "");
-          // Accept the bearer in either form. The lap CLI sends it as an
-          // Authorization header so the token doesn't land in ALB / proxy
-          // access logs that record the request line; browsers can't set
-          // headers on the WS handshake, so they use ?token= instead.
-          // Prefer the header form when present so that an intermediary
-          // (CDN rewrite, misconfigured proxy) appending a query-string
-          // credential can never silently downgrade a CLI request from the
-          // log-safe header form to the logged query-param form.
-          const headerAuth = (headers["authorization"] ?? "").trim();
-          const headerToken = headerAuth.toLowerCase().startsWith("bearer ")
-            ? headerAuth.slice(7).trim()
-            : "";
-          const token = headerToken || qParams.get("token") || "";
-          handleTtyUpgrade(clientSocket, buf, sessionId, token).catch((e) => {
-            console.error("[tty-proxy] unhandled error:", e.message);
-            try { clientSocket.destroy(); } catch {}
-          });
-          return;
-        }
+      // Intercept on URL path alone — AWS ALB strips the Upgrade header before
+      // forwarding to the target, so we cannot rely on `headers["upgrade"]`.
+      if (match) {
+        const sessionId = match[1];
+        const qIdx = urlPart.indexOf("?");
+        const qParams = new URLSearchParams(qIdx >= 0 ? urlPart.slice(qIdx + 1) : "");
+        const headerAuth = (headers["authorization"] ?? "").trim();
+        const headerToken = headerAuth.toLowerCase().startsWith("bearer ")
+          ? headerAuth.slice(7).trim()
+          : "";
+        const token = headerToken || qParams.get("token") || "";
+        handleTtyUpgrade(clientSocket, buf, sessionId, token).catch((e) => {
+          console.error("[tty-proxy] unhandled error:", e.message);
+          try { clientSocket.destroy(); } catch {}
+        });
+        return;
       }
 
       forwardToNext(clientSocket, buf);
