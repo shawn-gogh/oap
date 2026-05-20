@@ -82,6 +82,7 @@ const PORT = parseInt(process.env.PORT ?? "4096", 10);
 const REPO_DIR = process.env.REPO_DIR ?? "/work/repo";
 const DEFAULT_MODEL =
   process.env.LITELLM_DEFAULT_MODEL ?? "claude-haiku-4-5";
+
 const SYSTEM_PROMPT = process.env.AGENT_PROMPT ?? "";
 
 // Route the SDK through the LiteLLM gateway. The SDK reads ANTHROPIC_BASE_URL

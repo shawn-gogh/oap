@@ -26,7 +26,6 @@ import {
   type SaveMemoryInput,
   type SearchMemoryInput,
 } from "@lap/managed-tools/memory";
-
 export function buildMemoryMcpServer(): McpSdkServerConfigWithInstance | null {
   const env = memoryEnv();
   if (!env) return null;
