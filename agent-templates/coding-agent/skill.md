@@ -18,7 +18,7 @@ save_memory({ content: "...", tags: ["relevant-area"] })
 ## PR workflow
 
 1. Create a branch: `git checkout -b <descriptive-name>`
-2. Make changes, commit: `git add -p && git commit -m "..."`
+2. Make changes, commit: `git add -A && git commit -m "..."`
 3. Push: `git push -u origin HEAD`
 4. Open PR: `gh pr create --title "..." --body "..."`
 5. **Immediately after opening the PR**, run the expose-preview procedure below — do not wait to be asked.

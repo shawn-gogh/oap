@@ -66,7 +66,9 @@ const CLAUDE_BIN = resolveClaudeBinary();
 // In-process MCP server exposing save_memory + search_memory to the model.
 // Returns null when LAP_BASE_URL/AGENT_ID/LAP_AUTH_TOKEN aren't all set, so
 // local dev without the platform reachable still works (tools just absent).
-const MEMORY_MCP = buildMemoryMcpServer();
+const MEMORY_MCP = buildMemoryMcpServer({
+  onPreviewPortRegistered: (port) => allowedProxyPorts.add(String(port)),
+});
 const SCREENSHOT_MCP = buildScreenshotMcpServer();
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,17 @@ const PORT = parseInt(process.env.PORT ?? "4096", 10);
 const REPO_DIR = process.env.REPO_DIR ?? "/work/repo";
 const DEFAULT_MODEL =
   process.env.LITELLM_DEFAULT_MODEL ?? "claude-haiku-4-5";
+
+// Ports the proxy is allowed to forward to. Seeded from PREVIEW_PORT or the
+// comma-separated PREVIEW_PORTS env vars set by the agent template, and
+// extended at runtime when the agent calls report_preview_url. Empty = no port
+// is allowed (fail-closed); the proxy only opens once a port is registered.
+const allowedProxyPorts: Set<string> = new Set(
+  (process.env.PREVIEW_PORTS ?? process.env.PREVIEW_PORT ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean),
+);
 const SYSTEM_PROMPT = process.env.AGENT_PROMPT ?? "";
 
 // Route the SDK through the LiteLLM gateway. The SDK reads ANTHROPIC_BASE_URL
@@ -734,6 +747,9 @@ app.all("/proxy/:port/*", async (c) => {
   const port = c.req.param("port");
   if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
     return c.text("invalid port", 400);
+  }
+  if (!allowedProxyPorts.has(port)) {
+    return c.text("port not in allowlist", 403);
   }
   const url = new URL(c.req.url);
   const rest = url.pathname.replace(`/proxy/${port}`, "") || "/";

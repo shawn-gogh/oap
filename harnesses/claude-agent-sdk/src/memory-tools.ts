@@ -33,7 +33,9 @@ import {
   type ReportPreviewUrlInput,
 } from "@lap/managed-tools/preview";
 
-export function buildMemoryMcpServer(): McpSdkServerConfigWithInstance | null {
+export function buildMemoryMcpServer(opts?: {
+  onPreviewPortRegistered?: (port: number) => void;
+}): McpSdkServerConfigWithInstance | null {
   const env = memoryEnv();
   if (!env) return null;
 
@@ -71,6 +73,9 @@ export function buildMemoryMcpServer(): McpSdkServerConfigWithInstance | null {
     reportPreviewUrlSchema,
     async (input: ReportPreviewUrlInput) => {
       const out = await callReportPreviewUrl(env, input);
+      if (!out.isError) {
+        opts?.onPreviewPortRegistered?.(input.port);
+      }
       return {
         content: [{ type: "text" as const, text: out.text }],
         ...(out.isError && { isError: true }),
