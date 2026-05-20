@@ -12,7 +12,10 @@
  *   for await (const ev of events.stream) { ... }
  */
 
-import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
+// Import the client-only entry — the package root re-exports server code
+// (createOpencode → process.js, which needs fs/child_process) that can't bundle
+// for the browser.
+import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client";
 
 export function browserOpencodeClient(lapSessionId: string): OpencodeClient {
   return createOpencodeClient({
