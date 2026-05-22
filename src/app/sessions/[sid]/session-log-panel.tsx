@@ -17,6 +17,9 @@ import {
   Sparkles,
   User,
   Bot,
+  Brain,
+  Wrench,
+  MessageSquare,
   RefreshCw,
   Flag,
   Loader2,
@@ -45,6 +48,12 @@ function EventIcon({ kind }: { kind: SessionLogEvent["kind"] }) {
       return <Sparkles className="size-3.5 text-violet-500" />;
     case "user":
       return <User className="size-3.5 text-blue-500" />;
+    case "thinking":
+      return <Brain className="size-3.5 text-slate-400" />;
+    case "tool":
+      return <Wrench className="size-3.5 text-amber-600" />;
+    case "response":
+      return <MessageSquare className="size-3.5 text-emerald-600" />;
     case "assistant":
       return <Bot className="size-3.5 text-emerald-600" />;
     case "recovered":
@@ -53,6 +62,37 @@ function EventIcon({ kind }: { kind: SessionLogEvent["kind"] }) {
       return <Flag className="size-3.5 text-red-500" />;
     default:
       return <ScrollText className="size-3.5 text-gray-400" />;
+  }
+}
+
+// Per-kind title color.
+function titleColor(kind: SessionLogEvent["kind"]): string {
+  switch (kind) {
+    case "thinking":
+      return "text-slate-500";
+    case "tool":
+      return "text-amber-700";
+    case "recovered":
+      return "text-amber-700";
+    case "ended":
+      return "text-red-600";
+    default:
+      return "text-gray-800";
+  }
+}
+
+// Per-kind detail styling — thinking reads as a muted, italic aside; tool is
+// monospace; everything else is normal body text.
+function detailClass(kind: SessionLogEvent["kind"]): string {
+  switch (kind) {
+    case "thinking":
+      return "italic text-slate-400";
+    case "tool":
+      return "font-mono text-[10px] text-amber-700/80";
+    case "recovered":
+      return "text-amber-600";
+    default:
+      return "text-gray-500";
   }
 }
 
@@ -167,29 +207,22 @@ export function SessionLogPanel({
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-1.5">
-                    <span
-                      className={`text-[12px] font-medium ${
-                        e.kind === "recovered"
-                          ? "text-amber-700"
-                          : e.kind === "ended"
-                            ? "text-red-600"
-                            : "text-gray-800"
-                      }`}
-                    >
+                    <span className={`text-[12px] font-medium ${titleColor(e.kind)}`}>
                       {e.title}
                     </span>
                     {statusBadge(e.status)}
+                    {e.meta && (
+                      <span className="font-mono text-[10px] text-gray-400">
+                        {e.meta}
+                      </span>
+                    )}
                     <span className="ml-auto shrink-0 font-mono text-[10px] text-gray-400">
                       {fmtTime(e.at)}
                     </span>
                   </div>
                   {e.detail && (
                     <p
-                      className={`mt-0.5 whitespace-pre-wrap break-words text-[11px] leading-snug ${
-                        e.kind === "recovered"
-                          ? "text-amber-600"
-                          : "text-gray-500"
-                      }`}
+                      className={`mt-0.5 whitespace-pre-wrap break-words text-[11px] leading-snug ${detailClass(e.kind)}`}
                     >
                       {e.detail}
                     </p>

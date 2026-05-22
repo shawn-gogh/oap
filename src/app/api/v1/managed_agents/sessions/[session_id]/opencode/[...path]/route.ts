@@ -23,7 +23,17 @@
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { getCachedSession, type SessionCacheEntry } from "@/server/sessionCache";
+import { markUserMessageFailed } from "@/server/sessionStore";
+import {
+  recordUserSend,
+  watchEventStreamAndSnapshot,
+} from "@/server/sessionThreadSync";
 import { HttpError, httpError } from "@/server/types";
+
+// opencode paths we persist from. The web UI / CLI drive the harness through
+// this proxy (never our /message route), so the durable conversation log has to
+// be captured here. See src/server/sessionThreadSync.ts.
+const SEND_PATH = /^session\/[^/]+\/(message|prompt_async)$/;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -95,14 +105,42 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
       signal: upstreamCtl.signal,
       cache: "no-store",
     };
+    let bodyBuf: ArrayBuffer | null = null;
     if (req.method !== "GET" && req.method !== "HEAD") {
       // Buffer the body — opencode message payloads are small JSON (text +
       // optional base64 image parts), and buffering sidesteps undici's
       // half-duplex streaming-body constraints.
-      init.body = await req.arrayBuffer();
+      bodyBuf = await req.arrayBuffer();
+      init.body = bodyBuf;
     }
 
-    const upstream = await fetch(target, init);
+    // Persist the user turn before the prompt reaches the harness, so a sandbox
+    // that dies mid-turn still leaves it recoverable + visible in the Session
+    // Log. The UI never hits our /message route — this proxy is the only place
+    // the send is observable. Awaited (one small insert) for durable-before-send.
+    let sentUserMsgId: string | null = null;
+    if (req.method === "POST" && SEND_PATH.test(tail) && bodyBuf) {
+      sentUserMsgId = await recordUserSend({
+        session_id,
+        harness_session_id: cached.harness_session_id,
+        body: bodyBuf,
+      });
+    }
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(target, init);
+    } catch (err) {
+      // Harness unreachable — flag the just-recorded user turn `failed` so it
+      // isn't replayed as a phantom unanswered turn on the next recovery.
+      if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
+      throw err;
+    }
+    // Non-2xx from the harness (rate limit, bad request, …): same cleanup. The
+    // error status is still proxied back to the client below.
+    if (sentUserMsgId && !upstream.ok) {
+      await markUserMessageFailed(sentUserMsgId);
+    }
 
     const ct = upstream.headers.get("content-type") ?? "application/json";
     const outHeaders: Record<string, string> = { "content-type": ct };
@@ -112,6 +150,29 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
       // Disable proxy buffering on any nginx/Render edge that respects it.
       outHeaders["x-accel-buffering"] = "no";
     }
+    // Tee the `/event` bus so we can persist turns server-side: one branch
+    // streams to the client untouched, the other is consumed to watch for
+    // `session.idle` and snapshot the thread into the durable log + history.
+    // This is the only completion signal — the client builds its view from the
+    // bus and never re-fetches the thread.
+    if (
+      req.method === "GET" &&
+      tail === "event" &&
+      ct.includes("text/event-stream") &&
+      upstream.body
+    ) {
+      const [clientStream, watchStream] = upstream.body.tee();
+      void watchEventStreamAndSnapshot(watchStream, {
+        session_id,
+        sandbox_url: cached.sandbox_url,
+        harness_session_id: cached.harness_session_id,
+      });
+      return new Response(clientStream, {
+        status: upstream.status,
+        headers: outHeaders,
+      });
+    }
+
     return new Response(upstream.body, {
       status: upstream.status,
       headers: outHeaders,

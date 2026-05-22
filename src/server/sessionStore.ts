@@ -105,10 +105,17 @@ export async function completeAssistantMessage(opts: {
     const parts = Array.isArray(opts.response.parts) ? opts.response.parts : [];
     await prisma.$transaction(async (tx) => {
       if (opts.user_message_id) {
-        await tx.sessionMessage.update({
-          where: { message_id: opts.user_message_id },
+        // Atomic claim: only the caller that actually flips this turn from
+        // `pending` to `complete` may append the assistant row. The conditional
+        // UPDATE is the lock — concurrent `session.idle` snapshots (rapid-fire
+        // idle events, or two tabs each holding an /event stream) race here, and
+        // the loser sees count 0 and bails instead of inserting a duplicate
+        // assistant turn at the next seq.
+        const claim = await tx.sessionMessage.updateMany({
+          where: { message_id: opts.user_message_id, status: "pending" },
           data: { status: "complete", completed_at: new Date() },
         });
+        if (claim.count === 0) return;
       }
       const seq = await nextSeq(tx as unknown as Tx, opts.session_id);
       await tx.sessionMessage.create({
@@ -181,6 +188,59 @@ export function formatSessionMessagesAsText(
   return formatHistoryAsText(msgs);
 }
 
+/**
+ * Reconcile the durable log against the harness thread after a turn settles.
+ *
+ * The web UI talks to the opencode harness directly (through the passthrough
+ * proxy) and builds its view from the `/event` bus — it never POSTs to our
+ * `/message` route, so the only place we learn a turn finished is `session.idle`
+ * on that bus. On idle we snapshot the harness thread and call this to:
+ *   1. mirror the thread into `Session.history` (title preview + restart-replay
+ *      fallback), and
+ *   2. complete the durable log's trailing `pending` user turn by appending the
+ *      assistant reply pulled from the thread.
+ *
+ * Idempotent: if the trailing user turn is already complete (a repeat idle, or
+ * a turn we already recorded), it only refreshes the history blob.
+ */
+export async function syncSessionThread(opts: {
+  session_id: string;
+  harness_session_id: string;
+  thread: HarnessMessage[];
+}): Promise<void> {
+  const { session_id, harness_session_id, thread } = opts;
+  try {
+    await prisma.session.update({
+      where: { session_id },
+      data: { history: thread as unknown as Prisma.InputJsonValue },
+    });
+  } catch (err) {
+    console.warn(`syncSessionThread: history update failed for ${session_id}:`, err);
+  }
+
+  try {
+    const last = await prisma.sessionMessage.findFirst({
+      where: { session_id },
+      orderBy: { seq: "desc" },
+    });
+    if (!last || last.role !== "user" || last.status !== "pending") return;
+
+    const lastAssistant = [...thread]
+      .reverse()
+      .find((m) => m.info?.role === "assistant");
+    if (!lastAssistant) return;
+
+    await completeAssistantMessage({
+      session_id,
+      user_message_id: last.message_id,
+      harness_session_id,
+      response: { parts: lastAssistant.parts ?? [] },
+    });
+  } catch (err) {
+    console.warn(`syncSessionThread: reconcile failed for ${session_id}:`, err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session Log — a human-friendly event timeline derived from the durable log,
 // powering the "Session Log" side panel in the UI.
@@ -189,7 +249,10 @@ export function formatSessionMessagesAsText(
 export type SessionLogEventKind =
   | "created"
   | "user"
-  | "assistant"
+  | "thinking"
+  | "tool"
+  | "response"
+  | "assistant" // collapsed fallback when only the durable log is available
   | "recovered"
   | "ended";
 
@@ -199,98 +262,212 @@ export interface SessionLogEvent {
   at: string; // ISO timestamp
   title: string;
   detail?: string;
-  // For message events: pending | complete | failed.
+  // Compact trailing annotation, e.g. "1.2s · 186 tok" on a response.
+  meta?: string;
+  // For collapsed message events: pending | complete | failed.
   status?: string;
 }
 
-const PREVIEW_MAX = 240;
+const PREVIEW_MAX = 600;
+const THINKING_TYPES = new Set(["thinking", "reasoning"]);
+const TOOL_TYPES = new Set(["tool", "tool-invocation", "tool_use", "tool-call"]);
 
-// Pull a short, human-readable preview out of a turn's parts. Prefers the last
-// text part (for assistant turns that's the final answer, not the reasoning
-// preamble); falls back to describing non-text content (images, tool calls).
-function previewParts(parts: unknown): string | undefined {
-  if (!Array.isArray(parts)) return undefined;
-  let lastText: string | undefined;
-  const kinds: string[] = [];
-  for (const p of parts) {
-    if (!p || typeof p !== "object") continue;
-    const type = (p as { type?: unknown }).type;
-    if (typeof type === "string") kinds.push(type);
-    const text = (p as { text?: unknown }).text;
-    if (type === "text" && typeof text === "string" && text.trim()) {
-      lastText = text.trim();
-    }
-  }
-  if (lastText) {
-    return lastText.length > PREVIEW_MAX
-      ? `${lastText.slice(0, PREVIEW_MAX)}…`
-      : lastText;
-  }
-  const unique = [...new Set(kinds)];
-  return unique.length > 0 ? `[${unique.join(", ")}]` : undefined;
+function truncate(s: string, n = PREVIEW_MAX): string {
+  const t = s.trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
 }
 
-/**
- * Build the event timeline for a session: creation, every recorded turn, any
- * sandbox recoveries (inferred from a change in `harness_session_id` between
- * consecutive turns — that only happens when rehydrateSession brought up a
- * fresh sandbox), and a terminal "ended" marker for dead/failed sessions.
- */
-export async function getSessionLog(
-  session_id: string,
-): Promise<SessionLogEvent[]> {
-  const [session, rows] = await Promise.all([
-    prisma.session.findUnique({
-      where: { session_id },
-      select: {
-        created_at: true,
-        status: true,
-        stopped_at: true,
-        failure_reason: true,
-      },
-    }),
-    prisma.sessionMessage.findMany({
-      where: { session_id },
-      orderBy: { seq: "asc" },
-    }),
-  ]);
-  if (!session) return [];
+function joinTextParts(parts: HarnessMessagePart[]): string | undefined {
+  const texts = parts
+    .filter((p) => p?.type === "text" && typeof p.text === "string")
+    .map((p) => (p.text as string).trim())
+    .filter(Boolean);
+  return texts.length > 0 ? texts.join("\n") : undefined;
+}
 
-  const events: SessionLogEvent[] = [
-    {
-      id: `${session_id}:created`,
-      kind: "created",
-      at: session.created_at.toISOString(),
-      title: "Session created",
-    },
-  ];
+function toolLabel(p: HarnessMessagePart): string {
+  const r = p as Record<string, unknown>;
+  const state = (r.state ?? {}) as Record<string, unknown>;
+  const name = r.tool ?? r.name ?? r.toolName ?? state.name;
+  return typeof name === "string" && name ? name : "tool";
+}
 
+function toolDetail(p: HarnessMessagePart): string | undefined {
+  const r = p as Record<string, unknown>;
+  const state = (r.state ?? {}) as Record<string, unknown>;
+  const status = typeof state.status === "string" ? state.status : undefined;
+  const input = state.input ?? r.input;
+  const segs: string[] = [];
+  if (status) segs.push(status);
+  if (input !== undefined) {
+    segs.push(typeof input === "string" ? input : JSON.stringify(input));
+  }
+  return segs.length > 0 ? truncate(segs.join(" · "), 200) : undefined;
+}
+
+// "1.2s · 186 tok" from an assistant message's info block.
+function assistantMeta(info: unknown): string | undefined {
+  const i = (info ?? {}) as Record<string, unknown>;
+  const time = (i.time ?? {}) as { created?: number; completed?: number };
+  const tokens = (i.tokens ?? {}) as { output?: number };
+  const segs: string[] = [];
+  if (typeof time.created === "number" && typeof time.completed === "number") {
+    const ms = time.completed - time.created;
+    if (ms >= 0) segs.push(ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
+  }
+  if (typeof tokens.output === "number" && tokens.output > 0) {
+    segs.push(`${tokens.output} tok`);
+  }
+  return segs.length > 0 ? segs.join(" · ") : undefined;
+}
+
+function msgTime(info: unknown, fallback: string): string {
+  const created = ((info ?? {}) as { time?: { created?: number } }).time?.created;
+  return typeof created === "number" ? new Date(created).toISOString() : fallback;
+}
+
+// Flatten a harness thread into a granular, Datadog-style event stream: one
+// event per user message, and per assistant thinking / tool / response part.
+function eventsFromThread(
+  thread: HarnessMessage[],
+  fallbackAt: string,
+): SessionLogEvent[] {
+  const out: SessionLogEvent[] = [];
+  for (const m of thread) {
+    const role = m.info?.role;
+    const mid = m.info?.id ?? `${out.length}`;
+    const at = msgTime(m.info, fallbackAt);
+    const parts = Array.isArray(m.parts) ? m.parts : [];
+
+    if (role === "user") {
+      const text = joinTextParts(parts);
+      // A rehydrated session replays the prior thread as one big user message —
+      // surface it as a recovery marker instead of a wall of JSON.
+      if (text && text.startsWith("<previous_session_history>")) {
+        out.push({
+          id: `${mid}:recovered`,
+          kind: "recovered",
+          at,
+          title: "Session restored",
+          detail: "Prior conversation replayed into a fresh sandbox.",
+        });
+        continue;
+      }
+      out.push({
+        id: `${mid}:user`,
+        kind: "user",
+        at,
+        title: "User message",
+        detail: text ? truncate(text) : "[non-text content]",
+      });
+      continue;
+    }
+
+    if (role !== "assistant") continue;
+
+    const meta = assistantMeta(m.info);
+    let responseEmitted = false;
+    parts.forEach((p, idx) => {
+      const type = (p as { type?: string }).type;
+      const id = `${mid}:${idx}`;
+      if (type && THINKING_TYPES.has(type)) {
+        const t = typeof p.text === "string" ? p.text : "";
+        if (t.trim()) {
+          out.push({ id, kind: "thinking", at, title: "Thinking", detail: truncate(t) });
+        }
+      } else if (type && TOOL_TYPES.has(type)) {
+        out.push({
+          id,
+          kind: "tool",
+          at,
+          title: `Tool: ${toolLabel(p)}`,
+          detail: toolDetail(p),
+        });
+      } else if (type === "text") {
+        const t = typeof p.text === "string" ? p.text : "";
+        if (t.trim()) {
+          out.push({
+            id,
+            kind: "response",
+            at,
+            title: "Response",
+            detail: truncate(t),
+            // Attach the turn cost/latency to the first response part only.
+            meta: responseEmitted ? undefined : meta,
+          });
+          responseEmitted = true;
+        }
+      }
+      // step-start / step-finish / snapshot / file parts are intentionally skipped.
+    });
+  }
+  return out;
+}
+
+// Collapsed fallback when no thread snapshot exists yet (durable log only).
+function eventsFromDurableRows(rows: SessionMessageRow[]): SessionLogEvent[] {
+  const out: SessionLogEvent[] = [];
   let prevHarness: string | null = null;
   for (const r of rows) {
-    if (
-      r.harness_session_id &&
-      prevHarness &&
-      r.harness_session_id !== prevHarness
-    ) {
-      events.push({
+    if (r.harness_session_id && prevHarness && r.harness_session_id !== prevHarness) {
+      out.push({
         id: `${r.message_id}:recovered`,
         kind: "recovered",
         at: r.created_at.toISOString(),
         title: "Sandbox recovered",
-        detail:
-          "The previous sandbox ended; the conversation was replayed into a fresh one.",
+        detail: "The previous sandbox ended; the conversation was replayed into a fresh one.",
       });
     }
     if (r.harness_session_id) prevHarness = r.harness_session_id;
-
-    events.push({
+    const parts = (Array.isArray(r.parts) ? r.parts : []) as HarnessMessagePart[];
+    out.push({
       id: r.message_id,
       kind: r.role === "user" ? "user" : "assistant",
       at: r.created_at.toISOString(),
-      title: r.role === "user" ? "You" : "Agent",
-      detail: previewParts(r.parts),
+      title: r.role === "user" ? "User message" : "Agent",
+      detail: joinTextParts(parts),
       status: r.status,
     });
+  }
+  return out;
+}
+
+/**
+ * Build the Datadog-style event timeline for a session: creation, then a
+ * granular stream of user messages and per-part assistant events (thinking,
+ * each tool call, response), plus a terminal marker for dead/failed sessions.
+ *
+ * Primary source is the full harness thread snapshot (`Session.history`), which
+ * carries reasoning + tool + text parts. Falls back to the collapsed durable
+ * log when no snapshot exists yet.
+ */
+export async function getSessionLog(
+  session_id: string,
+): Promise<SessionLogEvent[]> {
+  const session = await prisma.session.findUnique({
+    where: { session_id },
+    select: {
+      created_at: true,
+      status: true,
+      stopped_at: true,
+      failure_reason: true,
+      history: true,
+    },
+  });
+  if (!session) return [];
+
+  const createdAt = session.created_at.toISOString();
+  const events: SessionLogEvent[] = [
+    { id: `${session_id}:created`, kind: "created", at: createdAt, title: "Session created" },
+  ];
+
+  const thread = Array.isArray(session.history)
+    ? (session.history as unknown as HarnessMessage[])
+    : null;
+  if (thread && thread.length > 0) {
+    events.push(...eventsFromThread(thread, createdAt));
+  } else {
+    events.push(...eventsFromDurableRows(await listSessionMessages(session_id)));
   }
 
   if (session.status === "dead" || session.status === "failed") {
