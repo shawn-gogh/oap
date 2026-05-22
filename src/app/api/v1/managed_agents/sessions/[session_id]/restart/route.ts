@@ -31,11 +31,13 @@ import type { Prisma } from "@prisma/client";
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import {
+  inlineHarnessUrl,
   runTask,
   stopTask,
   waitHttpReady,
   waitRunningGetUrl,
 } from "@/server/k8s";
+import { env } from "@/server/env";
 import { invalidateSession, putCachedSession } from "@/server/sessionCache";
 import {
   expandMessage,
@@ -90,7 +92,9 @@ export async function POST(req: Request, ctx: RouteContext) {
 
     // Fast path for brain-inline: delegate to a shared harness server — no K8s pod needed.
     if (agent.harness_id === HARNESS_BRAIN_INLINE) {
-      const inlineUrl = process.env.CLAUDE_CODE_INLINE_URL;
+      const inlineUrl =
+        process.env.CLAUDE_CODE_INLINE_URL ??
+        (env.IN_CLUSTER ? inlineHarnessUrl() : null);
       if (!inlineUrl) {
         const updated = await prisma.session.update({
           where: { session_id },

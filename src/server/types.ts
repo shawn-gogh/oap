@@ -670,6 +670,7 @@ export interface ServerEnv {
    */
   PLATFORM_INTERNAL_URL: string;
   LOCAL_SANDBOX_URL: string | undefined;
+  LOCAL_EXECUTOR_URL: string | undefined;
   // Shared secret the platform injects into executor pod env and validates
   // on every /execute call. Optional so local dev without K8s still works
   // (omitting the var skips the check on both sides); production Sandbox CRs

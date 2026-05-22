@@ -205,6 +205,53 @@ curl -sS $BASE/api/v1/managed_agents/sessions/$SID/message \
 | Text-only message | `task_arn` stays `null` on the session row |
 | Tool-use message | Platform receives `POST /sandbox/execute`; Claude gets stdout back in the thread |
 
+## Using a local Docker executor
+
+By default, `provision` MCP tool calls hit K8s to spin up an executor pod. Set `LOCAL_EXECUTOR_URL` to route those calls to a local Docker container instead.
+
+### Build the executor image
+
+```bash
+docker buildx build -f harnesses/executor/Dockerfile.local -t executor-sandbox:local .
+```
+
+### Run the executor container
+
+```bash
+docker run -d -p 4097:4096 executor-sandbox:local
+```
+
+Commands issued via the `execute` tool run inside the container — not on your host filesystem.
+
+Optional: mount a repo directory so the agent's commands have access to real code:
+```bash
+docker run -d -p 4097:4096 -v /path/to/repo:/work executor-sandbox:local
+```
+
+### Add to `.env`
+
+```dotenv
+LOCAL_EXECUTOR_URL=http://localhost:4097
+```
+
+Leave `LOCAL_SANDBOX_URL` unset (brain-inline doesn't use it for session creation).
+
+### Full brain-inline + Docker executor `.env`
+
+```dotenv
+DATABASE_URL="postgresql://..."
+MASTER_KEY=sk-local-dev
+LITELLM_API_BASE="https://gateway.litellm-sandbox.ai/"
+LITELLM_API_KEY="sk-..."
+ENCRYPTION_KEY=<base64-encoded 32-byte key>
+PREINSTALLED_GITHUB_REPO=https://github.com/BerriAI/litellm
+WARM_POOL_SIZE=0
+IN_CLUSTER=false
+LAP_BASE_URL=http://localhost:3000
+LAP_AUTH_TOKEN=sk-local-dev
+LOCAL_EXECUTOR_URL=http://localhost:4097
+```
+
 ### Difference from `claude-agent-sdk` local dev
 
 With `claude-agent-sdk`, the full Claude loop runs inside a remote harness process (or the local harness at `LOCAL_SANDBOX_URL`) — the platform only forwards the message and streams events back. With `claude-code-brain-inline`, the same claude-agent-sdk harness runs in sandbox mode: built-in file/bash tools are disabled, and `provision`/`execute` MCP tools replace them with platform-mediated K8s pod provisioning. The harness process is shared across all brain-inline sessions (auto-spawned by the platform at startup).

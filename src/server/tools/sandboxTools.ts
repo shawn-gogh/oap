@@ -18,6 +18,11 @@ export async function provisionSandbox(
   name: string,
   agent: AgentRow,
 ): Promise<string> {
+  if (env.LOCAL_EXECUTOR_URL) {
+    sandboxMap.set(mapKey(session_id, name), env.LOCAL_EXECUTOR_URL);
+    return `sandbox '${name}' ready`;
+  }
+
   if (env.LOCAL_SANDBOX_URL) {
     sandboxMap.set(mapKey(session_id, name), env.LOCAL_SANDBOX_URL);
     return `sandbox '${name}' ready`;

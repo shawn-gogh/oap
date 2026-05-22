@@ -72,6 +72,8 @@ const EnvSchema = z.object({
   PLATFORM_INTERNAL_URL: z.string().default(""),
   // Local dev: skip K8s and route all sessions to this harness URL.
   LOCAL_SANDBOX_URL: z.string().optional(),
+  // Local dev: skip K8s executor pod; route all provision calls to this Docker container.
+  LOCAL_EXECUTOR_URL: z.string().optional(),
   // Shared secret used to authenticate calls to the executor pod's /execute
   // endpoint. Optional — if unset both sides skip the check so local dev
   // without K8s works out of the box. Production Sandbox CRs should always
@@ -152,6 +154,7 @@ function parseEnv(): ServerEnv {
     ...data,
     HARNESS_TOKEN_SIGNING_KEY: signingKey,
     LOCAL_SANDBOX_URL: data.LOCAL_SANDBOX_URL,
+    LOCAL_EXECUTOR_URL: data.LOCAL_EXECUTOR_URL,
     containerEnvPassthrough: collectContainerEnvPassthrough(process.env),
   };
 }
