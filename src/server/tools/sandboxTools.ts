@@ -45,6 +45,14 @@ export async function provisionSandbox(
     return `sandbox '${name}' ready`;
   }
 
+  // Idempotency: if this sandbox name was already provisioned, skip the
+  // expensive pod-wait path and return the stored URL immediately.
+  const existingUrl = existingSandboxes?.[name] ?? sandboxMap.get(mapKey(session_id, name));
+  if (existingUrl) {
+    sandboxMap.set(mapKey(session_id, name), existingUrl);
+    return `sandbox '${name}' ready`;
+  }
+
   const { task_arn } = await runTask({ agent: { ...agent, harness_id: HARNESS_EXECUTOR }, session_id });
 
   // Only write task_arn for non-brain-inline sessions. brain-inline sessions
