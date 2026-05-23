@@ -51,16 +51,16 @@ esac
 # Lives at /opt/lap/opencode-sandbox-mcp with its own node_modules baked in.
 MCP_BLOCK=""
 if [ -n "${E2B_API_KEY:-}" ]; then
+  # Build the env object with node so the API key is JSON-escaped regardless of
+  # special characters (a raw " or \ in the key would corrupt opencode.json).
+  MCP_ENV=$(node -e 'process.stdout.write(JSON.stringify({E2B_API_KEY:process.env.E2B_API_KEY||"",E2B_TEMPLATE:process.env.E2B_TEMPLATE||"base"}))')
   MCP_BLOCK=$(cat <<EOF
   "mcp": {
     "sandbox": {
       "type": "local",
       "command": ["node", "/opt/lap/opencode-sandbox-mcp/sandbox-mcp.mjs"],
       "enabled": true,
-      "environment": {
-        "E2B_API_KEY": "${E2B_API_KEY}",
-        "E2B_TEMPLATE": "${E2B_TEMPLATE:-base}"
-      }
+      "environment": ${MCP_ENV}
     }
   },
 EOF
