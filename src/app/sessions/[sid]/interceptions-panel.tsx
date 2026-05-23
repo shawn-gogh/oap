@@ -87,6 +87,23 @@ function renderInterceptionRows(
   idx: number,
 ): React.ReactElement[] {
   const baseKey = `${rec.timestamp}-${idx}`;
+  if (rec.blocked) {
+    return [
+      <TableRow key={baseKey} className="bg-red-50">
+        <TableCell className="mono text-[11px]">
+          {formatTimestamp(rec.timestamp)}
+        </TableCell>
+        <TableCell>
+          <Badge variant="secondary">{rec.method}</Badge>
+        </TableCell>
+        <TableCell className="mono text-[11px]">{rec.host}</TableCell>
+        <TableCell className="mono text-[11px] break-all">{rec.path}</TableCell>
+        <TableCell colSpan={3}>
+          <Badge variant="destructive">BLOCKED</Badge>
+        </TableCell>
+      </TableRow>,
+    ];
+  }
   if (rec.real_value_fingerprint.length === 0) {
     return [
       <TableRow key={baseKey}>
@@ -232,19 +249,16 @@ export function InterceptionsPanel({
     });
   }, [records]);
 
-  // Split sorted records into "matched" (had a real stub→real swap) and
-  // "unmatched" (request tunneled through unchanged). The matched group is
-  // the signal the user cares about; unmatched rows live in a collapsed
-  // accordion so they don't drown out the meaningful events. We key off
-  // `stubs_swapped` (the authoritative server-side list) rather than the
-  // fingerprint array, which can be empty even when a swap occurred if the
-  // sidecar elided the real-tail.
+  // Split sorted records into "notable" (had a real stub→real swap, OR was
+  // blocked by egress policy) and "unmatched" (request tunneled through
+  // unchanged with no swap and no block). Notable rows are the signal the
+  // user cares about; unmatched rows live in a collapsed accordion.
   const matched = useMemo(
-    () => sorted.filter((r) => r.stubs_swapped.length > 0),
+    () => sorted.filter((r) => r.stubs_swapped.length > 0 || r.blocked),
     [sorted],
   );
   const unmatched = useMemo(
-    () => sorted.filter((r) => r.stubs_swapped.length === 0),
+    () => sorted.filter((r) => r.stubs_swapped.length === 0 && !r.blocked),
     [sorted],
   );
 
