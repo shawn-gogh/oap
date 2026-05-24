@@ -24,14 +24,15 @@ COPY harnesses/claude-agent-sdk/package*.json ./harnesses/claude-agent-sdk/
 RUN cd harnesses/claude-agent-sdk && \
     npm install --legacy-peer-deps && \
     # Force-install the linux-x64 native claude binary (optional dep may be skipped)
-    # Install platform-native binary (auto-detects arch: x64 or arm64)
-    ARCH=$(node -e "console.log(process.arch)") && \
-    npm install --cpu=$ARCH --os=linux --legacy-peer-deps \
-        @anthropic-ai/claude-agent-sdk-linux-${ARCH}@0.2.138 && \
-    chmod +x node_modules/@anthropic-ai/claude-agent-sdk-linux-${ARCH}/claude && \
-    echo "arch=$ARCH claude binary:" && \
-    ls -la node_modules/@anthropic-ai/claude-agent-sdk-linux-${ARCH}/claude && \
-    node_modules/@anthropic-ai/claude-agent-sdk-linux-${ARCH}/claude --version 2>&1 | head -3 || echo "WARNING: claude --version failed"
+    # Install BOTH arch variants so runtime can pick the right one regardless of platform
+    npm install --cpu=x64 --os=linux --legacy-peer-deps \
+        @anthropic-ai/claude-agent-sdk-linux-x64@0.2.138 && \
+    npm install --cpu=arm64 --os=linux --legacy-peer-deps \
+        @anthropic-ai/claude-agent-sdk-linux-arm64@0.2.138 && \
+    chmod +x node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude \
+              node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude && \
+    echo "x64 binary:" && ls -la node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude && \
+    echo "arm64 binary:" && ls -la node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude
 
 # Build TypeScript — ARG forces cache bust when source changes
 ARG BUILD_TIMESTAMP=unknown
@@ -60,11 +61,12 @@ COPY --from=builder /build/harnesses/claude-agent-sdk/node_modules/ ./node_modul
 RUN file ./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude && \
     ldd ./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude 2>&1 | head -20 || true
 
-# Copy binary to a stable path so CLAUDE_CODE_EXECUTABLE never needs arch detection
-RUN ARCH=$(node -e "console.log(process.arch)") && \
+# Pick the right arch binary at runtime and copy to /usr/local/bin/claude
+RUN ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') && \
+    echo "Runtime arch: $ARCH" && \
     cp /build/harnesses/claude-agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk-linux-${ARCH}/claude /usr/local/bin/claude && \
     chmod +x /usr/local/bin/claude && \
-    /usr/local/bin/claude --version 2>&1 | head -2 || echo "WARNING: claude --version failed"
+    /usr/local/bin/claude --version 2>&1 | head -2 || echo "WARNING: claude --version failed (may need missing libs)"
 
 ENV CLAUDE_CODE_EXECUTABLE=/usr/local/bin/claude
 ENV PORT=10000
