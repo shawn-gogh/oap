@@ -7,7 +7,10 @@
  * buildSandboxMcpServer. The platform owns template selection, vault proxy
  * injection, and sandbox lifecycle.
  *
- * Requires: LAP_BASE_URL, SESSION_ID, and LAP_AUTH_TOKEN (falls back to MASTER_KEY).
+ * SESSION_ID: read from env (K8s per-session pod) or from tool args (inline
+ * shared Render service where no per-session env injection exists).
+ *
+ * Requires: LAP_BASE_URL, LAP_AUTH_TOKEN/MASTER_KEY in env.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -18,7 +21,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const BASE = process.env.LAP_BASE_URL;
-const SESSION_ID = process.env.SESSION_ID;
+const ENV_SESSION_ID = process.env.SESSION_ID;
 const TOKEN = process.env.LAP_AUTH_TOKEN ?? process.env.MASTER_KEY;
 
 const server = new Server(
@@ -42,6 +45,10 @@ const TOOLS = [
           type: "string",
           description: "ID of the project template to provision the sandbox from",
         },
+        session_id: {
+          type: "string",
+          description: "LAP session ID — required when SESSION_ID env var is not set",
+        },
       },
       required: ["name"],
     },
@@ -58,6 +65,10 @@ const TOOLS = [
           description: "Label of the provisioned sandbox to run the command in",
         },
         cmd: { type: "string", description: "Shell command to execute inside the sandbox" },
+        session_id: {
+          type: "string",
+          description: "LAP session ID — required when SESSION_ID env var is not set",
+        },
       },
       required: ["sandbox_name", "cmd"],
     },
@@ -70,23 +81,26 @@ function textResult(text, isError = false) {
   return { content: [{ type: "text", text }], isError };
 }
 
-function missingConfig() {
-  if (!BASE || !SESSION_ID || !TOKEN) {
-    return `sandbox tools unavailable: missing ${[
-      !BASE && "LAP_BASE_URL",
-      !SESSION_ID && "SESSION_ID",
-      !TOKEN && "LAP_AUTH_TOKEN/MASTER_KEY",
-    ].filter(Boolean).join(", ")}`;
-  }
-  return null;
+function resolveSession(args) {
+  return ENV_SESSION_ID ?? args.session_id ?? null;
 }
 
-async function provision({ name, project_id }) {
-  const err = missingConfig();
+function missingConfig(session_id) {
+  const missing = [
+    !BASE && "LAP_BASE_URL",
+    !session_id && "SESSION_ID",
+    !TOKEN && "LAP_AUTH_TOKEN/MASTER_KEY",
+  ].filter(Boolean);
+  return missing.length ? `sandbox tools unavailable: missing ${missing.join(", ")}` : null;
+}
+
+async function provision({ name, project_id, session_id: argSession }) {
+  const session_id = resolveSession({ session_id: argSession });
+  const err = missingConfig(session_id);
   if (err) return textResult(`provision failed: ${err}`, true);
   try {
     const res = await fetch(
-      `${BASE}/api/v1/managed_agents/sessions/${SESSION_ID}/sandbox/provision`,
+      `${BASE}/api/v1/managed_agents/sessions/${session_id}/sandbox/provision`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
@@ -101,12 +115,13 @@ async function provision({ name, project_id }) {
   }
 }
 
-async function execute({ sandbox_name, cmd }) {
-  const err = missingConfig();
+async function execute({ sandbox_name, cmd, session_id: argSession }) {
+  const session_id = resolveSession({ session_id: argSession });
+  const err = missingConfig(session_id);
   if (err) return textResult(`execute failed: ${err}`, true);
   try {
     const res = await fetch(
-      `${BASE}/api/v1/managed_agents/sessions/${SESSION_ID}/sandbox/execute`,
+      `${BASE}/api/v1/managed_agents/sessions/${session_id}/sandbox/execute`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
@@ -131,5 +146,5 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(
-  `[sandbox-mcp] ready (session=${SESSION_ID ?? "MISSING"}, base=${BASE ?? "MISSING"})`,
+  `[sandbox-mcp] ready (session=${ENV_SESSION_ID ?? "from-args"}, base=${BASE ?? "MISSING"})`,
 );
