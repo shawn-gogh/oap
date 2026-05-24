@@ -22,10 +22,10 @@ RUN cd managed-tools && npm run build
 # Install harness deps — explicitly include linux-x64 claude binary
 COPY harnesses/claude-agent-sdk/package*.json ./harnesses/claude-agent-sdk/
 RUN cd harnesses/claude-agent-sdk && \
-    npm install && \
+    npm install --legacy-peer-deps && \
     # Force-install the linux-x64 native claude binary (optional dep may be skipped)
-    npm install --cpu=x64 --os=linux \
-        @anthropic-ai/claude-agent-sdk-linux-x64@$(node -e "console.log(require('./harnesses/claude-agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version)")
+    npm install --cpu=x64 --os=linux --legacy-peer-deps \
+        @anthropic-ai/claude-agent-sdk-linux-x64@0.2.138
 
 # Build TypeScript
 COPY harnesses/claude-agent-sdk/src/ ./harnesses/claude-agent-sdk/src/
