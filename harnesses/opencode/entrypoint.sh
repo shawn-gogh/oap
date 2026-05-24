@@ -64,8 +64,10 @@ echo "[entrypoint] registered models: $(printf '%s' "$MODELS_JSON" | jq -r 'keys
 # Sandbox tools: when E2B is configured, mount the bundled stdio MCP that
 # exposes provision/execute (same tool surface as the claude-agent-sdk harness).
 # Lives at /opt/lap/opencode-sandbox-mcp with its own node_modules baked in.
-# Build the opencode `mcp` object: the E2B sandbox MCP (when E2B_API_KEY is set)
-# plus every MCP server the LiteLLM key can access (Linear, Slack, GitHub, ...).
+# Build the opencode `mcp` object: the E2B sandbox MCP (when E2B_API_KEY is
+# set), the LAP memory MCP (when memory env is configured — save_memory /
+# search_memory), plus every MCP server the LiteLLM key can access (Linear,
+# Slack, GitHub, ...).
 # gen-mcp-config.mjs emits JSON and JSON-escapes all values, so keys with
 # special characters can't corrupt opencode.json. Failure is non-fatal — it
 # emits {} and the harness still boots.
