@@ -24,6 +24,8 @@ const BASE = process.env.LAP_BASE_URL;
 const ENV_SESSION_ID = process.env.SESSION_ID;
 const TOKEN = process.env.LAP_AUTH_TOKEN ?? process.env.MASTER_KEY;
 
+console.error(`[sandbox-mcp] env check: LAP_BASE_URL=${BASE ? "set" : "MISSING"} SESSION_ID=${ENV_SESSION_ID ?? "MISSING"} TOKEN=${TOKEN ? "set" : "MISSING"}`);
+
 const server = new Server(
   { name: "opencode-sandbox", version: "1.0.0" },
   { capabilities: { tools: {} } },
@@ -96,6 +98,7 @@ function missingConfig(session_id) {
 
 async function provision({ name, project_id, session_id: argSession }) {
   const session_id = resolveSession({ session_id: argSession });
+  console.error(`[sandbox-mcp] provision called: name=${name} session_id=${session_id ?? "MISSING"} arg_session=${argSession ?? "none"}`);
   const err = missingConfig(session_id);
   if (err) return textResult(`provision failed: ${err}`, true);
   try {
