@@ -566,6 +566,7 @@ async function runInitialPrompt(
             })),
           ]
         : expandMessage(initial_prompt),
+      session_id,
     );
     // Record the initial prompt in the durable log *before* sending so the
     // first turn is replayable if the sandbox dies before the agent replies.

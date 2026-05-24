@@ -272,7 +272,7 @@ export async function POST(req: Request, ctx: RouteContext) {
         where: { agent_id: cached.agent_id },
         select: { prompt: true },
       });
-      parts = prependAgentSystemPrompt(agentRow?.prompt, parts);
+      parts = prependAgentSystemPrompt(agentRow?.prompt, parts, session_id);
     }
 
     // Durably record the user turn *before* dialing the harness so a mid-turn

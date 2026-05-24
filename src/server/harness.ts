@@ -112,15 +112,19 @@ export function expandMessage(
 export function prependAgentSystemPrompt(
   prompt: string | null | undefined,
   parts: HarnessMessagePart[],
+  session_id?: string,
 ): HarnessMessagePart[] {
   const trimmed = prompt?.trim();
-  if (!trimmed) return parts;
+  const sessionLine = session_id ? `<lap_session_id>${session_id}</lap_session_id>\n` : "";
+  if (!trimmed && !sessionLine) return parts;
+  const body = trimmed
+    ? `<system_instructions>\n${trimmed}\n</system_instructions>\n\n` +
+      `Follow the system instructions above for the entire conversation. ` +
+      `Now respond to the request below.\n`
+    : `Now respond to the request below.\n`;
   const preamble: HarnessMessagePart = {
     type: "text",
-    text:
-      `<system_instructions>\n${trimmed}\n</system_instructions>\n\n` +
-      `Follow the system instructions above for the entire conversation. ` +
-      `Now respond to the request below.\n`,
+    text: sessionLine + body,
   };
   return [preamble, ...parts];
 }
