@@ -17,7 +17,11 @@ const E2B_API_KEY = process.env.E2B_API_KEY;
 const E2B_TEMPLATE = process.env.E2B_TEMPLATE || "base";
 const VAULT_URL = process.env.VAULT_URL;
 const VAULT_PROXY_TOKEN = process.env.VAULT_PROXY_TOKEN;
-const SANDBOX_TIMEOUT_MS = 900_000;
+// E2B auto-shuts a sandbox this long after its shutdown timer was last set. We
+// reset that timer on every execute/read (keepalive, see below), so in practice
+// this is "max idle before reaping", not a hard cap on total task time. 30 min
+// tolerates long thinking gaps between tool calls without leaving zombies.
+const SANDBOX_TIMEOUT_MS = 1_800_000;
 const EXECUTE_TIMEOUT_MS = 120_000;
 
 const USE_DIRECT = !ENV_SESSION_ID;
@@ -128,6 +132,11 @@ async function execute({ sandbox_name, cmd }) {
     const sandbox = sandboxes.get(sandbox_name);
     if (!sandbox) return textResult(`execute failed: no sandbox "${sandbox_name}" — call provision first`, true);
     try {
+      // Keepalive: reset the shutdown timer to a fresh full window BEFORE running
+      // so the sandbox can't expire mid-command or during the agent's next think
+      // step. Without this, E2B reaps the sandbox SANDBOX_TIMEOUT_MS after
+      // creation regardless of activity, wiping the repo/build/running proxy.
+      await sandbox.setTimeout(SANDBOX_TIMEOUT_MS);
       const result = await sandbox.commands.run(cmd, { timeoutMs: EXECUTE_TIMEOUT_MS });
       const out = (result.stdout ?? "") + (result.stderr ?? "");
       const code = result.exitCode ?? 0;
@@ -160,6 +169,7 @@ async function readFile({ sandbox_name, path }) {
     const sandbox = sandboxes.get(sandbox_name);
     if (!sandbox) return textResult(`read_file failed: no sandbox "${sandbox_name}" — call provision first`, true);
     try {
+      await sandbox.setTimeout(SANDBOX_TIMEOUT_MS); // keepalive (see execute)
       const content = await sandbox.files.read(path);
       if (content.length > READ_FILE_MAX_BYTES)
         return textResult(`error: file too large to return inline (${content.length} bytes > ${READ_FILE_MAX_BYTES}). Read a smaller slice or split it.`, true);
