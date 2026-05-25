@@ -7,7 +7,7 @@
 #   2. By dev-up.sh, for humans in an interactive shell.
 #
 # No sudo needed — `user` owns the cluster at /home/user/pgdata.
-set -uo pipefail
+set -euo pipefail
 
 PG_VERSION=$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)
 PG_BIN="/usr/lib/postgresql/${PG_VERSION}/bin"
@@ -19,5 +19,6 @@ if "${PG_BIN}/pg_ctl" -D "${PG_DATA}" status >/dev/null 2>&1; then
 fi
 
 echo "[start-db] Starting PostgreSQL ${PG_VERSION}..."
-"${PG_BIN}/pg_ctl" -D "${PG_DATA}" start -w -t 30 -l /tmp/postgres.log
+"${PG_BIN}/pg_ctl" -D "${PG_DATA}" start -w -t 30 -l /tmp/postgres.log \
+  || { echo "[start-db] ERROR: pg_ctl failed — postgres log:" >&2; cat /tmp/postgres.log >&2 || true; exit 1; }
 echo "[start-db] PostgreSQL started."
