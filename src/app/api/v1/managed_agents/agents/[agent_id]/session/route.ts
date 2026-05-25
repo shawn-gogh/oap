@@ -30,6 +30,7 @@
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { env } from "@/server/env";
+import { parseAttachedSkillIds } from "@/server/skill-prompt";
 import {
   buildSkillSandboxFiles,
   getInlineHarnessPodUrl,
@@ -714,8 +715,21 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
       : [];
     const { specs: mcpServers, warning: mcpWarning } = await resolveAgentMcpServers(rawMcpServerIds);
 
-    const inlineSkillFiles = body.skill_ids?.length
-      ? await buildSkillSandboxFiles(body.skill_ids)
+    // Skills for an inline session: the per-session skill_ids PLUS the agent's
+    // attached skills. On the pod-per-session path the latter ride along in
+    // SKILLS_JSON (hydrated by the entrypoint), but the inline server is shared
+    // and boots once, so attached skills must be delivered per session as files.
+    // The opencode inline adapter materializes them into a per-agent directory
+    // (keyed by agent_id) so each agent only loads its own. claude-code inline
+    // already hydrates attached skills its own way, so only do this for opencode.
+    const attachedSkillIds = isOpencodeInline
+      ? parseAttachedSkillIds(agent.prompt)
+      : [];
+    const skillIdsForSession = [
+      ...new Set([...(body.skill_ids ?? []), ...attachedSkillIds]),
+    ];
+    const inlineSkillFiles = skillIdsForSession.length
+      ? await buildSkillSandboxFiles(skillIdsForSession)
       : [];
     let harness_session_id: string;
     try {
