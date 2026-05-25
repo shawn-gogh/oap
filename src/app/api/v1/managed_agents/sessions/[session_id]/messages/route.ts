@@ -43,6 +43,12 @@ export async function GET(req: Request, ctx: RouteContext) {
         sandbox_url: row.sandbox_url,
         harness_session_id: row.harness_session_id,
       });
+      // Harness returned empty — session was lost from memory (restart,
+      // disconnect, or harness_session_id mismatch). Fall back to the
+      // persisted history snapshot rather than showing a blank thread.
+      if (msgs.length === 0 && Array.isArray(row.history) && row.history.length > 0) {
+        return Response.json(row.history);
+      }
       // If the last harness message is a user message (the agent's response
       // hasn't been committed yet — either still in-flight or interrupted),
       // check whether we have a partial-turn snapshot from the stream route
