@@ -29,11 +29,12 @@ fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   INFERENCE_BASE="https://api.anthropic.com/v1"
   INFERENCE_KEY="${ANTHROPIC_API_KEY}"
-  # Strip provider prefix so @ai-sdk/anthropic gets bare model names
-  BARE_MODEL="${LITELLM_DEFAULT_MODEL#anthropic/}"
-  LITELLM_DEFAULT_MODEL="$BARE_MODEL"
   BASE="$INFERENCE_BASE"
-  echo "[entrypoint] using direct Anthropic API (model=${BARE_MODEL})"
+  # Keep LITELLM_DEFAULT_MODEL as-is (e.g. "anthropic/claude-opus-4-7") —
+  # the platform sends this exact modelID in harnessSendMessage and opencode
+  # must find it in the config map. @ai-sdk/anthropic strips the provider
+  # prefix internally before calling the Anthropic API.
+  echo "[entrypoint] using direct Anthropic API (model=${LITELLM_DEFAULT_MODEL})"
 else
   INFERENCE_BASE="$BASE"
   INFERENCE_KEY="${LITELLM_API_KEY}"
