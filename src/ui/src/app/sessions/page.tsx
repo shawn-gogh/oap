@@ -47,6 +47,14 @@ function runtimeSubtitle(harness: RuntimeHarness): string {
   return "Managed runtime sessions";
 }
 
+function connectedRuntimeHarnesses(harnesses: RuntimeHarness[]): RuntimeHarness[] {
+  return harnesses.filter((item) => item.connected);
+}
+
+function defaultRuntimeAlias(harnesses: RuntimeHarness[]): AgentRuntimeId | "" {
+  return harnesses.find((item) => item.alias === CLAUDE_RUNTIME)?.alias ?? harnesses[0]?.alias ?? "";
+}
+
 function isAgentRuntimeId(value: unknown): value is AgentRuntimeId {
   return typeof value === "string" && value.length > 0;
 }
@@ -98,10 +106,11 @@ function SessionsStart() {
   useEffect(() => {
     Promise.all([listRuntimeHarnesses(), listSessions(), listAgents()])
       .then(([nextHarnesses, nextSessions, nextAgents]) => {
+        const nextRuntimeOptions = connectedRuntimeHarnesses(nextHarnesses);
         setHarnesses(nextHarnesses);
         setRuntime((current) => {
-          if (current && nextHarnesses.some((item) => item.alias === current)) return current;
-          return nextHarnesses.find((item) => item.alias === CLAUDE_RUNTIME)?.alias ?? nextHarnesses[0]?.alias ?? "";
+          if (current && nextRuntimeOptions.some((item) => item.alias === current)) return current;
+          return defaultRuntimeAlias(nextRuntimeOptions);
         });
         setSessionCount(nextSessions.length);
         setAgentCount(nextAgents.length);
@@ -110,9 +119,10 @@ function SessionsStart() {
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load runtimes"));
   }, []);
 
+  const runtimeOptions = useMemo(() => connectedRuntimeHarnesses(harnesses), [harnesses]);
   const selectedRuntime = useMemo(
-    () => harnesses.find((item) => item.alias === runtime),
-    [runtime, harnesses],
+    () => runtimeOptions.find((item) => item.alias === runtime),
+    [runtime, runtimeOptions],
   );
   const selectedAgent = useMemo(
     () => savedAgents.find((agent) => agent.id === selectedAgentId) ?? null,
@@ -130,13 +140,13 @@ function SessionsStart() {
     (!needsRuntime ||
       (runtime !== "" &&
         Boolean(selectedRuntime?.connected) &&
-        (resolveApiSpec(runtime, harnesses) !== "cursor" || repository.trim().length > 0)));
+        (resolveApiSpec(runtime, runtimeOptions) !== "cursor" || repository.trim().length > 0)));
 
   useEffect(() => {
     if (!selectedAgentRuntime) return;
-    if (!harnesses.some((item) => item.alias === selectedAgentRuntime)) return;
+    if (!runtimeOptions.some((item) => item.alias === selectedAgentRuntime)) return;
     setRuntime(selectedAgentRuntime);
-  }, [harnesses, selectedAgentRuntime]);
+  }, [runtimeOptions, selectedAgentRuntime]);
 
   const startSession = async () => {
     const trimmed = prompt.trim();
@@ -163,7 +173,7 @@ function SessionsStart() {
           ? await createSession(title, selectedAgent.id)
           : await (async () => {
               const runtimeForSession = runtimeId as AgentRuntimeId;
-              const runtimeSpec = resolveApiSpec(runtimeForSession, harnesses);
+              const runtimeSpec = resolveApiSpec(runtimeForSession, runtimeOptions);
               const model = runtimeSupportsModelDiscovery(runtimeForSession)
                 ? selectedRuntimeModel(await listModels(runtimeForSession), "")
                 : defaultModelForRuntime(runtimeForSession);
@@ -304,31 +314,40 @@ function SessionsStart() {
                     </span>
                     <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted">
                       <BrandIcon
-                        id={runtimeBrandIconId(runtime, resolveApiSpec(runtime, harnesses))}
+                        id={runtimeBrandIconId(
+                          selectedRuntime?.alias ?? runtime,
+                          resolveApiSpec(runtime, runtimeOptions),
+                        )}
                         className="size-4"
                       />
                     </span>
                     <span className="truncate text-sm font-medium">
-                      {selectedRuntime?.display_name ?? (runtime ? runtimeLabel(runtime) : "Select runtime")}
+                      {selectedRuntime?.display_name ?? (harnesses.length > 0 ? "No configured runtime" : "Select runtime")}
                     </span>
                   </span>
                 </SelectTrigger>
                 <SelectContent className="w-[340px]">
-                  {harnesses.map((item) => (
-                    <SelectItem key={item.alias} value={item.alias} disabled={!item.connected} className="py-3">
-                      <span className="flex min-w-0 items-center gap-3">
-                        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-                          <BrandIcon id={runtimeBrandIconId(item.alias, item.api_spec)} className="size-4" />
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">{item.display_name}</span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {runtimeSubtitle(item)}
+                  {runtimeOptions.length > 0 ? (
+                    runtimeOptions.map((item) => (
+                      <SelectItem key={item.alias} value={item.alias} className="py-3">
+                        <span className="flex min-w-0 items-center gap-3">
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+                            <BrandIcon id={runtimeBrandIconId(item.alias, item.api_spec)} className="size-4" />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium">{item.display_name}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {runtimeSubtitle(item)}
+                            </span>
                           </span>
                         </span>
-                      </span>
-                    </SelectItem>
-                  ))}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <div className="px-3 py-3 text-sm text-muted-foreground">
+                      No configured runtimes
+                    </div>
+                  )}
                 </SelectContent>
               </Select>
               <Button variant="ghost" size="icon-sm" disabled aria-label="Voice input (coming soon)" className="ml-auto hidden text-[#5d5a55] 2xl:inline-flex">
@@ -349,7 +368,7 @@ function SessionsStart() {
                 <span>Run</span>
               </Button>
             </div>
-            {resolveApiSpec(runtime, harnesses) === "cursor" && (
+            {resolveApiSpec(runtime, runtimeOptions) === "cursor" && (
               <div className="grid gap-2 border-t border-border bg-muted/40 px-4 py-3 sm:grid-cols-[1fr_120px]">
                 <Input
                   value={repository}
