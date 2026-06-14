@@ -116,7 +116,7 @@ fn agent(config: Value) -> ManagedAgentRow {
         tools: json!([]),
         cadence: None,
         interval_seconds: None,
-        session_id: "session-1".to_owned(),
+        session_id: Some("session-1".to_owned()),
         loop_id: None,
         created_at: 0,
         prompt: None,

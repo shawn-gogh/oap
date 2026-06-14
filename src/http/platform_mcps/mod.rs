@@ -20,6 +20,7 @@ mod definitions;
 mod factory;
 mod factory_slack;
 pub(crate) mod factory_slack_app;
+mod factory_slack_dm_access;
 mod factory_slack_manifest;
 mod selection;
 mod session_management;

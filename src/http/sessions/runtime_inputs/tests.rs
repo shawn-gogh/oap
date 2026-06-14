@@ -14,7 +14,7 @@ fn session_metadata_truncates_long_prompt_values() {
         tools: json!([]),
         cadence: None,
         interval_seconds: None,
-        session_id: String::new(),
+        session_id: Some(String::new()),
         loop_id: None,
         created_at: 0,
         prompt: None,

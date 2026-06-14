@@ -23,6 +23,7 @@ use crate::{
 
 use super::{
     factory::{agent_url, FACTORY_RUNTIME},
+    factory_slack_dm_access::{allowed_dm_user_ids, child_allowed_dm_user_ids, optional_str},
     factory_slack_manifest::{build_child_manifest, install_url},
     required_str,
 };
@@ -36,6 +37,7 @@ pub(crate) async fn create_child_slack_app(
     arguments: &Value,
     source_thread_ts: &str,
 ) -> Result<Value, GatewayError> {
+    let allowed_dm_user_ids = allowed_dm_user_ids(arguments)?;
     let token_key = app_config_token_key(&platform.id, config);
     let app_config_token = load_secret(state, &token_key).await?;
     let provider_id = provider_id_for(&child.id);
@@ -49,7 +51,13 @@ pub(crate) async fn create_child_slack_app(
         optional_str(arguments, "team_id"),
     )
     .await?;
-    let app = created_child_app(&child, &provider_id, app_name, &created)?;
+    let app = created_child_app(
+        &child,
+        &provider_id,
+        app_name,
+        &created,
+        allowed_dm_user_ids,
+    )?;
     save_child_credentials(state, pool, &app).await?;
     let child = save_child_slack_app(pool, &child, app.config).await?;
     let oauth_state = slack::repository::create_oauth_state(pool, &child.id, &provider_id).await?;
@@ -73,6 +81,7 @@ pub(crate) async fn create_child_slack_app(
         "agent_url": agent_url(state, &child.id)?,
         "install_url": install_url,
         "oauth_authorize_url": created.oauth_authorize_url,
+        "allowed_dm_user_ids": child_allowed_dm_user_ids(&child),
         "slack_display": "A dedicated Slack app was created for this agent. Open install_url to add that new bot to the workspace.",
         "source_thread_ts": source_thread_ts,
         "agent": child
@@ -143,6 +152,7 @@ fn created_child_app(
     provider_id: &str,
     app_name: String,
     created: &manifest_api::SlackManifestCreateResponse,
+    allowed_dm_user_ids: Vec<String>,
 ) -> Result<CreatedChildApp, GatewayError> {
     let credentials = created.credentials.as_ref().ok_or_else(|| {
         GatewayError::SandboxError("slack apps.manifest.create omitted credentials".to_owned())
@@ -161,6 +171,7 @@ fn created_child_app(
             provider_id: provider_id.to_owned(),
             client_secret_key: client_secret_key(child.id.as_str(), &SlackAgentConfig::default()),
             signing_secret_key: signing_secret_key(child.id.as_str(), &SlackAgentConfig::default()),
+            allowed_dm_user_ids,
         },
         client_secret: required_owned(
             credentials.client_secret.clone(),
@@ -203,6 +214,7 @@ struct ChildSlackApp {
     provider_id: String,
     client_secret_key: String,
     signing_secret_key: String,
+    allowed_dm_user_ids: Vec<String>,
 }
 
 async fn save_child_slack_app(
@@ -267,7 +279,8 @@ fn patch_child_slack(config: &Value, app: ChildSlackApp) -> Value {
             "provider_id": app.provider_id,
             "status": "credentials_saved",
             "client_secret_key": app.client_secret_key,
-            "signing_secret_key": app.signing_secret_key
+            "signing_secret_key": app.signing_secret_key,
+            "allowed_dm_user_ids": app.allowed_dm_user_ids
         }),
     );
     Value::Object(root)
@@ -278,12 +291,4 @@ fn required_owned(value: Option<String>, message: &str) -> Result<String, Gatewa
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| GatewayError::SandboxError(message.to_owned()))
-}
-
-fn optional_str<'a>(arguments: &'a Value, field: &str) -> Option<&'a str> {
-    arguments
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }

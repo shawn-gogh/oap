@@ -11,6 +11,15 @@ pub(super) fn incoming_message(payload: &Value) -> Option<SlackIncomingMessage> 
         return None;
     }
     let channel = event.get("channel").and_then(Value::as_str)?.to_owned();
+    let is_direct_message = is_direct_message(event);
+    let strip_leading_mention = event.get("type").and_then(Value::as_str) == Some("app_mention");
+    let prompt = clean_prompt(
+        event
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        strip_leading_mention,
+    );
     Some(SlackIncomingMessage {
         thread_ts: session_thread_ts(event)?,
         reply_thread_ts: reply_thread_ts(event)?,
@@ -20,12 +29,9 @@ pub(super) fn incoming_message(payload: &Value) -> Option<SlackIncomingMessage> 
             .and_then(Value::as_str)
             .map(str::to_owned),
         user_id: event.get("user").and_then(Value::as_str).map(str::to_owned),
-        prompt: clean_prompt(
-            event
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        ),
+        user_prompt: prompt.clone(),
+        prompt,
+        is_direct_message,
         requires_existing_thread: is_thread_reply(event),
     })
 }
@@ -42,12 +48,14 @@ pub(super) fn session_prompt(message: &SlackIncomingMessage) -> String {
             "- team_id: {team_id}\n",
             "- channel_id: {channel_id}\n",
             "- requested_by: {user_id}\n",
+            "- dm_user_id: {user_id}\n",
             "- thread_ts: {thread_ts}\n\n",
             "This request came from Slack. For every request to make, create, add, build, or install an agent, ",
             "create the agent and then immediately call connect_agent_to_slack with the created agent_id, ",
-            "team_id, channel_id, thread_ts, and requested_by above. ",
+            "team_id, channel_id, thread_ts, dm_user_id, and requested_by above. ",
             "Always connect the agent to Slack in this same turn unless the user explicitly says not to. ",
             "Do not call list_slack_agent_bindings before connecting. ",
+            "If the user asks to limit who can DM the new agent, pass allowed_dm_user_ids with those Slack user IDs. ",
             "When replying, include the connected status, agent_url, and reinstall_url if returned. ",
             "Explain that the reinstall_url grants Slack permission to show replies with the agent name. ",
             "Do not ask the user for these IDs.\n\n",
@@ -99,10 +107,17 @@ fn is_thread_reply(event: &Value) -> bool {
     ts != Some(thread_ts)
 }
 
-fn clean_prompt(text: &str) -> String {
+fn clean_prompt(text: &str, strip_leading_mention: bool) -> String {
+    let mut saw_request_text = false;
     let prompt = text
         .split_whitespace()
-        .filter(|part| !part.starts_with("<@"))
+        .filter(|part| {
+            if strip_leading_mention && !saw_request_text && part.starts_with("<@") {
+                return false;
+            }
+            saw_request_text = true;
+            true
+        })
         .collect::<Vec<_>>()
         .join(" ");
     match prompt.trim() {
@@ -149,6 +164,7 @@ mod tests {
         assert_eq!(second.reply_thread_ts, "1.000002");
         assert_eq!(first.team_id.as_deref(), Some("T123"));
         assert_eq!(first.user_id.as_deref(), Some("U123"));
+        assert!(first.is_direct_message);
     }
 
     #[test]
@@ -168,6 +184,7 @@ mod tests {
         .unwrap();
         assert_eq!(message.thread_ts, "1.000001");
         assert_eq!(message.reply_thread_ts, "1.000001");
+        assert!(message.is_direct_message);
         assert!(message.requires_existing_thread);
     }
 
@@ -189,6 +206,8 @@ mod tests {
         assert!(prompt.contains("team_id: T123"));
         assert!(prompt.contains("channel_id: D123"));
         assert!(prompt.contains("requested_by: U123"));
+        assert!(prompt.contains("dm_user_id: U123"));
+        assert!(prompt.contains("allowed_dm_user_ids"));
         assert!(prompt.contains("Do not ask the user for these IDs."));
         assert!(prompt.contains("agent_url"));
         assert!(prompt.contains("make me an agent called Release Buddy"));
@@ -226,6 +245,44 @@ mod tests {
         assert_eq!(message.thread_ts, "1.000001");
         assert_eq!(message.reply_thread_ts, "1.000001");
         assert!(!message.requires_existing_thread);
+        assert!(!message.is_direct_message);
         assert_eq!(message.prompt, "handle this");
+    }
+
+    #[test]
+    fn cleaner_preserves_requested_user_mentions() {
+        let message = incoming_message(&json!({
+            "event": {
+                "type": "app_mention",
+                "channel": "C123",
+                "ts": "1.000001",
+                "text": "<@B123> make an inbox triage agent only <@U456> can DM"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            message.prompt,
+            "make an inbox triage agent only <@U456> can DM"
+        );
+    }
+
+    #[test]
+    fn direct_message_prompts_preserve_leading_allowlist_mentions() {
+        let message = incoming_message(&json!({
+            "event": {
+                "type": "message",
+                "channel_type": "im",
+                "user": "U123",
+                "channel": "D123",
+                "ts": "1.000001",
+                "text": "<@U456> should be the only person who can DM the agent"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            message.prompt,
+            "<@U456> should be the only person who can DM the agent"
+        );
     }
 }

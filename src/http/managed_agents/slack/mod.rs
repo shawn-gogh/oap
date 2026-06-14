@@ -2,6 +2,7 @@ pub(crate) mod config;
 mod dispatch;
 pub(crate) mod dm_api;
 mod events;
+mod factory_access;
 mod form;
 mod interactivity;
 pub(crate) mod manifest_api;
@@ -15,6 +16,7 @@ mod reply_storage;
 mod reply_stream;
 mod signature;
 pub(crate) mod types;
+pub(crate) mod user_ids;
 pub(crate) mod web_api;
 
 pub use events::events;
