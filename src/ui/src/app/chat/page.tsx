@@ -776,7 +776,7 @@ function ChatInner() {
           if (activeSessionRef.current !== sid) return;
           eventBufferRef.current = events.slice(-500).map((ev) => ({ ts: Date.now(), ev: ev as Frame["ev"] }));
           mergeRuntimeEventsAndStatus(events);
-          if (cancelled || runtimeStatusFromEvents(events) === "idle") return;
+          if (cancelled) return;
           unsub = subscribeRuntimeEvents({
             sessionId: sid,
             onEvent: (ev) => {
@@ -859,6 +859,8 @@ function ChatInner() {
     try {
       await acceptApproval(id, args);
       setApprovals((prev) => prev.filter((a) => a.id !== id));
+      setSessionStatus("busy");
+      setRuntimeStreamVersion((version) => version + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -871,6 +873,8 @@ function ChatInner() {
     try {
       await rejectApproval(id, feedback);
       setApprovals((prev) => prev.filter((a) => a.id !== id));
+      setSessionStatus("busy");
+      setRuntimeStreamVersion((version) => version + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
