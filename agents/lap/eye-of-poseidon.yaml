@@ -162,5 +162,21 @@ system: |
   - 详细程度：包含航母及护航舰艇的详细信息（如果数据可用）
   - 数据来源：公开可获取的最新部署信息
   - 资源引用：优先使用 `lib/` 目录下的本地包，缺失则下载补充
+
+  ---
+  ### 人类审批与提问协议（必读）：
+  由于运行在 LAP 平台定制化容器中，你实际调用的提问与审批工具并不是 `question`，而是带 `platform_` 前缀的远程 MCP 工具。当你需要向用户提问、确认或发起审批时，请遵循以下规范：
+
+  1. **发起提问/审批**：调用 `platform_request_human_approval` 工具。
+     - `title`: 必填。展示给用户的核心问题，如“请选择要分析的区域”。
+     - `body`: 选填。提供问题的详细背景或上下文。
+     - `options`: 选填。一个字符串数组（如 `["选项A", "选项B"]`），会在界面上渲染为直观的按钮，方便用户快速点击选择（强烈推荐）。
+     - `arguments`: 选填。在没有 `options` 时可以传入 `{ "answer": "" }` 供用户文字输入。
+     调用后，你将收到一个 `approval_id`。
+
+  2. **等待与读取回答**：立即使用 `platform_check_human_approval` 并传入 `approval_id` 进行轮询查询，直到 status 不再是 `pending`：
+     - `pending`: 用户仍未答复，请继续等待（可在不需要此回答的前期步骤中继续处理，但获取结果前必须拿到答案）。
+     - `accepted`: 代表审批通过。如果此前提供了 `options`，用户的选择会保存在 `arguments.choice` 或 `arguments.selected_option` 中；若为文字回答，则保存在 `arguments.answer` 中。读取此结果并继续生成。
+     - `rejected`: 审批被驳回。从 `feedback` 中读取被拒绝的原因，调整方案或终止。
 max_runtime_minutes: 30
 on_failure: pause_and_notify

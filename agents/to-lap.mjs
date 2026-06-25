@@ -153,9 +153,48 @@ async function pushAgent(body) {
   return JSON.parse(text);
 }
 
+async function getAgents() {
+  const base = (process.env.LAP_URL || "http://localhost:4000").replace(/\/+$/, "");
+  const key = process.env.LAP_MASTER_KEY || "sk-local";
+  try {
+    const res = await fetch(`${base}/api/agents`, {
+      headers: {
+        authorization: `Bearer ${key}`,
+      },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.agents || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function updateAgent(id, body) {
+  const base = (process.env.LAP_URL || "http://localhost:4000").replace(/\/+$/, "");
+  const key = process.env.LAP_MASTER_KEY || "sk-local";
+  // Remove 'tools' as it's not accepted in UpdateManagedAgent
+  const { tools, ...updateBody } = body;
+  const res = await fetch(`${base}/api/agents/${id}`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify(updateBody),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
+  return JSON.parse(text);
+}
+
 async function main() {
   const push = process.argv.includes("--push");
   mkdirSync(OUT, { recursive: true });
+  let existingAgents = [];
+  if (push) {
+    existingAgents = await getAgents();
+  }
   const files = readdirSync(DIR).filter(
     (f) => f.endsWith(".md") && f !== "README.md",
   );
@@ -167,15 +206,27 @@ async function main() {
     if (!fm.description && !body) continue;
     const tools = toolsFromPermission(fm.permission);
     const name = deriveName(fm.description, stem);
-    const fields = { name, description: fm.description || "", system: body, tools, fm };
+    
+    let system = body;
+    if (fm.permission?.question === "allow") {
+      system += "\n\n---\n### 人类审批与提问协议（必读）：\n由于运行在 LAP 平台定制化容器中，你实际调用的提问与审批工具并不是 `question`，而是带 `platform_` 前缀的远程 MCP 工具。当你需要向用户提问、确认或发起审批时，请遵循以下规范：\n\n1. **发起提问/审批**：调用 `platform_request_human_approval` 工具。\n   - `title`: 必填。展示给用户的核心问题，如“请选择要分析的区域”。\n   - `body`: 选填。提供问题的详细背景或上下文。\n   - `options`: 选填。一个字符串数组（如 `[\"选项A\", \"选项B\"]`），会在界面上渲染为直观的按钮，方便用户快速点击选择（强烈推荐）。\n   - `arguments`: 选填。在没有 `options` 时可以传入 `{ \"answer\": \"\" }` 供用户文字输入。\n   调用后，你将收到一个 `approval_id`。\n\n2. **等待与读取回答**：立即使用 `platform_check_human_approval` 并传入 `approval_id` 进行轮询查询，直到 status 不再是 `pending`：\n   - `pending`: 用户仍未答复，请继续等待（可在不需要此回答的前期步骤中继续处理，但获取结果前必须拿到答案）。\n   - `accepted`: 代表审批通过。如果此前提供了 `options`，用户的选择会保存在 `arguments.choice` 或 `arguments.selected_option` 中；若为文字回答，则保存在 `arguments.answer` 中。读取此结果并继续生成。\n   - `rejected`: 审批被驳回。从 `feedback` 中读取被拒绝的原因，调整方案或终止。";
+    }
+    
+    const fields = { name, description: fm.description || "", system, tools, fm };
     const yaml = toLapYaml(fields);
     writeFileSync(path.join(OUT, `${stem}.yaml`), yaml);
 
     let status = "yaml";
     if (push) {
       try {
-        const created = await pushAgent(toLapAgentBody(fields));
-        status = `pushed (${created.id ?? "ok"})`;
+        const existing = existingAgents.find((a) => a.name === name);
+        if (existing) {
+          const updated = await updateAgent(existing.id, toLapAgentBody(fields));
+          status = `updated (${updated.id ?? "ok"})`;
+        } else {
+          const created = await pushAgent(toLapAgentBody(fields));
+          status = `pushed (${created.id ?? "ok"})`;
+        }
       } catch (e) {
         status = `PUSH FAILED: ${e.message}`;
       }
