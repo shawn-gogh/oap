@@ -583,14 +583,14 @@ function ChatInner() {
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
     setSessionTitle("");
+    const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
       if (activeSessionRef.current !== sid) return;
       const a = s.agent_id ?? s.agent ?? s.harness;
       if (a) setSessionHarness(a);
       setSessionRuntime(s.runtime);
-      setSessionStatus(
-        s.runtime ? runtimeSessionStatusFromMetadata(s.status, s.provider_run_id) : s.status === "running" ? "busy" : "idle",
-      );
+      const defaultStatus = s.runtime ? runtimeSessionStatusFromMetadata(s.status, s.provider_run_id) : s.status === "running" ? "busy" : "idle";
+      setSessionStatus(resumed ? "busy" : defaultStatus);
       setProviderSessionId(s.provider_session_id);
       setProviderUrl(s.provider_url);
       if (s.title) setSessionTitle(s.title);
@@ -598,6 +598,12 @@ function ChatInner() {
       if (activeSessionRef.current === sid) setSessionLoaded(true);
     });
   }, [sid]);
+
+  useEffect(() => {
+    if (sp.get("resumed") === "true" && sid) {
+      router.replace(`/chat/?id=${encodeURIComponent(sid)}`, { scroll: false });
+    }
+  }, [sp, sid, router]);
 
   // Fetch saved agents for dropdown
   useEffect(() => {
@@ -845,6 +851,14 @@ function ChatInner() {
             setError(err instanceof Error ? err.message : String(err));
           }
         });
+
+      listApprovals()
+        .then((items) => {
+          if (!active) return;
+          if (activeSessionRef.current !== sid) return;
+          setApprovals(items.filter((approval) => approval.sessionId === sid));
+        })
+        .catch(() => {});
     };
     replay();
     const timer = window.setInterval(replay, 2000);

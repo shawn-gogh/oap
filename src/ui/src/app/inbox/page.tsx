@@ -176,7 +176,7 @@ function InboxInner() {
       try {
         await acceptApproval(id, args);
         if (sessionId) {
-          router.push(`/chat/?id=${encodeURIComponent(sessionId)}`);
+          router.push(`/chat/?id=${encodeURIComponent(sessionId)}&resumed=true`);
           return;
         }
         await load(tab);
@@ -196,7 +196,7 @@ function InboxInner() {
       try {
         await rejectApproval(id, feedback);
         if (sessionId) {
-          router.push(`/chat/?id=${encodeURIComponent(sessionId)}`);
+          router.push(`/chat/?id=${encodeURIComponent(sessionId)}&resumed=true`);
           return;
         }
         await load(tab);
