@@ -109,7 +109,11 @@ function toLapYaml({ name, description, system, tools }) {
 }
 
 // Build the JSON body POST /api/agents expects (a CreateManagedAgent).
-function toLapAgentBody({ name, description, system, tools }) {
+function toLapAgentBody({ name, description, system, tools, fm }) {
+  const platform_mcp_ids = [];
+  if (fm?.permission?.question === "allow") {
+    platform_mcp_ids.push("request_human_approval");
+  }
   return {
     name,
     owner_id: "local",
@@ -120,7 +124,10 @@ function toLapAgentBody({ name, description, system, tools }) {
     prompt: system,
     tools: tools.map((type) => ({ type })),
     // config.runtime is the per-agent default runtime the session UI reads.
-    config: { runtime: "local-opencode" },
+    config: {
+      runtime: "local-opencode",
+      ...(platform_mcp_ids.length > 0 ? { platform_mcp_ids } : {})
+    },
     max_runtime_minutes: 30,
     on_failure: "pause_and_notify",
     vault_keys: [],
@@ -160,7 +167,7 @@ async function main() {
     if (!fm.description && !body) continue;
     const tools = toolsFromPermission(fm.permission);
     const name = deriveName(fm.description, stem);
-    const fields = { name, description: fm.description || "", system: body, tools };
+    const fields = { name, description: fm.description || "", system: body, tools, fm };
     const yaml = toLapYaml(fields);
     writeFileSync(path.join(OUT, `${stem}.yaml`), yaml);
 
