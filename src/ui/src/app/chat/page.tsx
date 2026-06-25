@@ -837,7 +837,7 @@ function ChatInner() {
   }, [sid, sessionLoaded, refetch, appendRuntimeEvent, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
 
   useEffect(() => {
-    if (!sid || !sessionRuntime || sessionStatus !== "busy") return;
+    if (!sid || !sessionRuntime) return;
     let active = true;
     const replay = () => {
       listRuntimeEvents(sid)
@@ -866,7 +866,7 @@ function ChatInner() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [mergeRuntimeEventsAndStatus, sid, sessionRuntime, sessionStatus]);
+  }, [mergeRuntimeEventsAndStatus, sid, sessionRuntime]);
 
   const onApprovalAccept = useCallback(async (id: string, args: Record<string, unknown>) => {
     setApprovalBusy(true);
