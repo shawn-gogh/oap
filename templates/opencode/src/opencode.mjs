@@ -220,7 +220,15 @@ export function writeMcpConfig(cwd, agents) {
           enabled: true,
         };
       } else if (server.url) {
-        mcp[server.name] = { type: "remote", url: server.url, enabled: true };
+        const entry = { type: "remote", url: server.url, enabled: true };
+        // LAP custom-harness flow: the gateway has no Anthropic credential vault
+        // to inject MCP auth, so it passes the bearer inline. Forward it as an
+        // Authorization header so opencode authenticates to the platform MCP
+        // (e.g. request_human_approval).
+        if (server.authorization_token) {
+          entry.headers = { Authorization: `Bearer ${server.authorization_token}` };
+        }
+        mcp[server.name] = entry;
       }
     }
   }

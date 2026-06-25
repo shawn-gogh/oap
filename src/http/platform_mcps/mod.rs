@@ -51,16 +51,24 @@ pub fn platform_mcp_servers(
     agent_id: &str,
     config: &Value,
     session_id: Option<&str>,
+    inline_auth_token: Option<&str>,
 ) -> Result<Vec<Value>, GatewayError> {
     let ids = selected_platform_mcp_ids(config);
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(vec![json!({
+    let mut server = json!({
         "name": PLATFORM_MCP_SERVER_NAME,
         "type": "url",
         "url": platform_mcp_url(state, agent_id, session_id)?
-    })])
+    });
+    // Built-in Anthropic runtimes receive this bearer via a credential vault.
+    // Custom harnesses (opencode) have no vault, so embed the token inline; the
+    // runtime wrapper turns it into an Authorization header on the MCP request.
+    if let Some(token) = inline_auth_token {
+        server["authorization_token"] = Value::String(token.to_owned());
+    }
+    Ok(vec![server])
 }
 
 pub fn platform_mcp_toolsets(config: &Value) -> Vec<Value> {

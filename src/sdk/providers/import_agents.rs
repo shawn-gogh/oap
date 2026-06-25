@@ -48,4 +48,12 @@ pub trait ImportAgentsProvider: Send + Sync {
 
     fn default_model(&self, model: Option<&str>) -> String;
     fn system_prompt(&self, external_agent_id: &str) -> String;
+
+    /// System prompt for an imported agent, with access to its raw discovery
+    /// payload. Defaults to [`Self::system_prompt`]; providers that carry the
+    /// real upstream prompt in `raw` (e.g. opencode) override this to preserve
+    /// it instead of emitting a placeholder.
+    fn system_prompt_from_raw(&self, external_agent_id: &str, _raw: &Value) -> String {
+        self.system_prompt(external_agent_id)
+    }
 }

@@ -31,6 +31,28 @@ pub trait Transformation: Send + Sync + 'static {
 
     fn transform_response_headers(&self, upstream: &HeaderMap, stream: bool) -> HeaderMap;
 
+    /// Upstream URL for the OpenAI Responses inbound path. Defaults to the
+    /// provider's native `/v1/responses`; override when a provider serves the
+    /// Responses surface by translating to a different upstream endpoint.
+    fn responses_url(&self, deployment: &Deployment) -> String {
+        deployment.responses_url()
+    }
+
+    fn transforms_responses_response_body(&self) -> bool {
+        false
+    }
+
+    fn transform_responses_response_body(
+        &self,
+        body: Vec<u8>,
+        _status: StatusCode,
+        _stream: bool,
+        _deployment: &Deployment,
+        _content_type: Option<&str>,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Ok(body)
+    }
+
     fn messages_url(&self, deployment: &Deployment) -> String {
         deployment.messages_url()
     }

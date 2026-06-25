@@ -17,7 +17,9 @@ fn sdk_tree_matches_provider_endpoint_contract() {
     assert_eq!(dirs(&sdk), set(["agents", "providers"]));
     assert_eq!(
         dirs(&providers),
-        set(["anthropic", "base", "cursor", "elastic", "gemini", "openai"])
+        set([
+            "anthropic", "base", "cursor", "deepseek", "elastic", "gemini", "openai"
+        ])
     );
     assert_eq!(
         files(&providers.join("base")),
@@ -37,6 +39,7 @@ fn sdk_tree_matches_provider_endpoint_contract() {
         ["anthropic_messages", "openai_responses"],
     );
     assert_provider(&providers, "cursor", ["runtime"]);
+    assert_provider(&providers, "deepseek", ["anthropic_messages"]);
     assert_elastic_provider(&providers);
     assert_provider(&providers, "gemini", ["runtime"]);
 

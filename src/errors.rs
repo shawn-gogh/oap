@@ -106,7 +106,7 @@ impl IntoResponse for GatewayError {
         let body = Json(json!({
             "error": {
                 "type": "gateway_error",
-                "message": self.to_string()
+                "message": crate::i18n::localized_error_message(&self)
             }
         }));
         (status, body).into_response()

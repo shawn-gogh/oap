@@ -21,6 +21,7 @@ pub async fn responses(
     )?;
 
     let body: Value = serde_json::from_slice(&body).map_err(GatewayError::InvalidJson)?;
+    tracing::info!("Received responses request body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
     let model = body
         .get("model")
         .and_then(Value::as_str)
@@ -41,21 +42,45 @@ pub async fn responses(
         &headers,
     );
 
-    let upstream =
-        match llm::send_request(&state.http, route.deployment.responses_url(), prepared).await {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                payload.finish_error(error_information(
-                    "upstream_request_error",
-                    error.to_string(),
-                ));
-                state.callbacks.on_error(payload);
-                return Err(error);
-            }
-        };
+    let upstream = match llm::send_request(
+        &state.http,
+        route.handler.responses_url(&route.deployment),
+        prepared,
+    )
+    .await
+    {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            payload.finish_error(error_information(
+                "upstream_request_error",
+                error.to_string(),
+            ));
+            state.callbacks.on_error(payload);
+            return Err(error);
+        }
+    };
     let response_headers = route
         .handler
         .transform_response_headers(upstream.headers(), stream);
+    if route.handler.transforms_responses_response_body() {
+        return llm::build_logged_transformed_response(
+            upstream,
+            response_headers,
+            payload,
+            state.callbacks.clone(),
+            state.model_cost_map.clone(),
+            |body, status, content_type| {
+                route.handler.transform_responses_response_body(
+                    body,
+                    status,
+                    stream,
+                    &route.deployment,
+                    content_type,
+                )
+            },
+        )
+        .await;
+    }
     llm::build_logged_response(
         upstream,
         response_headers,

@@ -18,6 +18,7 @@ fn elastic_agent_config_uses_runtime_api_spec() {
         &agent,
         &CredentialMode::Shared,
         Some("provider:elastic:agent:elastic-ai-agent".to_owned()),
+        "elastic_agent_builder",
     );
 
     assert_eq!(config["runtime"], "elastic_agent_builder");

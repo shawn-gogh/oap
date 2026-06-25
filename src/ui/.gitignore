@@ -2,3 +2,6 @@
 node_modules/
 *.tsbuildinfo
 next-env.d.ts
+
+# Generated localization coverage report
+i18n/candidates.json

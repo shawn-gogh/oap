@@ -44,6 +44,13 @@ fn request_human_approval_tool() -> Value {
                 "arguments": {
                     "type": "object",
                     "description": "Optional structured action arguments the human may edit before approving."
+                },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Optional list of predefined choices or suggested answers/feedback for the user."
                 }
             },
             "required": ["title"]

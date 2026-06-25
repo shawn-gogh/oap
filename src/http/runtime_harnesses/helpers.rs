@@ -139,20 +139,33 @@ mod tests {
 
     #[test]
     fn import_providers_do_not_duplicate_builtin_runtime_specs() {
-        let mut harnesses = vec![HarnessResponse {
-            alias: "elastic_agent_builder".to_owned(),
-            api_spec: "elastic_agent_builder".to_owned(),
-            display_name: "Elastic Agent Builder".to_owned(),
-            api_base: "http://localhost:5601".to_owned(),
+        // Mirror production: default_harnesses always seeds every AgentRuntime
+        // catalog entry, so both import providers' api_specs
+        // (elastic_agent_builder, claude_managed_agents) are already present and
+        // must not be re-appended.
+        let builtin = |alias: &str, api_base: &str| HarnessResponse {
+            alias: alias.to_owned(),
+            api_spec: alias.to_owned(),
+            display_name: alias.to_owned(),
+            api_base: api_base.to_owned(),
             is_default: true,
             connected: false,
             masked_api_key: None,
             tools: Vec::new(),
-        }];
+        };
+        let mut harnesses = vec![
+            builtin("elastic_agent_builder", "http://localhost:5601"),
+            builtin("claude_managed_agents", "https://api.anthropic.com"),
+        ];
 
         append_import_providers(&mut harnesses);
 
-        assert_eq!(harnesses.len(), 1);
-        assert_eq!(harnesses[0].alias, "elastic_agent_builder");
+        assert_eq!(harnesses.len(), 2);
+        assert!(harnesses
+            .iter()
+            .any(|harness| harness.alias == "elastic_agent_builder"));
+        assert!(harnesses
+            .iter()
+            .any(|harness| harness.alias == "claude_managed_agents"));
     }
 }

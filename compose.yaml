@@ -47,13 +47,24 @@ services:
       retries: 20
 
   lap:
-    build: .
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     ports:
       - "4000:4000"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local}
       DATABASE_URL: postgres://lap:lap@postgres:5432/litellm_agents
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Base URL the agent runtime (opencode) uses to reach the gateway's
+      # platform MCPs (e.g. request_human_approval) at {url}/mcp/platform/{agent}.
+      # `lap` is this service's name on the compose network.
+      LITELLM_PROXY_BASE_URL: ${LITELLM_PROXY_BASE_URL:-http://lap:4000}
+    volumes:
+      # Mount the gateway config so model-list edits only need a restart, not a rebuild.
+      - ./deploy/render.config.yaml:/app/deploy.config.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy

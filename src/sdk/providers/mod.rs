@@ -15,6 +15,9 @@ pub use crate::sdk::providers::base::{
 
 pub mod base;
 pub mod import_agents;
+// Standalone import provider (not a `providers/<name>/` directory, so build.rs
+// does not auto-wire it); opt-in via http/managed_agents/import.rs.
+pub mod opencode_import_agents;
 
 pub(crate) fn adapter(runtime: AgentRuntime) -> Option<Arc<dyn RuntimeAdapter>> {
     runtime_registry().get(runtime)

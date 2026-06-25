@@ -110,6 +110,7 @@ async fn response(state: &AppState) -> Result<ProvidersResponse, GatewayError> {
     Ok(ProvidersResponse {
         available_providers: PROVIDER_CATALOG
             .iter()
+            .filter(|provider| crate::site_config::is_visible_provider(provider.id))
             .map(|provider| AvailableProvider {
                 id: provider.id.to_owned(),
                 name: provider.name.to_owned(),
@@ -138,6 +139,9 @@ async fn connected_providers(state: &AppState) -> Result<Vec<ConnectedProvider>,
     };
     let mut connected = Vec::new();
     for provider in PROVIDER_CATALOG {
+        if !crate::site_config::is_visible_provider(provider.id) {
+            continue;
+        }
         let Some(credential) = provider_credentials::load(pool, &state.config, provider.id).await?
         else {
             continue;

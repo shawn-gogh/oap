@@ -43,13 +43,46 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
   const [feedback, setFeedback] = useState("");
   const [copied, setCopied] = useState(false);
 
-  const keys = Object.keys(approval.arguments ?? {});
-  const dirty = keys.some((k) => fields[k] !== initial[k]);
+  const keys = Object.keys(approval.arguments ?? {}).filter(
+    (k) => k !== "options" && k !== "choices"
+  );
+
+  const options = useMemo<string[]>(() => {
+    const opts = approval.arguments?.options ?? approval.arguments?.choices;
+    if (Array.isArray(opts)) {
+      return opts.map((o) => (typeof o === "string" ? o : JSON.stringify(o)));
+    }
+    return [];
+  }, [approval]);
+
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
+
+  const dirty = keys.some((k) => fields[k] !== initial[k]) || selectedOption !== null;
 
   const buildArgs = (): Record<string, unknown> => {
     const out: Record<string, unknown> = {};
     for (const k of keys) out[k] = fromStringValue(approval.arguments[k], fields[k] ?? "");
+    if (selectedOption) {
+      out["choice"] = selectedOption;
+      out["selected_option"] = selectedOption;
+    }
     return out;
+  };
+
+  const handleSelectOption = (opt: string) => {
+    setSelectedOption(opt);
+    setFeedback(opt);
+    setFields((f) => ({
+      ...f,
+      choice: opt,
+      selected_option: opt,
+    }));
+  };
+
+  const handleReset = () => {
+    setFields(initial);
+    setSelectedOption(null);
+    setFeedback("");
   };
 
   const copyName = async () => {
@@ -78,6 +111,39 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
         </Button>
       </div>
 
+      {options.length > 0 && (
+        <div className="border-b border-border px-4 py-4 bg-muted/10">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+            <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
+            Suggested Choices
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {options.map((opt) => {
+              const isSelected = selectedOption === opt;
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => handleSelectOption(opt)}
+                  disabled={busy}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all duration-200 shadow-sm flex items-center gap-2 ${
+                    isSelected
+                      ? "bg-amber-500/10 border-amber-500 text-amber-900 dark:text-amber-100 ring-2 ring-amber-500/30 scale-[1.02]"
+                      : "bg-background border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground hover:border-muted-foreground/30 active:scale-95"
+                  }`}
+                >
+                  {isSelected && <span className="size-1.5 rounded-full bg-amber-500" />}
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground/80">
+            Selecting a choice will fill it as the feedback if you reject, and set the approved argument if you accept.
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-4 p-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="rounded-md border border-border bg-background">
           <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
@@ -88,7 +154,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setFields(initial)}
+              onClick={handleReset}
               disabled={busy || !dirty}
             >
               <RotateCcw className="size-3.5" />

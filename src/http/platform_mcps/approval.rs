@@ -21,6 +21,18 @@ pub async fn request_human_approval(
     let agent = registry::repository::get(pool, agent_id)
         .await?
         .ok_or_else(|| GatewayError::UnknownAgent(agent_id.to_owned()))?;
+
+    let mut approval_args = arguments.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    if let Some(options) = arguments.get("options") {
+        if let Some(obj) = approval_args.as_object_mut() {
+            obj.insert("options".to_owned(), options.clone());
+        } else {
+            approval_args = json!({
+                "options": options.clone()
+            });
+        }
+    }
+
     let item = inbox::repository::create_approval(
         pool,
         title,
@@ -29,7 +41,7 @@ pub async fn request_human_approval(
             .or_else(|| optional_str(&arguments, "session_id")),
         Some(agent.name),
         optional_str(&arguments, "body"),
-        arguments.get("arguments").cloned(),
+        Some(approval_args),
     )
     .await?;
     Ok(approval_payload(item))

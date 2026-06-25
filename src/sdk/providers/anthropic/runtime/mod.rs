@@ -277,7 +277,13 @@ fn normalize_mcp_servers(body: &mut Value) {
         let Value::Object(server) = server else {
             continue;
         };
-        server.retain(|key, _| matches!(key.as_str(), "type" | "name" | "url"));
+        // `authorization_token` is kept for custom harnesses (opencode) that
+        // self-authenticate to platform MCPs without an Anthropic vault. Real
+        // Anthropic never sets this field (it uses the vault), so retaining it
+        // is a no-op there.
+        server.retain(|key, _| {
+            matches!(key.as_str(), "type" | "name" | "url" | "authorization_token")
+        });
     }
 }
 

@@ -1,9 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:26-bookworm-slim AS ui-builder
+# Node 24 (LTS): Node 26 segfaults during the webpack build's worker-pool
+# teardown on this image (pages generate fine, then the process crashes with
+# SIGSEGV / exit 139). Node 24 builds cleanly.
+FROM node:24-bookworm-slim AS ui-builder
+ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /build/src/ui
 COPY src/ui/package.json src/ui/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --registry "$NPM_REGISTRY" \
+      --maxsockets 4 \
+      --fetch-timeout 120000 \
+      --fetch-retries 6 \
+      --fetch-retry-mintimeout 20000 \
+      --fetch-retry-maxtimeout 120000
 COPY src/ui/ ./
 RUN npm run build
 

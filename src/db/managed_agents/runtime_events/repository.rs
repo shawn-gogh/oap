@@ -15,6 +15,21 @@ pub async fn append(
     event: Value,
 ) -> Result<RuntimeEventRow, GatewayError> {
     let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
+    
+    // Acquire a row lock on the session to serialize concurrent appends for this session ID
+    let _: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT id
+        FROM "LiteLLM_ManagedAgentSessionsTable"
+        WHERE id = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(GatewayError::Database)?;
+
     let event_key = event_key(&event);
     let event_type = event
         .get("type")

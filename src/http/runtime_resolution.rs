@@ -18,6 +18,12 @@ pub(crate) struct ResolvedRuntime {
     pub agent_runtime: AgentRuntime,
     pub credential: RuntimeCredential,
     pub adapter: Arc<dyn RuntimeAdapter>,
+    /// True when this runtime came from a DB-registered custom harness (e.g.
+    /// opencode) rather than a built-in static runtime. Custom harnesses speak
+    /// an api_spec like `claude_managed_agents` but don't implement
+    /// Anthropic-specific infrastructure such as credential vaults, so
+    /// provisioning must take a different path for them.
+    pub is_custom_harness: bool,
 }
 
 pub(crate) async fn resolve_runtime(
@@ -35,6 +41,7 @@ pub(crate) async fn resolve_runtime(
                 agent_runtime: entry.runtime,
                 credential,
                 adapter: entry.adapter.clone(),
+                is_custom_harness: false,
             });
         }
     }
@@ -70,6 +77,7 @@ pub(crate) async fn resolve_runtime(
         agent_runtime: entry.runtime,
         credential: RuntimeCredential { api_key, api_base },
         adapter: entry.adapter.clone(),
+        is_custom_harness: true,
     })
 }
 

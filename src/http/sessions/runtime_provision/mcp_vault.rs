@@ -26,6 +26,13 @@ pub(super) async fn vault_ids(
     if created.resolved.agent_runtime != AgentRuntime::ClaudeManagedAgents {
         return Ok(None);
     }
+    // Custom harnesses (e.g. opencode) speak the claude_managed_agents api_spec
+    // but have no Anthropic credential-vault endpoint. Their MCP auth is
+    // delivered inline in the MCP server config instead (see
+    // platform_mcp_servers), so skip vault provisioning entirely.
+    if created.resolved.is_custom_harness {
+        return Ok(None);
+    }
 
     let mut required: Vec<VaultCredential> = gateway_mcp_credentials(state, mcp_servers)
         .into_iter()

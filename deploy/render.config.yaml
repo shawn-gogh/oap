@@ -8,20 +8,28 @@
 # UI. Without DATABASE_URL the server returns 503 "database is not configured"
 # on those routes.
 #
-# NOTE: the gateway supports exactly one "provider/*" wildcard route (reserved
-# for anthropic). gpt-5.5 is listed explicitly so Codex can use the OpenAI
-# Responses API without adding a second wildcard route. Provider API keys are
-# loaded from the database at request time.
+# NOTE: the gateway supports exactly one "provider/*" wildcard route. Provider
+# API keys are loaded from the database at request time.
+#
+# This deployment defaults to DeepSeek. The Anthropic/OpenAI model routes are
+# intentionally omitted so the gateway only offers DeepSeek models. The
+# provider/runtime *definitions* still exist in code (so built-in runtimes such
+# as claude_managed_agents don't break) and are merely hidden from the UI via
+# src/site_config.rs.
 model_list:
-  - model_name: anthropic/*
+  # DeepSeek (OpenAI Chat Completions-compatible). The gateway's deepseek
+  # provider translates the Anthropic Messages surface to /v1/chat/completions.
+  - model_name: deepseek-chat
     litellm_params:
-      model: anthropic/*
-      api_base: https://api.anthropic.com
+      model: deepseek/deepseek-chat
+      api_base: https://api.deepseek.com
+      api_key: os.environ/DEEPSEEK_API_KEY
 
-  - model_name: gpt-5.5
+  - model_name: deepseek-reasoner
     litellm_params:
-      model: openai/gpt-5.5
-      api_base: https://api.openai.com
+      model: deepseek/deepseek-reasoner
+      api_base: https://api.deepseek.com
+      api_key: os.environ/DEEPSEEK_API_KEY
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

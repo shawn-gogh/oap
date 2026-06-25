@@ -21,8 +21,10 @@ use crate::{
     proxy::{auth::master_key::require_any_gateway_key, credential_crypto, state::AppState},
     sdk::providers::{
         elastic::import_agents::ELASTIC_IMPORT_AGENTS, import_agents::ImportAgentsProvider,
+        opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
 };
+use crate::db::managed_agents::harnesses;
 
 pub async fn discover(
     State(state): State<Arc<AppState>>,
@@ -31,7 +33,7 @@ pub async fn discover(
     Json(input): Json<DiscoverAgentsRequest>,
 ) -> Result<Json<DiscoverAgentsResponse>, GatewayError> {
     require_any_gateway_key(&headers, &state).await?;
-    let provider = provider_for_id(&provider_id)?;
+    let provider = resolve_provider(&state, &provider_id).await?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
     let agents = provider
         .discover(&state.http, &endpoint, input.api_key.trim())
@@ -55,12 +57,13 @@ pub async fn import(
             "at least one agent is required".to_owned(),
         ));
     }
-    let provider = provider_for_id(&provider_id)?;
+    let provider = resolve_provider(&state, &provider_id).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
     let owner_id = owner_id(&input).to_owned();
     let api_key = input.api_key.as_deref().map(str::trim);
     let credential_mode = input.credential_mode;
+    let runtime = runtime_for_import(&state, provider, &provider_id, &endpoint).await;
 
     let mut rows = Vec::with_capacity(input.agents.len());
     for agent in input.agents {
@@ -74,6 +77,7 @@ pub async fn import(
                     &owner_id,
                     &credential_mode,
                     api_key,
+                    &runtime,
                     agent,
                 )
                 .await?,
@@ -100,7 +104,7 @@ pub(crate) fn import_runtime_providers() -> Vec<ImportProviderResponse> {
 }
 
 fn provider_registry() -> Vec<&'static dyn ImportAgentsProvider> {
-    vec![&ELASTIC_IMPORT_AGENTS]
+    vec![&ELASTIC_IMPORT_AGENTS, &OPENCODE_IMPORT_AGENTS]
 }
 
 fn provider_for_id(provider_id: &str) -> Result<&'static dyn ImportAgentsProvider, GatewayError> {
@@ -110,6 +114,32 @@ fn provider_for_id(provider_id: &str) -> Result<&'static dyn ImportAgentsProvide
         .ok_or_else(|| GatewayError::NotFound(format!("import provider not found: {provider_id}")))
 }
 
+/// Resolve an import provider from the path id used by the UI.
+///
+/// The import dialog lists runtime harnesses and posts the chosen harness
+/// **alias** (e.g. `local-opencode`). A custom harness's alias matches neither
+/// an import provider id nor an api_spec, so fall back to looking the harness up
+/// and matching the import provider by its api_spec (e.g. opencode's
+/// `claude_managed_agents`). Built-in runtimes whose alias already equals their
+/// api_spec (e.g. `elastic_agent_builder`) resolve on the first try.
+async fn resolve_provider(
+    state: &AppState,
+    provider_id: &str,
+) -> Result<&'static dyn ImportAgentsProvider, GatewayError> {
+    if let Ok(provider) = provider_for_id(provider_id) {
+        return Ok(provider);
+    }
+    if let Some(pool) = state.db.as_ref() {
+        if let Some(harness) = harnesses::repository::get_by_alias(pool, provider_id).await? {
+            return provider_for_id(&harness.api_spec);
+        }
+    }
+    Err(GatewayError::NotFound(format!(
+        "import provider not found: {provider_id}"
+    )))
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn create_input(
     state: &AppState,
     provider: &dyn ImportAgentsProvider,
@@ -117,17 +147,19 @@ async fn create_input(
     owner_id: &str,
     credential_mode: &CredentialMode,
     api_key: Option<&str>,
+    runtime: &str,
     agent: ImportAgent,
 ) -> Result<CreateManagedAgent, GatewayError> {
     let credential_name =
         credential_name_for_agent(state, provider, endpoint, credential_mode, api_key, &agent)
             .await?;
-    let system = provider.system_prompt(&agent.external_id);
+    let raw = agent.raw.clone().unwrap_or(Value::Null);
+    let system = provider.system_prompt_from_raw(&agent.external_id, &raw);
     Ok(CreateManagedAgent {
         name: agent_name(&agent).to_owned(),
         owner_id: owner_id.to_owned(),
         description: agent.description.clone(),
-        runtime: Some(provider.api_spec().to_owned()),
+        runtime: Some(runtime.to_owned()),
         harness: Some("claude-code".to_owned()),
         prompt: Some(system.clone()),
         tools: Some(json!([])),
@@ -142,6 +174,7 @@ async fn create_input(
             &agent,
             credential_mode,
             credential_name,
+            runtime,
         )),
         model: Some(provider.default_model(agent.model.as_deref())),
         system: Some(system),
@@ -191,15 +224,46 @@ fn agent_name(agent: &ImportAgent) -> &str {
         .unwrap_or(agent.external_id.as_str())
 }
 
+/// Resolve which runtime an imported agent should default to.
+///
+/// Custom-harness runtimes (e.g. opencode) are registered at runtime with a
+/// user-chosen alias rather than a static api_spec. Resolution order:
+///   1. the path id the UI sent, if it is itself a registered harness alias
+///      (the import dialog posts the picked harness's alias) — most precise;
+///   2. a harness whose api_base matches the import endpoint;
+///   3. the provider's api_spec (the built-in static runtimes, e.g. Elastic).
+async fn runtime_for_import(
+    state: &AppState,
+    provider: &dyn ImportAgentsProvider,
+    provider_id: &str,
+    endpoint: &str,
+) -> String {
+    if let Some(pool) = state.db.as_ref() {
+        if let Ok(Some(row)) = harnesses::repository::get_by_alias(pool, provider_id).await {
+            return row.alias;
+        }
+        if let Ok(rows) = harnesses::repository::list(pool).await {
+            if let Some(row) = rows
+                .into_iter()
+                .find(|row| row.api_base.trim_end_matches('/') == endpoint)
+            {
+                return row.alias;
+            }
+        }
+    }
+    provider.api_spec().to_owned()
+}
+
 fn agent_config(
     provider: &dyn ImportAgentsProvider,
     endpoint: &str,
     agent: &ImportAgent,
     credential_mode: &CredentialMode,
     credential_name: Option<String>,
+    runtime: &str,
 ) -> Value {
     let mut config = json!({
-        "runtime": provider.api_spec(),
+        "runtime": runtime,
         "source": source_config(provider, endpoint, agent, credential_mode, credential_name),
     });
     if provider.api_spec() == "elastic_agent_builder" {

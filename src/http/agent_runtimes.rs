@@ -165,6 +165,9 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayErr
 async fn runtime_values(state: &AppState) -> Result<Vec<RuntimeResponse>, GatewayError> {
     let mut values = Vec::new();
     for entry in AgentRuntime::catalog() {
+        if !crate::site_config::is_visible_runtime(entry.id) {
+            continue;
+        }
         let provider = provider_credentials::catalog_entry(credential_provider_id(entry.id)?)?;
         let credential = match load_credential(state, entry.id).await {
             Ok(value) => Some(value),

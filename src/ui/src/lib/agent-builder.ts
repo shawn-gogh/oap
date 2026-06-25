@@ -42,7 +42,9 @@ export interface ParsedAgentDraft {
   error: string | null;
 }
 
-const DEFAULT_RUNTIME = "claude_managed_agents";
+// This deployment defaults new agents to the local DeepSeek (opencode) runtime
+// instead of the Anthropic-backed claude_managed_agents runtime.
+const DEFAULT_RUNTIME = "local-opencode";
 const DEFAULT_OWNER = "local";
 const DEFAULT_FAILURE = "pause_and_notify";
 const DEFAULT_TOOLS: AgentTool[] = [

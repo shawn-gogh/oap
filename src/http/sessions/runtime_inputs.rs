@@ -40,6 +40,7 @@ pub(super) fn mcp_servers(
     state: &AppState,
     agent: &ManagedAgentRow,
     session_id: Option<&str>,
+    inline_auth_token: Option<&str>,
 ) -> Result<Vec<Value>, GatewayError> {
     let Some(value) = agent
         .config
@@ -51,6 +52,7 @@ pub(super) fn mcp_servers(
             &agent.id,
             &agent.config,
             session_id,
+            inline_auth_token,
         );
     };
     let mut servers = if let Some(servers) = value.as_array() {
@@ -77,6 +79,7 @@ pub(super) fn mcp_servers(
         &agent.id,
         &agent.config,
         session_id,
+        inline_auth_token,
     )?);
     rewrite_registered_mcp_servers(state, &mut servers)?;
     validate_runtime_mcp_servers(&agent.id, &servers)?;

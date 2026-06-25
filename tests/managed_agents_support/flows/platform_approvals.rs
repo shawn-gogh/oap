@@ -5,6 +5,7 @@ use crate::support::{request_json, AppFixture};
 
 pub async fn assert_human_approval(fixture: &AppFixture, agent_id: &str) {
     assert_multiple_async_approvals(fixture, agent_id).await;
+    assert_approval_with_options(fixture, agent_id).await;
 }
 
 async fn assert_multiple_async_approvals(fixture: &AppFixture, agent_id: &str) {
@@ -163,4 +164,33 @@ fn content_text(value: &Value) -> &str {
 
 fn content_json(value: &Value) -> Value {
     serde_json::from_str(content_text(value)).unwrap()
+}
+
+async fn assert_approval_with_options(fixture: &AppFixture, agent_id: &str) {
+    let session_id = seed_empty_session(fixture, agent_id, "options session").await;
+    let call = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/mcp/platform/{agent_id}?session_id={session_id}"),
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "tools/call",
+            "params": {
+                "name": "request_human_approval",
+                "arguments": {
+                    "title": "Select deploy target",
+                    "body": "Which target?",
+                    "session_id": "$SESSION_ID",
+                    "options": ["staging", "production"],
+                    "arguments": { "environment": "default" }
+                }
+            }
+        })),
+    )
+    .await;
+
+    let payload = content_json(&call);
+    assert_eq!(payload["status"], json!("pending"));
+    assert_eq!(payload["arguments"]["options"], json!(["staging", "production"]));
 }
