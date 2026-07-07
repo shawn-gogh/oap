@@ -9,6 +9,7 @@ import {
   CircleAlert,
   FileText,
   Globe,
+  ListChecks,
   Loader2,
   Search,
   Send,
@@ -17,7 +18,16 @@ import {
   X,
 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icons";
+import { CopyButton } from "@/components/copy-button";
+import { MarkdownCodeBlock, MarkdownPre, HighlightedCode } from "@/components/code-block";
+import { ContextToolBatch } from "@/components/context-tool-batch";
+import { ToolErrorCard } from "@/components/tool-error-card";
+import { TodoList, parseTodoItems, todoProgress } from "@/components/todo-list";
+import { defaultOpenForTool, groupToolParts } from "@/lib/tool-classification";
+import { usePacedText } from "@/lib/hooks/use-paced-text";
 import type { HarnessMessage, HarnessMessagePart } from "@/lib/types";
+
+const markdownComponents = { code: MarkdownCodeBlock, pre: MarkdownPre };
 
 // Adapter: derive the local-message shape LAP's components consume from our
 // HarnessMessage (which carries info + parts). Sub-threads / permissions /
@@ -236,7 +246,7 @@ function AssistantBlock({
         <div
           className="sessions-md max-w-[920px] text-[15px] leading-7 text-red-600 dark:text-red-400"
         >
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
         </div>
       ) : queued ? (
         <div className="flex items-center gap-2 text-[13px] text-muted-foreground leading-relaxed">
@@ -275,7 +285,7 @@ function AssistantBlock({
       ) : inProgress && visibleParts.length === 0 ? (
         msg.text ? (
           <div className="sessions-md max-w-[920px] text-[15px] leading-7 text-foreground">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
           </div>
         ) : (
           <div className="flex items-center gap-2 text-[14px] text-muted-foreground leading-relaxed">
@@ -285,11 +295,15 @@ function AssistantBlock({
         )
       ) : (
         <>
-          {renderItems.map((item) =>
+          {renderItems.map((item, index) =>
             item.type === "toolGroup" ? (
               <ToolCluster key={item.key} parts={item.parts} />
             ) : (
-              <PartBlock key={item.key} part={item.part} />
+              <PartBlock
+                key={item.key}
+                part={item.part}
+                streaming={inProgress && index === renderItems.length - 1}
+              />
             ),
           )}
           {inProgress && (
@@ -376,16 +390,12 @@ function formatLatency(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function PartBlock({ part }: { part: HarnessMessagePart }) {
+function PartBlock({ part, streaming = false }: { part: HarnessMessagePart; streaming?: boolean }) {
   const t = typeof part?.type === "string" ? part.type : "";
   if (t === "text") {
     const text = typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "";
     if (!text) return null;
-    return (
-      <div className="sessions-md max-w-[920px] text-[15px] leading-7 text-foreground">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-      </div>
-    );
+    return <TextPart text={text} streaming={streaming} />;
   }
   if (t === "reasoning" || t === "thinking") {
     const text = typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "";
@@ -396,6 +406,21 @@ function PartBlock({ part }: { part: HarnessMessagePart }) {
     return <ToolBlock part={part} />;
   }
   return null;
+}
+
+function TextPart({ text, streaming }: { text: string; streaming: boolean }) {
+  const shown = usePacedText(text, streaming);
+  return (
+    <div className="group/text relative max-w-[920px]">
+      <div className="sessions-md text-[15px] leading-7 text-foreground">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{shown}</ReactMarkdown>
+      </div>
+      <CopyButton
+        text={text}
+        className="absolute right-0 top-0 opacity-0 transition-opacity group-hover/text:opacity-100"
+      />
+    </div>
+  );
 }
 
 function ReasoningBlock({ text }: { text: string }) {
@@ -421,7 +446,11 @@ function ReasoningBlock({ text }: { text: string }) {
   );
 }
 
-function toolDescriptor(tool: string, input: unknown): string {
+export function isTodoTool(tool: string): boolean {
+  return /todo/i.test(tool);
+}
+
+export function toolDescriptor(tool: string, input: unknown): string {
   const o = (input && typeof input === "object" ? input : {}) as Record<
     string,
     unknown
@@ -434,6 +463,14 @@ function toolDescriptor(tool: string, input: unknown): string {
     return "";
   };
   const n = tool.toLowerCase();
+  if (isTodoTool(n)) {
+    const items = parseTodoItems(input);
+    if (items) {
+      const { done, total } = todoProgress(items);
+      return `${done}/${total} done`;
+    }
+    return "";
+  }
   if (n === "task") return pick("description");
   if (n === "bash") return pick("command", "description");
   if (n.includes("gmail")) return pick("subject", "to", "thread_id", "message_id");
@@ -445,7 +482,7 @@ function toolDescriptor(tool: string, input: unknown): string {
   return "";
 }
 
-function toolLabel(tool: string): string {
+export function toolLabel(tool: string): string {
   return tool
     .replace(/^mcp__/i, "")
     .replace(/^functions\s+/i, "")
@@ -481,17 +518,19 @@ function ToolIcon({
   }
 
   const n = tool.toLowerCase();
-  const Icon = n === "bash"
-    ? Terminal
-    : n.includes("read") || n.includes("write") || n.includes("edit")
-      ? FileText
-      : n.includes("grep") || n.includes("search") || n.includes("find")
-        ? Search
-        : n.includes("web") || n.includes("browser")
-          ? Globe
-          : status === "error"
-            ? CircleAlert
-            : Wrench;
+  const Icon = isTodoTool(n)
+    ? ListChecks
+    : n === "bash"
+      ? Terminal
+      : n.includes("read") || n.includes("write") || n.includes("edit")
+        ? FileText
+        : n.includes("grep") || n.includes("search") || n.includes("find")
+          ? Search
+          : n.includes("web") || n.includes("browser")
+            ? Globe
+            : status === "error"
+              ? CircleAlert
+              : Wrench;
 
   return (
     <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground shadow-sm">
@@ -501,6 +540,7 @@ function ToolIcon({
 }
 
 function ToolCluster({ parts }: { parts: HarnessMessagePart[] }) {
+  const groups = groupToolParts(parts);
   return (
     <div className="max-w-[920px] py-0.5">
       <div className="mb-1 flex items-center gap-2 pl-2">
@@ -510,26 +550,31 @@ function ToolCluster({ parts }: { parts: HarnessMessagePart[] }) {
         </span>
       </div>
       <div className="flex flex-col gap-1">
-        {parts.map((part, index) => (
-          <ToolBlock key={`${(part as { id?: string }).id ?? "tool"}-${index}`} part={part} />
-        ))}
+        {groups.map((group, index) =>
+          group.kind === "context-batch" ? (
+            <ContextToolBatch key={`batch-${index}`} parts={group.parts} />
+          ) : (
+            <ToolBlock key={`${group.part.id ?? "tool"}-${index}`} part={group.part} />
+          ),
+        )}
       </div>
     </div>
   );
 }
 
-function ToolBlock({ part }: { part: HarnessMessagePart }) {
-  const [open, setOpen] = useState(false);
+export function ToolBlock({ part }: { part: HarnessMessagePart }) {
   const p = part as Extract<HarnessMessagePart, { type: "tool" }>;
   const toolName = typeof p.tool === "string" ? p.tool : "tool";
   const state = (p.state as Record<string, unknown> | undefined) ?? {};
   const status = typeof state.status === "string" ? state.status : "running";
+  const [open, setOpen] = useState(() => defaultOpenForTool(toolName, status));
   const input = state.input;
   const output = state.output;
   const errorOut = state.error;
   const desc = toolDescriptor(toolName, input);
+  const todoItems = isTodoTool(toolName) ? parseTodoItems(input, output) : null;
 
-  const label = toolLabel(toolName);
+  const label = todoItems ? "Todos" : toolLabel(toolName);
   const hasDetails =
     input !== undefined || output !== undefined || errorOut !== undefined;
 
@@ -575,9 +620,15 @@ function ToolBlock({ part }: { part: HarnessMessagePart }) {
 
       {open && hasDetails && (
         <div className="ml-8 mt-1 flex flex-col gap-2 rounded-lg border border-border bg-muted/25 p-3 shadow-sm">
-          {input !== undefined && <ToolKv label="input" value={input} />}
-          {output !== undefined && <ToolKv label="output" value={output} />}
-          {errorOut !== undefined && <ToolKv label="error" value={errorOut} />}
+          {todoItems ? (
+            <TodoList items={todoItems} />
+          ) : (
+            <>
+              {input !== undefined && <ToolKv label="input" value={input} />}
+              {output !== undefined && <ToolKv label="output" value={output} />}
+            </>
+          )}
+          {errorOut !== undefined && <ToolErrorCard error={errorOut} />}
         </div>
       )}
     </div>
@@ -585,16 +636,14 @@ function ToolBlock({ part }: { part: HarnessMessagePart }) {
 }
 
 function ToolKv({ label, value }: { label: string; value: unknown }) {
-  const text =
-    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const isString = typeof value === "string";
+  const text = isString ? (value as string) : JSON.stringify(value, null, 2);
   return (
     <div className="flex flex-col gap-1">
       <span className="mono text-[10px] uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
-      <pre className="mono max-h-64 overflow-auto rounded-md border border-border bg-background p-2 text-[11px] text-foreground whitespace-pre-wrap break-words">
-        {text}
-      </pre>
+      <HighlightedCode code={text} lang={isString ? "text" : "json"} />
     </div>
   );
 }

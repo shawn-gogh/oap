@@ -1446,18 +1446,46 @@ export interface RuntimeAgentEvent {
 const RUNTIME_STREAM_RECONNECT_INITIAL_MS = 500;
 const RUNTIME_STREAM_RECONNECT_MAX_MS = 5000;
 
+const RUNTIME_EVENTS_LIST_MAX_ATTEMPTS = 3;
+const RUNTIME_EVENTS_LIST_RETRY_BASE_MS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function listRuntimeEvents(sessionId: string): Promise<RuntimeAgentEvent[]> {
-  // Best-effort history replay. Older gateways only expose the live SSE stream,
-  // so keep non-JSON/error responses non-fatal for local dev and remote harnesses.
-  const res = await reqHarness(`/v1/sessions/${encodeURIComponent(sessionId)}/events`);
-  if (!res.ok) return [];
-  if (!res.headers.get("content-type")?.includes("application/json")) return [];
-  const data = (await res.json().catch(() => null)) as
-    | { data?: RuntimeAgentEvent[] }
-    | RuntimeAgentEvent[]
-    | null;
-  if (Array.isArray(data)) return data;
-  return Array.isArray(data?.data) ? data.data : [];
+  // The backend proxies this to the session's runtime provider (e.g. a
+  // containerized agent), which can return a transient error on a cold
+  // request even though history exists (surfaces in the UI as a session that
+  // "has no messages" until the page is reloaded). Retry a couple of times
+  // before giving up, so a momentary hiccup doesn't look like empty history.
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= RUNTIME_EVENTS_LIST_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await reqHarness(`/v1/sessions/${encodeURIComponent(sessionId)}/events`);
+      if (!res.ok) {
+        lastError = new ApiError(res.status, await res.text().catch(() => ""));
+      } else if (!res.headers.get("content-type")?.includes("application/json")) {
+        // Older gateways only expose the live SSE stream for this endpoint;
+        // a non-JSON 2xx response means history replay isn't supported here,
+        // which is not transient and shouldn't be retried.
+        return [];
+      } else {
+        const data = (await res.json().catch(() => null)) as
+          | { data?: RuntimeAgentEvent[] }
+          | RuntimeAgentEvent[]
+          | null;
+        if (Array.isArray(data)) return data;
+        return Array.isArray(data?.data) ? data.data : [];
+      }
+    } catch (e) {
+      lastError = e;
+    }
+    if (attempt < RUNTIME_EVENTS_LIST_MAX_ATTEMPTS) {
+      await sleep(RUNTIME_EVENTS_LIST_RETRY_BASE_MS * attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Failed to load session events");
 }
 
 export function subscribeRuntimeEvents(opts: {

@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { sendMessage } from "@/lib/api";
+import { useAutosizeTextarea } from "@/lib/hooks/use-autosize-textarea";
 
 export function Composer({
   sessionId,
@@ -13,6 +14,7 @@ export function Composer({
   onAbort,
   busy = false,
   disabled = false,
+  disabledHint,
 }: {
   sessionId: string;
   model: string;
@@ -22,10 +24,12 @@ export function Composer({
   onAbort?: () => void;
   busy?: boolean;
   disabled?: boolean;
+  disabledHint?: string;
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useAutosizeTextarea(draft);
 
   const handleSend = useCallback(async () => {
     const t = draft.trim();
@@ -59,7 +63,7 @@ export function Composer({
   const placeholder = sending
     ? "Sending…"
     : disabled
-      ? "Waiting for the runtime…"
+      ? (disabledHint ?? "Waiting for the runtime…")
       : busy
         ? "Queue a follow up"
     : "Add a follow up";
@@ -70,6 +74,7 @@ export function Composer({
         <div className="relative">
           <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition-all focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
             <textarea
+              ref={textareaRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}

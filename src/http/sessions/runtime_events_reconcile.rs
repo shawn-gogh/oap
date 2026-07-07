@@ -29,9 +29,7 @@ pub(super) async fn persist_runtime_event_values(
     let Some(items) = event_items(events) else {
         return Ok(());
     };
-    for event in items {
-        runtime_events::repository::append(pool, session_id, event.clone()).await?;
-    }
+    runtime_events::repository::append_batch(pool, session_id, items.clone()).await?;
     Ok(())
 }
 

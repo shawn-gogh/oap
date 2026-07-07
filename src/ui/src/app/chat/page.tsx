@@ -33,9 +33,12 @@ import { Composer } from "@/components/composer";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Sidebar } from "@/components/sidebar";
 import { InspectorPanel } from "@/components/inspector-panel";
+import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
+import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
+import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
 import { getMessages, getSession, createSession, deleteSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses } from "@/lib/api";
 import type { PendingApproval, RuntimeAgentEvent } from "@/lib/api";
-import { ToolApprovalPanel } from "@/components/tool-approval-panel";
+import { ApprovalDock } from "@/components/approval-dock";
 import type { Agent, AgentRuntimeId, HarnessMessage, RuntimeHarness } from "@/lib/types";
 import { resolveApiSpec } from "@/lib/types";
 import { defaultModelForRuntime, runtimeSupportsModelDiscovery } from "@/lib/model-options";
@@ -447,6 +450,7 @@ function ChatInner() {
   const [promptCopied, setPromptCopied] = useState(false);
   const eventBufferRef = useRef<Frame[]>([]);
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeAgentEvent[]>([]);
+  const [runtimeEventsLoaded, setRuntimeEventsLoaded] = useState(false);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [interruptingQueuedPromptId, setInterruptingQueuedPromptId] = useState<string | null>(null);
   const [runtimeStreamVersion, setRuntimeStreamVersion] = useState(0);
@@ -459,8 +463,7 @@ function ChatInner() {
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [savedAgents, setSavedAgents] = useState<Agent[]>([]);
   const [switchingAgent, setSwitchingAgent] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const wasNearBottomRef = useRef(true);
+  const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
 
@@ -500,8 +503,13 @@ function ChatInner() {
   const vaultKeys = Array.isArray(activeAgent?.vault_keys) ? activeAgent.vault_keys : [];
   const runtimeMessages = useMemo(() => {
     if (!sid || !sessionRuntime) return null;
+    // Keep this null (renders as "Loading…") until the initial events fetch
+    // settles — it can take several seconds against a cold runtime provider,
+    // and returning [] early made a session that hasn't loaded yet look like
+    // one with no message history.
+    if (!runtimeEventsLoaded) return null;
     return runtimeEventsToMessages(sid, runtimeEvents, sessionStatus);
-  }, [runtimeEvents, sessionRuntime, sessionStatus, sid]);
+  }, [runtimeEvents, runtimeEventsLoaded, sessionRuntime, sessionStatus, sid]);
   const displayMessages = useMemo(() => {
     const baseMessages = sessionRuntime ? runtimeMessages : messages;
     if (!sid || !sessionRuntime || queuedPrompts.length === 0) return baseMessages;
@@ -510,6 +518,7 @@ function ChatInner() {
       ...queuedPrompts.map((prompt) => makeQueuedPromptMessage(sid, prompt)),
     ];
   }, [messages, queuedPrompts, runtimeMessages, sessionRuntime, sid]);
+  const sessionContentLoading = !displayMessages && !error;
   const hasStarted = Boolean(displayMessages && displayMessages.length > 0);
   const modelOptions = useMemo(() => {
     if (sessionRuntime) return models;
@@ -573,6 +582,7 @@ function ChatInner() {
     eventBufferRef.current = [];
     setMessages(null);
     setRuntimeEvents([]);
+    setRuntimeEventsLoaded(false);
     setQueuedPrompts([]);
     setInterruptingQueuedPromptId(null);
     setError(null);
@@ -798,6 +808,9 @@ function ChatInner() {
         .catch((err) => {
           if (activeSessionRef.current !== sid) return;
           setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (activeSessionRef.current === sid) setRuntimeEventsLoaded(true);
         });
     } else {
       void refetch();
@@ -840,17 +853,24 @@ function ChatInner() {
     if (!sid || !sessionRuntime) return;
     let active = true;
     const replay = () => {
-      listRuntimeEvents(sid)
-        .then((events) => {
-          if (!active) return;
-          if (activeSessionRef.current !== sid) return;
-          mergeRuntimeEventsAndStatus(events);
-        })
-        .catch((err) => {
-          if (active && activeSessionRef.current === sid) {
-            setError(err instanceof Error ? err.message : String(err));
-          }
-        });
+      // Re-fetching events replays (and re-persists) the session's full
+      // history on the backend, which is only worth paying for while a turn
+      // is actually producing new events — the live SSE subscription already
+      // delivers those in real time otherwise. Approvals still need polling
+      // regardless, since a background turn can raise one at any time.
+      if (sessionStatus === "busy") {
+        listRuntimeEvents(sid)
+          .then((events) => {
+            if (!active) return;
+            if (activeSessionRef.current !== sid) return;
+            mergeRuntimeEventsAndStatus(events);
+          })
+          .catch((err) => {
+            if (active && activeSessionRef.current === sid) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          });
+      }
 
       listApprovals()
         .then((items) => {
@@ -866,7 +886,7 @@ function ChatInner() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [mergeRuntimeEventsAndStatus, sid, sessionRuntime]);
+  }, [mergeRuntimeEventsAndStatus, sessionStatus, sid, sessionRuntime]);
 
   const onApprovalAccept = useCallback(async (id: string, args: Record<string, unknown>) => {
     setApprovalBusy(true);
@@ -895,19 +915,6 @@ function ChatInner() {
       setApprovalBusy(false);
     }
   }, []);
-
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const dist = el.scrollHeight - (el.scrollTop + el.clientHeight);
-    wasNearBottomRef.current = dist < 120;
-  };
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (wasNearBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [displayMessages]);
 
   if (!sid) {
     return <SessionsPage />;
@@ -1007,12 +1014,10 @@ function ChatInner() {
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="flex-1 overflow-y-auto"
+          className="relative flex-1 overflow-y-auto"
         >
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-8">
-            {!displayMessages && !error && (
-              <div className="text-muted-foreground text-sm">Loading…</div>
-            )}
+          <div ref={contentRef} className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-8">
+            {sessionContentLoading && <SessionLoadingSkeleton />}
             {error && (
               <Card className="border-destructive p-4">
                 <p className="text-sm text-destructive">{error}</p>
@@ -1180,17 +1185,16 @@ function ChatInner() {
                 queuedActionBusy={interruptingQueuedPromptId === m.info.id}
               />
             ))}
-            {approvals.map((a) => (
-              <ToolApprovalPanel
-                key={a.id}
-                approval={a}
-                onAccept={onApprovalAccept}
-                onReject={onApprovalReject}
-                busy={approvalBusy}
-              />
-            ))}
           </div>
+          {!isPinned && <JumpToBottomButton onClick={jumpToBottom} />}
         </div>
+
+        <ApprovalDock
+          approvals={approvals}
+          onAccept={onApprovalAccept}
+          onReject={onApprovalReject}
+          busy={approvalBusy}
+        />
 
         <Composer
           sessionId={sid}
@@ -1202,7 +1206,8 @@ function ChatInner() {
           } : undefined}
           onAbort={sessionRuntime ? () => abortSession(sid).catch(() => {}) : undefined}
           busy={Boolean(sessionRuntime && sessionStatus === "busy")}
-          disabled={Boolean(sessionRuntime && !model.trim())}
+          disabled={sessionContentLoading || Boolean(sessionRuntime && !model.trim())}
+          disabledHint={sessionContentLoading ? "Loading conversation…" : undefined}
         />
       </div>
 
