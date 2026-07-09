@@ -26,6 +26,7 @@ mod runtime_sdk;
 mod runtime_vault;
 mod storage;
 mod types;
+mod workspace_api;
 
 use execution::execute_prompt;
 use runtime::{create_runtime_session, execute_runtime_prompt};
@@ -38,6 +39,7 @@ pub(crate) use runtime_sdk::lap_from_credential;
 use runtime_sdk::{register_runtime_session, runtime_sdk_client};
 use storage::{db, persist_message, resolve_session_request, session};
 pub use types::{CreateSessionRequest, MessageResponse, PromptRequest, SessionResponse};
+pub use workspace_api::{create_upload_url, delete_file, download_url, list_files};
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
@@ -86,6 +88,15 @@ pub async fn delete(
     Path(session_id): Path<String>,
 ) -> Result<Json<bool>, GatewayError> {
     let pool = db(&state, &headers).await?;
+    if let (Some(storage), Ok(Some(row))) = (
+        &state.object_storage,
+        sessions::repository::get(pool, &session_id).await,
+    ) {
+        if let Some(bucket) = row.workspace_bucket.as_deref() {
+            // Best-effort: a storage hiccup shouldn't block deleting the session row.
+            let _ = storage.delete_bucket_recursive(bucket).await;
+        }
+    }
     Ok(Json(sessions::repository::delete(pool, &session_id).await?))
 }
 

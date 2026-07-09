@@ -13,6 +13,7 @@ import {
   Cpu,
   ExternalLink,
   FileText,
+  FolderOpen,
   KeyRound,
   Loader2,
   Square,
@@ -33,6 +34,7 @@ import { Composer } from "@/components/composer";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Sidebar } from "@/components/sidebar";
 import { InspectorPanel } from "@/components/inspector-panel";
+import { WorkspacePanel } from "@/components/workspace-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
@@ -446,6 +448,8 @@ function ChatInner() {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [workspaceBucket, setWorkspaceBucket] = useState<string | undefined>();
   const [promptOpen, setPromptOpen] = useState(false);
   const [promptCopied, setPromptCopied] = useState(false);
   const eventBufferRef = useRef<Frame[]>([]);
@@ -593,6 +597,7 @@ function ChatInner() {
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
     setSessionTitle("");
+    setWorkspaceBucket(undefined);
     const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
       if (activeSessionRef.current !== sid) return;
@@ -603,6 +608,7 @@ function ChatInner() {
       setSessionStatus(resumed ? "busy" : defaultStatus);
       setProviderSessionId(s.provider_session_id);
       setProviderUrl(s.provider_url);
+      setWorkspaceBucket(s.workspace_bucket);
       if (s.title) setSessionTitle(s.title);
     }).catch(() => {}).finally(() => {
       if (activeSessionRef.current === sid) setSessionLoaded(true);
@@ -998,6 +1004,17 @@ function ChatInner() {
                 }
               />
             )}
+            {workspaceBucket && (
+              <Button
+                variant={workspacePanelOpen ? "default" : "outline"}
+                size="sm"
+                onClick={() => setWorkspacePanelOpen((v) => !v)}
+                className="h-8"
+              >
+                <FolderOpen className="size-3.5" />
+                Workspace
+              </Button>
+            )}
             <Button
               variant={inspectorOpen ? "default" : "outline"}
               size="sm"
@@ -1210,6 +1227,10 @@ function ChatInner() {
           disabledHint={sessionContentLoading ? "Loading conversation…" : undefined}
         />
       </div>
+
+      {workspacePanelOpen && workspaceBucket && (
+        <WorkspacePanel sessionId={sid} onClose={() => setWorkspacePanelOpen(false)} />
+      )}
 
       <InspectorPanel
         open={inspectorOpen}

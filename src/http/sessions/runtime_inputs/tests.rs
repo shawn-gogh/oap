@@ -32,7 +32,7 @@ fn session_metadata_truncates_long_prompt_values() {
         skill_ids: json!([]),
         rule_ids: json!([]),
     };
-    let metadata = session_metadata(&agent, "ses_1", &"x".repeat(600));
+    let metadata = session_metadata(&agent, "ses_1", &"x".repeat(600), None);
     assert_eq!(metadata["initial_prompt"].chars().count(), 512);
 }
 

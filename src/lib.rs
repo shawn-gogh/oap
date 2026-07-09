@@ -8,6 +8,7 @@ pub mod i18n;
 pub mod managed_agents;
 pub mod mcp;
 pub mod model_prices;
+pub mod object_storage;
 pub mod proxy;
 pub mod sdk;
 pub mod site_config;

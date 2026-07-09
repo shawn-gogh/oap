@@ -16,6 +16,7 @@ import type {
   Skill,
   SpendLog,
   VaultKeyEntry,
+  WorkspaceFile,
 } from "./types";
 import { preferredModel } from "./model-options";
 
@@ -1738,6 +1739,54 @@ export async function downloadAgentFile(agentId: string, filePath: string): Prom
     throw new ApiError(res.status, body);
   }
   return res.blob();
+}
+
+// ── Session workspace files (per-session MinIO bucket) ────────────────────
+// Upload/download go directly browser<->MinIO via presigned URLs; these
+// calls only list/issue-urls-for/delete objects, they never carry file bytes.
+
+export async function listWorkspaceFiles(sessionId: string): Promise<WorkspaceFile[]> {
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/files`);
+  return jsonOrThrow<WorkspaceFile[]>(res);
+}
+
+export async function requestWorkspaceUploadUrl(
+  sessionId: string,
+  path: string,
+): Promise<{ url: string; path: string }> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/files/upload-url`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+  );
+  return jsonOrThrow(res);
+}
+
+export async function workspaceFileDownloadUrl(sessionId: string, path: string): Promise<string> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/files/download-url?path=${encodeURIComponent(path)}`,
+  );
+  const data = await jsonOrThrow<{ url: string }>(res);
+  return data.url;
+}
+
+export async function uploadWorkspaceFile(sessionId: string, file: File, path: string): Promise<void> {
+  const { url } = await requestWorkspaceUploadUrl(sessionId, path);
+  const res = await fetch(url, { method: "PUT", body: file });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError(res.status, body);
+  }
+}
+
+export async function deleteWorkspaceFile(sessionId: string, path: string): Promise<void> {
+  await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/files?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
 }
 
 // ── Skills list (DB-backed, /api/skills) ──────────────────────────────────────

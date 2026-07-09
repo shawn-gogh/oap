@@ -50,6 +50,14 @@ pub struct GeneralSettings {
     pub sandbox_choice: Option<String>,
     #[serde(default)]
     pub e2b_sandbox_params: E2bSandboxParams,
+    /// Internal (server-to-server) MinIO/S3 endpoint, e.g. http://minio:9000.
+    pub minio_endpoint: Option<String>,
+    /// Endpoint used to sign presigned URLs. Must be reachable from the
+    /// browser, so it's usually different from `minio_endpoint` (which is
+    /// only reachable on the docker-compose network).
+    pub minio_public_endpoint: Option<String>,
+    pub minio_access_key: Option<String>,
+    pub minio_secret_key: Option<String>,
 }
 
 impl Default for GeneralSettings {
@@ -66,6 +74,10 @@ impl Default for GeneralSettings {
             spend_logs_queue_capacity: default_spend_logs_queue_capacity(),
             sandbox_choice: None,
             e2b_sandbox_params: E2bSandboxParams::default(),
+            minio_endpoint: None,
+            minio_public_endpoint: None,
+            minio_access_key: None,
+            minio_secret_key: None,
         }
     }
 }

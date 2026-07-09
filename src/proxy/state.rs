@@ -9,6 +9,7 @@ use crate::{
     errors::GatewayError,
     mcp::registry::McpServerRegistry,
     model_prices::ModelCostMap,
+    object_storage::ObjectStorageClient,
     proxy::{auth::api_keys::GatewayApiKeyStore, config::GatewayConfig},
     sdk::routing::Router,
 };
@@ -25,6 +26,7 @@ pub struct AppState {
     pub db: Option<PgPool>,
     pub api_keys: GatewayApiKeyStore,
     pub callbacks: CallbackManager,
+    pub object_storage: Option<ObjectStorageClient>,
     mcp_proxy_base_url: RwLock<Option<String>>,
 }
 
@@ -46,6 +48,7 @@ impl AppState {
         db: Option<PgPool>,
     ) -> Result<Self, GatewayError> {
         let callbacks = callbacks(&config, db.clone());
+        let object_storage = ObjectStorageClient::from_settings(&config.general_settings);
         Ok(Self {
             mcp_servers: McpServerRegistry::from_config(&config)?,
             config,
@@ -57,6 +60,7 @@ impl AppState {
             db,
             api_keys: GatewayApiKeyStore::default(),
             callbacks,
+            object_storage,
             mcp_proxy_base_url: RwLock::new(None),
         })
     }

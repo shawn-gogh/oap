@@ -17,7 +17,8 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY src/ui/ ./
 RUN npm run build
 
-FROM rust:1.90-bookworm AS rust-builder
+# aws-sdk-s3's dependency tree requires rustc >= 1.94.
+FROM rust:1.94-bookworm AS rust-builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src

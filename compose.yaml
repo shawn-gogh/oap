@@ -46,6 +46,29 @@ services:
       timeout: 5s
       retries: 20
 
+  # Object storage backing per-session workspaces (see docs/workspace.md).
+  # API port 9000 is used internally by `lap`/`opencode`; the console (9001)
+  # and API are also exposed on localhost so presigned URLs signed against
+  # MINIO_PUBLIC_ENDPOINT are reachable from the host browser.
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # The minio image has no curl/wget; bash (present) with /dev/tcp is a
+      # plain TCP-reachability check, good enough to gate startup ordering.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   lap:
     build:
       context: .
@@ -62,11 +85,20 @@ services:
       # platform MCPs (e.g. request_human_approval) at {url}/mcp/platform/{agent}.
       # `lap` is this service's name on the compose network.
       LITELLM_PROXY_BASE_URL: ${LITELLM_PROXY_BASE_URL:-http://lap:4000}
+      # Internal (docker-network) endpoint used by lap itself to talk to MinIO.
+      MINIO_ENDPOINT: http://minio:9000
+      # Endpoint used to SIGN presigned URLs. Must be reachable from the
+      # browser, so it's the host-mapped port, not the docker-network name.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
       # Mount the gateway config so model-list edits only need a restart, not a rebuild.
       - ./deploy/render.config.yaml:/app/deploy.config.yaml:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   opencode:
@@ -76,10 +108,21 @@ services:
       LITELLM_BASE_URL: http://lap:4000/v1
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
       LITELLM_MODELS: ${OPENCODE_MODELS:-}
+      # s3fs mounts each session's workspace bucket from here (internal endpoint).
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
       - opencode-data:/data
+    # s3fs (FUSE) needs to create a device node and call mount(2); SYS_ADMIN +
+    # /dev/fuse is the minimal grant for that (narrower than `privileged: true`).
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
     depends_on:
       - lap
+      - minio
 
   register-opencode:
     <<: *runtime-registration
@@ -179,6 +222,7 @@ services:
 
 volumes:
   postgres-data:
+  minio-data:
   opencode-data:
   deepagents-data:
   hermes-data:

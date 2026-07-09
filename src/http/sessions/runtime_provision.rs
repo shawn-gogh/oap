@@ -70,6 +70,7 @@ pub(super) async fn provision_runtime_session(
                 &created.agent,
                 &created.row.id,
                 &created.prompt,
+                created.row.workspace_bucket.as_deref(),
             )),
             vault_ids,
             resources: None,

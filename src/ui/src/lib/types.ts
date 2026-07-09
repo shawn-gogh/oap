@@ -9,6 +9,7 @@ export interface OpencodeSession {
   provider_run_id?: string;
   provider_url?: string;
   status?: string;
+  workspace_bucket?: string;
   environment?: Record<string, unknown>;
   /** @deprecated use agent */
   harness?: string;
@@ -159,6 +160,13 @@ export interface AgentFile {
   size_bytes: number;
   created_at: number;
   updated_at: number;
+}
+
+/** A file in a session's workspace bucket (see /session/:id/workspace/files). */
+export interface WorkspaceFile {
+  path: string;
+  size_bytes: number;
+  updated_at: number | null;
 }
 
 export interface AgentRunStart {

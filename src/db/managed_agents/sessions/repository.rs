@@ -184,6 +184,26 @@ pub async fn delete(pool: &PgPool, session_id: &str) -> Result<bool, GatewayErro
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn set_workspace_bucket(
+    pool: &PgPool,
+    session_id: &str,
+    bucket: &str,
+) -> Result<(), GatewayError> {
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentSessionsTable"
+        SET workspace_bucket = $2
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .bind(bucket)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(())
+}
+
 pub async fn touch(pool: &PgPool, session_id: &str) -> Result<(), GatewayError> {
     sqlx::query(
         r#"

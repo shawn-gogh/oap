@@ -69,6 +69,20 @@ export function createStore(dbPath) {
       ON session_events(session_id, seq);
   `);
 
+  // better-sqlite3 has no migration system; ADD COLUMN against a db file that
+  // predates the workspace feature needs to be applied by hand and is a
+  // no-op (caught) on a fresh db where the CREATE TABLE above already has it.
+  for (const ddl of [
+    `ALTER TABLE session_bindings ADD COLUMN workspace_session_id TEXT`,
+    `ALTER TABLE session_bindings ADD COLUMN workspace_bucket TEXT`,
+  ]) {
+    try {
+      db.exec(ddl);
+    } catch (err) {
+      if (!/duplicate column/i.test(err?.message || "")) throw err;
+    }
+  }
+
   const stmts = {
     insert: db.prepare(`
       INSERT INTO agents
@@ -88,6 +102,16 @@ export function createStore(dbPath) {
     `),
     getBinding: db.prepare(`SELECT agent_id FROM session_bindings WHERE session_id = ?`),
     unbind: db.prepare(`DELETE FROM session_bindings WHERE session_id = ?`),
+    setWorkspace: db.prepare(`
+      UPDATE session_bindings
+      SET workspace_session_id = @workspace_session_id, workspace_bucket = @workspace_bucket
+      WHERE session_id = @session_id
+    `),
+    getWorkspace: db.prepare(`
+      SELECT workspace_session_id, workspace_bucket
+      FROM session_bindings
+      WHERE session_id = ?
+    `),
   };
 
   function createAgent({ name, system, model, permissions, mcp_servers, workspace } = {}) {
@@ -159,6 +183,25 @@ export function createStore(dbPath) {
     stmts.unbind.run(sessionId);
   }
 
+  // Records which platform (LAP) session id + workspace bucket this
+  // opencode-assigned session id belongs to, so a later request bearing only
+  // the opencode session id (the id this wrapper's HTTP surface is keyed by)
+  // can find its way back to the right per-session opencode process — even
+  // after this wrapper container restarts and the in-memory pool is empty.
+  function setSessionWorkspace(sessionId, { workspaceSessionId, workspaceBucket }) {
+    stmts.setWorkspace.run({
+      session_id: sessionId,
+      workspace_session_id: workspaceSessionId ?? null,
+      workspace_bucket: workspaceBucket ?? null,
+    });
+  }
+
+  function getSessionWorkspace(sessionId) {
+    const row = stmts.getWorkspace.get(sessionId);
+    if (!row || !row.workspace_session_id) return null;
+    return { workspaceSessionId: row.workspace_session_id, workspaceBucket: row.workspace_bucket };
+  }
+
   function insertSessionEvent(sessionId, eventObj, eventId) {
     const json = JSON.stringify(eventObj);
     if (eventId != null) {
@@ -190,6 +233,8 @@ export function createStore(dbPath) {
     bindSession,
     getSessionAgent,
     unbindSession,
+    setSessionWorkspace,
+    getSessionWorkspace,
     insertSessionEvent,
     listSessionEvents,
   };

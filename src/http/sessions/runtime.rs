@@ -39,7 +39,17 @@ pub(super) async fn create_runtime_session(
     pool: &PgPool,
     input: CreateSessionRequest,
 ) -> Result<SessionResponse, GatewayError> {
-    let created = create_runtime_session_row(&state, pool, input).await?;
+    let mut created = create_runtime_session_row(&state, pool, input).await?;
+    // Workspaces are opt-in per runtime — only local-opencode's per-session
+    // process model (see runtime_provision.rs) can actually mount one today.
+    if created.resolved.alias == "local-opencode" {
+        if let Some(storage) = &state.object_storage {
+            let bucket = crate::object_storage::ObjectStorageClient::bucket_name(&created.row.id);
+            storage.ensure_bucket(&bucket).await?;
+            sessions::repository::set_workspace_bucket(pool, &created.row.id, &bucket).await?;
+            created.row.workspace_bucket = Some(bucket);
+        }
+    }
     if let Some(prompt) = created.initial_user_prompt.as_deref() {
         persist_message(pool, &created.row.id, "user", prompt, None).await?;
     }

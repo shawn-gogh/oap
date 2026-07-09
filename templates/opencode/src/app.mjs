@@ -15,6 +15,7 @@ import {
   partsFromEvents,
   translateOpencodeEvent,
 } from "./anthropic.mjs";
+import { ensureSessionProcess, hasSessionProcess } from "./session-pool.mjs";
 
 /**
  * Build the Express app.
@@ -32,6 +33,11 @@ import {
  * @param {(baseUrl, path, init?) => Promise} deps.ocFetch    fetch against opencode
  * @param {() => Promise<boolean>} deps.checkOpencode  health probe for /health
  * @param {Map} [deps.environments]            in-memory environments registry
+ * @param {string|null} [deps.litellmBaseURL]  passed through to per-session provider config
+ * @param {string|null} [deps.litellmApiKey]
+ * @param {string|null} [deps.minioEndpoint]   presence gates workspace-backed sessions
+ * @param {string|null} [deps.minioAccessKey]
+ * @param {string|null} [deps.minioSecretKey]
  */
 export function createApp({
   store,
@@ -47,6 +53,11 @@ export function createApp({
   ocFetch,
   checkOpencode,
   environments = new Map(),
+  litellmBaseURL = null,
+  litellmApiKey = null,
+  minioEndpoint = null,
+  minioAccessKey = null,
+  minioSecretKey = null,
 }) {
   const app = express();
   app.use(express.json({ limit: "5mb" }));
@@ -237,6 +248,92 @@ export function createApp({
     return pumpConnected;
   }
 
+  // ---- per-session (workspace-backed) opencode instances -------------------
+  // Sessions created with a workspace bucket get their own dedicated opencode
+  // process (see session-pool.mjs) instead of sharing the one global `oc`
+  // instance above, so each needs its own persistence pump subscribed to that
+  // instance's own /event feed rather than the single shared one.
+  const sessionPumps = new Map(); // opencode sessionId -> { connected }
+
+  function startSessionPump(sessionId, baseUrl) {
+    const existing = sessionPumps.get(sessionId);
+    if (existing) return existing;
+    const state = { connected: false };
+    sessionPumps.set(sessionId, state);
+    (async () => {
+      const workspace = store.getSessionWorkspace(sessionId);
+      for (;;) {
+        try {
+          const upstream = await ocFetch(baseUrl, "/event", {});
+          if (!upstream.ok || !upstream.body) {
+            throw new Error(`opencode /event unavailable (${upstream.status || "no body"})`);
+          }
+          state.connected = true;
+          console.log(`[pump:${sessionId}] subscribed to opencode /event`);
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for await (const chunk of upstream.body) {
+            buffer += decoder.decode(chunk, { stream: true });
+            let idx;
+            while ((idx = buffer.indexOf("\n\n")) !== -1) {
+              const block = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              const data = parseSseData(block);
+              if (!data) continue;
+              let ev;
+              try { ev = JSON.parse(data); } catch { continue; }
+              if (DEBUG_EVENTS) console.log(`[events:${sessionId}]`, data.slice(0, 800));
+              pumpHandle(ev);
+            }
+          }
+          console.warn(`[pump:${sessionId}] opencode /event stream ended, reconnecting`);
+        } catch (err) {
+          console.error(`[pump:${sessionId}] /event stream error:`, err?.message || err);
+        }
+        state.connected = false;
+        // The session's process was idle-evicted (or never existed) —
+        // resolveBaseUrl() will start a fresh pump against the respawned
+        // instance next time this session is used, so stop retrying a dead port.
+        if (!workspace || !hasSessionProcess(workspace.workspaceSessionId)) {
+          sessionPumps.delete(sessionId);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    })();
+    return state;
+  }
+
+  async function waitForSessionPump(sessionId, baseUrl, timeoutMs = 15_000) {
+    const state = startSessionPump(sessionId, baseUrl);
+    const deadline = Date.now() + timeoutMs;
+    while (!state.connected && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return state.connected;
+  }
+
+  // Resolves which opencode instance owns `sessionId`'s traffic: its own
+  // dedicated (workspace) process if it has one, ensuring it's running
+  // (transparently respawning/remounting after an idle eviction), otherwise
+  // the single shared instance every non-workspace session already used.
+  async function resolveBaseUrl(sessionId) {
+    const workspace = store.getSessionWorkspace(sessionId);
+    if (!workspace) return ocBase();
+    const entry = await ensureSessionProcess(workspace.workspaceSessionId, {
+      bucket: workspace.workspaceBucket,
+      minioEndpoint,
+      minioAccessKey,
+      minioSecretKey,
+      agentId: store.getSessionAgent(sessionId),
+      store,
+      defaultModelProviderID,
+      litellmProviderID,
+      litellmModel: { baseURL: litellmBaseURL, apiKey: litellmApiKey, providerID: litellmProviderID },
+    });
+    return entry.baseUrl;
+  }
+
   // Per-turn inactivity watchdog: if the pump sees no events for this session
   // for IDLE_FALLBACK_MS while a turn is open, synthesize the terminal idle so
   // clients never hang in "running" forever (e.g. opencode died mid-turn).
@@ -349,7 +446,36 @@ export function createApp({
     const row = store.getAgent(req.body?.agent);
     if (!row) return res.status(400).json({ error: "unknown agent" });
 
-    const r = await ocFetch(await ocBase(), "/session", {
+    // The platform sends the workspace bucket (if any) through metadata —
+    // see session_metadata() in the Rust gateway's runtime_inputs.rs. A
+    // bucket means this session gets its own dedicated opencode process
+    // (session-pool.mjs) with that bucket FUSE-mounted as its cwd, instead
+    // of sharing the single global instance.
+    const workspaceBucket = req.body?.metadata?.workspace_bucket;
+    const workspaceSessionId = req.body?.metadata?.local_session_id;
+    let base;
+    if (workspaceBucket && workspaceSessionId && minioEndpoint) {
+      try {
+        const entry = await ensureSessionProcess(workspaceSessionId, {
+          bucket: workspaceBucket,
+          minioEndpoint,
+          minioAccessKey,
+          minioSecretKey,
+          agentId: row.id,
+          store,
+          defaultModelProviderID,
+          litellmProviderID,
+          litellmModel: { baseURL: litellmBaseURL, apiKey: litellmApiKey, providerID: litellmProviderID },
+        });
+        base = entry.baseUrl;
+      } catch (err) {
+        return res.status(502).json({ error: `workspace mount failed: ${err?.message || err}` });
+      }
+    } else {
+      base = await ocBase();
+    }
+
+    const r = await ocFetch(base, "/session", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: req.body.title || row.name + " session" }),
@@ -367,6 +493,9 @@ export function createApp({
     }
 
     store.bindSession(sid, row.id);
+    if (workspaceBucket && workspaceSessionId && minioEndpoint) {
+      store.setSessionWorkspace(sid, { workspaceSessionId, workspaceBucket });
+    }
 
     res.json(
       sessionResponse({
@@ -387,8 +516,12 @@ export function createApp({
     const parts = partsFromEvents(req.body?.events || []);
     if (!parts.length) return res.status(400).json({ error: "no user.message parts" });
 
+    const base = await resolveBaseUrl(req.params.id);
     // The pump must be subscribed before prompting so no early events are lost.
-    if (!(await waitForPump())) {
+    const pumped = store.getSessionWorkspace(req.params.id)
+      ? await waitForSessionPump(req.params.id, base)
+      : await waitForPump();
+    if (!pumped) {
       return res.status(502).json({ error: "opencode event stream unavailable" });
     }
 
@@ -402,7 +535,7 @@ export function createApp({
       data: { content: parts },
     }, `user:${turnId}`);
 
-    const r = await ocFetch(await ocBase(), `/session/${req.params.id}/prompt_async`, {
+    const r = await ocFetch(base, `/session/${req.params.id}/prompt_async`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -428,7 +561,7 @@ export function createApp({
 
   // Interrupt the in-flight turn — proxies opencode's session abort.
   app.post("/v1/sessions/:id/abort", wrap(async (req, res) => {
-    const r = await ocFetch(await ocBase(), `/session/${req.params.id}/abort`, {
+    const r = await ocFetch(await resolveBaseUrl(req.params.id), `/session/${req.params.id}/abort`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
@@ -479,7 +612,7 @@ export function createApp({
     req.on("close", () => clearInterval(idleMirror));
 
     try {
-      const upstream = await ocFetch(await ocBase(), "/event", { signal: controller.signal });
+      const upstream = await ocFetch(await resolveBaseUrl(req.params.id), "/event", { signal: controller.signal });
       if (!upstream.ok || !upstream.body) {
         res.write(
           `event: session.error\ndata: ${JSON.stringify({

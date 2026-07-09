@@ -18,6 +18,7 @@ import { buildSandboxProvider } from "./sandbox.mjs";
 import { createApp } from "./app.mjs";
 import { fetchLiteLlmModels } from "./model-list.mjs";
 import { opencodeModel, opencodeModelString } from "./models.mjs";
+import { startIdleSweep, stopAllSessionProcesses } from "./session-pool.mjs";
 
 // ---- boot config ----------------------------------------------------------
 const PORT = process.env.PORT || 8080;
@@ -47,6 +48,11 @@ const LITELLM_MODELS = (process.env.LITELLM_MODELS || "")
 // Optional: override the model opencode uses for internal calls (title generation,
 // summarization, etc.). Defaults to the first entry in LITELLM_MODELS.
 const LITELLM_DEFAULT_MODEL = process.env.LITELLM_DEFAULT_MODEL || null;
+// Workspace (MinIO) config — presence of MINIO_ENDPOINT gates whether
+// sessions with a workspace bucket get their own dedicated opencode process.
+const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || null;
+const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || null;
+const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || null;
 if (LITELLM_BASE_URL && LITELLM_API_KEY) {
   await writeProviderConfig(WORKDIR, {
     id: LITELLM_PROVIDER_ID,
@@ -193,7 +199,14 @@ const app = createApp({
   ocBase,
   ocFetch,
   checkOpencode,
+  litellmBaseURL: LITELLM_BASE_URL,
+  litellmApiKey: LITELLM_API_KEY,
+  minioEndpoint: MINIO_ENDPOINT,
+  minioAccessKey: MINIO_ACCESS_KEY,
+  minioSecretKey: MINIO_SECRET_KEY,
 });
+
+startIdleSweep();
 
 // ---- listen + lifecycle ---------------------------------------------------
 const server = app.listen(PORT, "0.0.0.0", () => {
@@ -207,6 +220,7 @@ const shutdown = async (sig) => {
   console.log(`[shutdown] received ${sig}, stopping...`);
   try { server.close(); } catch {}
   try { await oc.stop(); } catch (e) { console.error("[shutdown] oc.stop:", e); }
+  try { await stopAllSessionProcesses(); } catch (e) { console.error("[shutdown] session pool:", e); }
   process.exit(0);
 };
 process.on("SIGTERM", () => shutdown("SIGTERM"));

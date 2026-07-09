@@ -19,6 +19,8 @@ chrono-tz = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 async-stream = "0.3"
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-credential-types = "1"
 hmac = "0.12"
 http = "1"
 jsonwebtoken = "9"

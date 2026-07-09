@@ -123,6 +123,8 @@ pub struct SessionResponse {
     provider_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_bucket: Option<String>,
     status: String,
     environment: Value,
     time: SessionTime,
@@ -146,6 +148,7 @@ impl From<SessionRow> for SessionResponse {
             runtime_agent_ref_id: row.runtime_agent_ref_id,
             provider_session_id: row.provider_session_id,
             provider_run_id: row.provider_run_id,
+            workspace_bucket: row.workspace_bucket,
             status: row.status,
             environment: row.environment_json,
             time: SessionTime {

@@ -202,4 +202,16 @@ fn session_routes() -> Router<Arc<AppState>> {
         )
         .route("/session/{session_id}/interrupt", post(sessions::interrupt))
         .route("/session/{session_id}/abort", post(sessions::abort))
+        .route(
+            "/session/{session_id}/workspace/files",
+            get(sessions::list_files).delete(sessions::delete_file),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/upload-url",
+            post(sessions::create_upload_url),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/download-url",
+            get(sessions::download_url),
+        )
 }

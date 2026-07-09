@@ -115,12 +115,19 @@ pub(super) fn session_metadata(
     agent: &ManagedAgentRow,
     session_id: &str,
     prompt: &str,
+    workspace_bucket: Option<&str>,
 ) -> std::collections::HashMap<String, String> {
-    std::collections::HashMap::from([
+    let mut metadata = std::collections::HashMap::from([
         ("local_agent_id".to_owned(), agent.id.clone()),
         ("local_session_id".to_owned(), session_id.to_owned()),
         ("initial_prompt".to_owned(), metadata_value(prompt)),
-    ])
+    ]);
+    if let Some(bucket) = workspace_bucket {
+        // Read by the local-opencode wrapper's `POST /v1/sessions` handler to
+        // mount this session's workspace before starting its opencode process.
+        metadata.insert("workspace_bucket".to_owned(), bucket.to_owned());
+    }
+    metadata
 }
 
 fn metadata_value(value: &str) -> String {
