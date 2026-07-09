@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 # Node 24 (LTS): Node 26 segfaults during the webpack build's worker-pool
 # teardown on this image (pages generate fine, then the process crashes with
 # SIGSEGV / exit 139). Node 24 builds cleanly.

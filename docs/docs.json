@@ -137,6 +137,7 @@
           {
             "group": "Engineering",
             "pages": [
+              "engineering/agent-production-line",
               "engineering/debugging",
               "engineering/contributing",
               "engineering/sdk-api-contract"

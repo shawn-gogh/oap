@@ -34,6 +34,14 @@ pub async fn accept(
     let pool = super::super::db(&state, &headers).await?.clone();
     let live =
         repository::decide_approval(&pool, &item_id, "accept", None, input.arguments).await?;
+    if live {
+        crate::http::managed_agents::improvements::apply_if_improvement(
+            state.clone(),
+            pool.clone(),
+            &item_id,
+        )
+        .await;
+    }
     resume_linked_session(state, pool, &item_id).await;
     Ok(Json(DecisionResponse { ok: true, live }))
 }

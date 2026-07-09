@@ -31,6 +31,10 @@ import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
   DEFAULT_VAULT_USER,
   agentFileDownloadUrl,
+  createImprovementProposal,
+  listEvalRuns,
+  startEvalRun,
+  type EvalRun,
   deleteAgent,
   deleteAgentFile,
   deleteMemory,
@@ -52,6 +56,15 @@ import type {
   VaultKeyEntry,
   WorkspaceFile,
 } from "@/lib/types";
+
+function cnEval(allPass: boolean, status: string): string {
+  const base = "rounded-full px-2 py-0.5 text-[11px] font-medium";
+  if (status === "running") return `${base} bg-muted text-muted-foreground`;
+  if (status === "failed") return `${base} bg-destructive/10 text-destructive`;
+  return allPass
+    ? `${base} bg-emerald-500/10 text-emerald-600`
+    : `${base} bg-amber-500/10 text-amber-600`;
+}
 
 function timeAgo(ms: number): string {
   const diff = Date.now() - ms;
@@ -133,6 +146,11 @@ function AgentDetail() {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
+  const [evalStarting, setEvalStarting] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
+  const [proposing, setProposing] = useState(false);
+  const [proposalNotice, setProposalNotice] = useState<string | null>(null);
   const [filesLoading, setFilesLoading] = useState(false);
   const [fileQuery, setFileQuery] = useState("");
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
@@ -193,6 +211,7 @@ function AgentDetail() {
         setMemories(memoryRows);
         setFiles(fileRows);
         setStoredKeyEntries(keyRows);
+        listEvalRuns(id).then(setEvalRuns).catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -290,6 +309,67 @@ function AgentDetail() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setDownloadingPath(null);
+    }
+  };
+
+  const runEval = async () => {
+    if (!id || evalStarting) return;
+    setEvalStarting(true);
+    setEvalError(null);
+    try {
+      await startEvalRun(id);
+      setEvalRuns(await listEvalRuns(id));
+      // Refresh a few times while the background run completes.
+      for (const delay of [4000, 8000, 15000, 30000]) {
+        window.setTimeout(() => {
+          listEvalRuns(id).then(setEvalRuns).catch(() => {});
+        }, delay);
+      }
+    } catch (e) {
+      setEvalError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEvalStarting(false);
+    }
+  };
+
+  const autoEvolve = Boolean(
+    agent?.config &&
+      typeof agent.config === "object" &&
+      (agent.config as { design?: { auto_evolve?: boolean } }).design?.auto_evolve,
+  );
+
+  const toggleAutoEvolve = async (enabled: boolean) => {
+    if (!agent) return;
+    const config = (agent.config && typeof agent.config === "object" ? agent.config : {}) as Record<
+      string,
+      unknown
+    >;
+    const design = (config.design && typeof config.design === "object" ? config.design : {}) as Record<
+      string,
+      unknown
+    >;
+    try {
+      const updated = await updateAgent(id, {
+        config: { ...config, design: { ...design, auto_evolve: enabled } },
+      });
+      setAgent(updated);
+    } catch (e) {
+      setEvalError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const proposeImprovement = async () => {
+    if (!id || proposing) return;
+    setProposing(true);
+    setEvalError(null);
+    setProposalNotice(null);
+    try {
+      await createImprovementProposal(id);
+      setProposalNotice("改进提案已生成，进入收件箱等待审批。批准后会自动应用并回归评估。");
+    } catch (e) {
+      setEvalError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProposing(false);
     }
   };
 
@@ -547,6 +627,112 @@ function AgentDetail() {
                   onVaultKeysChange={updateVaultKeys}
                   onStoredKeyEntriesChange={(updater) => setStoredKeyEntries(updater)}
                 />
+
+                <section>
+                  <div className="mb-2 flex items-end justify-between">
+                    <div>
+                      <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        <Check className="size-3.5" />
+                        评估运行
+                      </h2>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        用 design.evaluation 里的用例实测当前配置，结果按版本归档（经验池）。
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label
+                        className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+                        title="每天自动运行评估；有失败时自动生成改进提案进收件箱（仍需人工批准）"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={autoEvolve}
+                          onChange={(e) => void toggleAutoEvolve(e.target.checked)}
+                        />
+                        自动进化
+                      </label>
+                      {evalRuns.some((r) => r.status === "completed" && r.passed < r.total) && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8"
+                          onClick={() => void proposeImprovement()}
+                          disabled={proposing}
+                        >
+                          {proposing ? "生成中..." : "生成改进提案"}
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => void runEval()}
+                        disabled={evalStarting}
+                      >
+                        {evalStarting ? "启动中..." : "运行评估"}
+                      </Button>
+                    </div>
+                  </div>
+                  {proposalNotice && (
+                    <p className="mb-2 rounded-md bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">{proposalNotice}</p>
+                  )}
+                  {evalError && (
+                    <p className="mb-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{evalError}</p>
+                  )}
+                  <Card className="overflow-hidden">
+                    {evalRuns.length === 0 ? (
+                      <div className="p-6 text-center text-sm text-muted-foreground">
+                        暂无评估记录。智能体需要在创建向导的评估步定义用例。
+                      </div>
+                    ) : (
+                      <div className="max-h-[280px] divide-y divide-border overflow-y-auto">
+                        {evalRuns.map((run) => (
+                          <div key={run.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium">
+                                {run.status === "running"
+                                  ? "运行中..."
+                                  : run.status === "failed"
+                                    ? `失败：${run.error ?? ""}`
+                                    : `${run.passed}/${run.total} 通过`}
+                                {run.agent_version != null && (
+                                  <span className="ml-2 text-muted-foreground">v{run.agent_version}</span>
+                                )}
+                              </p>
+                              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                                {run.model} · {formatMemoryDate(run.created_at)}
+                                {run.status === "completed" &&
+                                  Array.isArray(run.results) &&
+                                  run.results.some((r) => !r.pass) && (
+                                    <span className="ml-2">
+                                      未通过：{run.results
+                                        .filter((r) => !r.pass)
+                                        .map((r) => r.category)
+                                        .join(", ")}
+                                    </span>
+                                  )}
+                              </p>
+                            </div>
+                            <span
+                              className={cnEval(
+                                run.status === "completed" && run.passed === run.total,
+                                run.status,
+                              )}
+                            >
+                              {run.status === "completed"
+                                ? run.passed === run.total
+                                  ? "全部通过"
+                                  : "有失败"
+                                : run.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
 
                 <section>
                   <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">

@@ -60,7 +60,7 @@ pub struct Schedule {
     pub timezone: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct UpdateManagedAgent {
     pub name: Option<String>,
     pub model: Option<String>,

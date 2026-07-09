@@ -4,5 +4,6 @@ pub mod get;
 pub mod list;
 pub mod pause;
 pub mod resume;
+pub mod revisions;
 pub mod types;
 pub mod update;

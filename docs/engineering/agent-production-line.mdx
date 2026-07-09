@@ -1,0 +1,157 @@
+---
+title: "智能体生产线"
+description: "从创建向导到自进化闭环：智能体生成的完整链路与工作流程。"
+---
+
+# 智能体生产线（Agent Production Line）
+
+平台的智能体创建不是"写一段 prompt 保存"，而是一条带质量门槛和进化闭环的生产线，遵循自研方法论的五条主线：**评估先行、模块可替换、单变量迭代、经验池、治理层**。
+
+## 总览
+
+```
+定位 Fit → 评估 Eval → 设计 Design → 复核 Review        （创建向导，四步必经）
+      │                                    │
+      │                             POST /api/agents
+      ▼                                    ▼
+ 一句话生成（LLM 按方法论起草，        agent 落库 + revision v1 快照
+ 含 design 元数据预填）                    │
+                                           ▼
+              ┌──────────── 自进化闭环（可选，人在环）────────────┐
+              │  评估运行 eval_runs（LLM Judge 按四类用例打分）    │
+              │        │ 有失败                                   │
+              │        ▼                                          │
+              │  单变量改进提案（仅改 system prompt）              │
+              │        │ 进收件箱 inbox                           │
+              │        ▼                                          │
+              │  人工批准 ──► 自动应用（revision v(n+1)）          │
+              │        │            │                             │
+              │        ▼            ▼                             │
+              │      拒绝=终止   自动回归评估（结果挂新版本）      │
+              └──────── 进化巡检器每 30 分钟驱动一轮 ─────────────┘
+```
+
+## 第一段：创建向导（/agents/new）
+
+四步流程，方法论的阶段门槛由产品结构强制执行，而不是靠模型自觉。
+
+### 1. 定位 Fit
+
+入口三选一：一句话描述（LLM 起草）、模板、手动配置。LLM 起草走
+`draftAgentConfigWithModel()`，其 system prompt 内置方法论指令：
+
+- **可行性四问**：复杂度 / 价值 / 模型可行性 / 错误可恢复，答案如实记入
+  `design.feasibility`；多数为"否"时降级为最简形态（单次调用式 prompt）。
+- **推导而非复述**：从任务分布、成功标准、失败边界推导配置，禁止把用户原话
+  当 mission 贴回去。
+- 生成的 system prompt 必含：目标与约束（不枚举步骤）、停止条件、确认条件
+  （写/外发/破坏性操作默认要人工确认）、风险边界、不确定时如实声明。
+- **工具最小化**：只选任务必需的工具，不默认全开。
+
+### 2. 评估 Eval（红线：没有评估定义，不进设计）
+
+- 可行性四问勾选（有"否"给出降级建议）。
+- 成功标准（可机器判定的 rubric）+ 评估器选择（rule 首选 / llm_judge / environment）。
+- 四类评估用例，每类至少一条：**正常、边界、失败恢复、安全/越权**。
+- 未填齐时"继续设计"按钮禁用——这是结构性门槛，绕不过去。
+
+所有内容存入 `AgentDraft.design`（feasibility / evaluation / governance），
+随 `config.design` 持久化到 agent 行，机器可读，供后续评估自动化消费。
+
+### 3. 设计 Design
+
+原配置编辑器：名称、模型、运行时、system prompt、工具、MCP、保险库密钥、
+技能、规则、子智能体、运行计划。支持界面编辑 / YAML 配置 / 预览三视图。
+
+### 4. 复核 Review
+
+治理检查清单 + 最终配置预览。**治理声明编译为真实约束**，不是展示文案：
+
+| 治理项 | 编译目标 |
+|---|---|
+| 写操作需人工确认 | `config.platform_mcp_ids` 挂载 `request_human_approval` 审批 MCP |
+| 超时上限 | `max_runtime_minutes`（双向同步） |
+| 工具白名单 | `tools` 列表即白名单，随配置下发运行时 |
+| 凭证隔离 | vault 密钥运行时注入，绝不进 prompt |
+
+创建即 `POST /api/agents`：owner 从鉴权 key 派生（非 admin 不能替他人创建），
+并自动记录 **revision v1** 快照。
+
+## 第二段：版本化与测量（自进化的地基）
+
+### 配置版本（agent revisions）
+
+每次 agent create/update 自动写入
+`LiteLLM_ManagedAgentRevisionsTable`（递增 version + 全量快照 + created_by）。
+这是单变量归因的前提：任何评估结果都能指回它运行时的确切配置。
+
+- `GET /api/agents/{id}/revisions`
+
+### 评估运行（eval runs，即经验池）
+
+`LiteLLM_AgentEvalRunsTable` 记录每次评估：agent_version、model、逐用例结果
+（输入/回答/判词）、通过数、发起者。一行 = 经验池一条记录（配置版本 × 测量结果）。
+
+执行方式（当前切片为 llm_judge）：每条用例先用该 agent 的 model + system prompt
+生成回答，再由 LLM Judge 按成功标准逐条判 PASS/FAIL；安全类用例明确
+"顺从不安全请求即 FAIL"。调用走网关自身的路由管线（与 `/v1/messages` 同路径，
+进程内直达，不经 HTTP 回环）。环境级评估（真实会话 + 工作区沙箱）可在同一张表
+后面替换接入。
+
+- `POST /api/agents/{id}/eval-runs` — 发起（无 design.evaluation 直接 400）
+- `GET  /api/agents/{id}/eval-runs` — 历史
+- UI：agent 详情页"评估运行"卡片（运行按钮、按版本的通过率历史）
+
+## 第三段：改进闭环（单变量 + 人在环）
+
+### 改进提案
+
+`POST /api/agents/{id}/improvement-proposals`：
+
+1. 取最近一次**有失败**的已完成评估（没有则 400——先测量再改进）。
+2. LLM 依据当前 system prompt + 成功标准 + 失败用例（含错误回答和判词），
+   起草**单变量改进**：只改 system prompt，尽量贴近原文，不回归已通过行为。
+3. 提案落为收件箱 approval：正文含理由与新 prompt 全文，
+   `args_json.type = "agent_improvement"`，带 base_version 与来源 eval_run_id。
+
+### 批准即应用
+
+收件箱 accept 一个改进提案时自动执行：更新 agent（新 system prompt）→ 记录新
+revision（created_by=`improvement-loop`）→ **自动发起回归评估**，结果挂在新版本
+下。拒绝则不发生任何变更。改动路径上永远有人工门。
+
+### 进化巡检器（定时自动化，按 agent opt-in）
+
+`config.design.auto_evolve: true` 的 agent 由后台巡检器（每 30 分钟）驱动：
+
+- 24 小时内没跑过评估 → 自动发起评估；
+- 最近评估有失败且无待审提案 → 自动生成改进提案进收件箱。
+
+花费护栏：每 agent 每天最多一次自动评估、同时最多一条待审提案；评估运行中不
+重复发起。`POST /api/evolution/sweep`（仅 admin）可手动触发一轮。
+UI 开关在 agent 详情页评估卡片（"自动进化"）。
+
+## 与工作区体系的衔接
+
+- **agent 工作区**（`agent-workspace-{id}` 桶）承载智能体的知识/模板文件，
+  在每个新 session 创建时复制（种子）进 session 工作区，opencode 以 FUSE 挂载
+  为真实工作目录。评估用例后续也可渲染进 agent 工作区（`evals/`）供会话内实跑。
+- **权限**：key 即用户。agent/session 的 owner 从鉴权 key 派生，非 admin 只能
+  访问自己的资源；评估、提案、修订接口全部走 owner-or-admin 校验。
+
+## 数据表速查
+
+| 表 | 用途 |
+|---|---|
+| `LiteLLM_ManagedAgentRevisionsTable` (0027) | 配置版本快照，单变量归因地基 |
+| `LiteLLM_AgentEvalRunsTable` (0028) | 评估运行 = 经验池（版本 × 结果） |
+| `LiteLLM_ManagedAgentInboxItemsTable` | 改进提案作为 approval 项流转 |
+| `LiteLLM_GatewayApiKeysTable` (0026) | key 即用户身份（owner 派生源头） |
+
+## 红线（生产线不变量）
+
+1. 没有评估定义，不进入设计——向导结构强制。
+2. 没有失败的测量，不生成改进——提案接口强制。
+3. 没有人工批准，不发生变更——收件箱是唯一应用入口。
+4. 每次变更只动一个变量，且必跑回归评估——归因永远可查。
+5. 写/破坏性操作默认人工确认；工具永远白名单；凭证永不进 prompt。

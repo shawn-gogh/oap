@@ -45,6 +45,19 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::registry::resume::resume),
         )
         .route(
+            "/api/agents/{agent_id}/revisions",
+            get(super::registry::revisions::list),
+        )
+        .route(
+            "/api/agents/{agent_id}/eval-runs",
+            get(super::eval_runs::list).post(super::eval_runs::create),
+        )
+        .route(
+            "/api/agents/{agent_id}/improvement-proposals",
+            post(super::improvements::create),
+        )
+        .route("/api/evolution/sweep", post(super::evolution::sweep))
+        .route(
             "/api/agents/{agent_id}/workspace/files",
             get(super::workspace::list_files).delete(super::workspace::delete_file),
         )

@@ -47,13 +47,15 @@ import { ScheduleEditor } from "@/components/schedule-editor";
 import {
   AGENT_TEMPLATES,
   agentTemplateForPrompt,
+  blankDesign,
   buildAgentDraftFromPrompt,
   createInputFromDraft,
+  evalGatePassed,
   parseAgentDraftConfig,
   stringifyAgentDraft,
   withRuntimeDefaultTools,
 } from "@/lib/agent-builder";
-import type { AgentDraft, AgentTemplate } from "@/lib/agent-builder";
+import type { AgentDesign, AgentDraft, AgentTemplate } from "@/lib/agent-builder";
 import {
   integrationFromMcpServer,
   sortIntegrations,
@@ -84,7 +86,7 @@ import { scheduleLabel } from "@/lib/schedule";
 import type { Agent, AgentRuntime, Rule, Skill, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type BuilderStep = "create" | "config";
+type BuilderStep = "create" | "eval" | "config" | "review";
 type BuilderView = "edit" | "config" | "preview";
 
 const TEMPLATE_ICONS: Record<string, LucideIcon> = {
@@ -287,7 +289,8 @@ export default function NewAgentPage() {
     setLastRequest(options?.request ?? next.name);
     setDraftNotice(options?.notice ?? null);
     setView("edit");
-    setStep("config");
+    // Methodology gate: evaluation definition comes before design.
+    setStep("eval");
     setError(null);
   };
 
@@ -404,9 +407,15 @@ export default function NewAgentPage() {
               Import agent
             </Button>
             {step === "config" && (
+              <Button size="sm" onClick={() => setStep("review")} disabled={Boolean(parsed.error)}>
+                <CheckCircle2 className="size-3.5" />
+                进入复核
+              </Button>
+            )}
+            {step === "review" && (
               <Button size="sm" onClick={() => void create()} disabled={!canCreate}>
                 <CheckCircle2 className="size-3.5" />
-                {saving ? "Creating..." : "Create agent"}
+                {saving ? "创建中..." : "创建智能体"}
               </Button>
             )}
             <Button
@@ -422,8 +431,28 @@ export default function NewAgentPage() {
         </header>
 
         <main className="min-h-0 flex-1 overflow-y-auto bg-[#fbfbfa] text-[#20201f] dark:bg-background dark:text-foreground">
-          <PlatformSteps activeStep={step === "create" ? 1 : 2} />
-          {step === "create" ? (
+          <PlatformSteps
+            activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
+          />
+          {step === "eval" ? (
+            <EvalStep
+              draft={draft}
+              onDraftChange={updateDraft}
+              onBack={() => setStep("create")}
+              onContinue={() => setStep("config")}
+            />
+          ) : step === "review" ? (
+            <ReviewStep
+              draft={draft}
+              error={error}
+              canCreate={canCreate}
+              saving={saving}
+              mcpIntegrations={mcpIntegrations}
+              onDraftChange={updateDraft}
+              onBack={() => setStep("config")}
+              onCreate={() => void create()}
+            />
+          ) : step === "create" ? (
             <CreateStep
               draft={draft}
               drafting={drafting}
@@ -474,7 +503,7 @@ export default function NewAgentPage() {
                 setError(null);
               }}
               onCopy={() => void copyConfig()}
-              onCreate={() => void create()}
+              onCreate={() => setStep("review")}
               onDraftChange={updateDraft}
               onPromptChange={setPrompt}
               onRefine={draftFromPrompt}
@@ -488,13 +517,17 @@ export default function NewAgentPage() {
   );
 }
 
-function PlatformSteps({ activeStep }: { activeStep: 1 | 2 }) {
+function PlatformSteps({ activeStep }: { activeStep: 1 | 2 | 3 | 4 }) {
   return (
     <div className="border-b border-border bg-background/80 px-4 py-3 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-3">
-        <StepMarker active={activeStep === 1} index={1} label="Create agent" suffix="POST /v1/agents" />
+        <StepMarker active={activeStep === 1} index={1} label="定位 Fit" />
         <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 2} index={2} label="Edit config" />
+        <StepMarker active={activeStep === 2} index={2} label="评估 Eval" />
+        <div className="h-px w-10 bg-border" />
+        <StepMarker active={activeStep === 3} index={3} label="设计 Design" />
+        <div className="h-px w-10 bg-border" />
+        <StepMarker active={activeStep === 4} index={4} label="复核 Review" suffix="POST /v1/agents" />
       </div>
     </div>
   );
@@ -523,6 +556,300 @@ function StepMarker({
       </span>
       <span className="truncate text-sm font-semibold">{label}</span>
       {suffix && <span className="hidden font-mono text-xs text-muted-foreground sm:inline">{suffix}</span>}
+    </div>
+  );
+}
+
+function linesToList(value: string): string[] {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function EvalStep({
+  draft,
+  onDraftChange,
+  onBack,
+  onContinue,
+}: {
+  draft: AgentDraft;
+  onDraftChange: (next: AgentDraft) => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const design: AgentDesign = draft.design ?? blankDesign();
+  const feasibility = design.feasibility ?? blankDesign().feasibility!;
+  const evaluation = design.evaluation ?? blankDesign().evaluation!;
+  const gatePassed = evalGatePassed(design);
+
+  const patchDesign = (patch: Partial<AgentDesign>) =>
+    onDraftChange({ ...draft, design: { ...design, ...patch } });
+
+  const feasibilityItems: Array<{ key: keyof typeof feasibility; label: string; hint: string }> = [
+    { key: "complexity", label: "复杂度", hint: "任务是否多步、难以预先完全指定？" },
+    { key: "value", label: "价值", hint: "结果是否值得更高的成本和延迟？" },
+    { key: "model_fit", label: "可行性", hint: "模型在这类任务上是否够用？" },
+    { key: "recoverable_errors", label: "错误可恢复", hint: "出错能否被发现和恢复？" },
+  ];
+  const negatives = feasibilityItems.filter((item) => !feasibility[item.key]).length;
+
+  const caseFields: Array<{
+    key: "normal_cases" | "edge_cases" | "recovery_cases" | "safety_cases";
+    label: string;
+  }> = [
+    { key: "normal_cases", label: "正常场景" },
+    { key: "edge_cases", label: "边界场景" },
+    { key: "recovery_cases", label: "失败恢复场景" },
+    { key: "safety_cases", label: "安全/越权场景" },
+  ];
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-6">
+      <h2 className="text-lg font-semibold">可行性与评估定义</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        先定义成功标准，再进入设计。没有评估定义，设计步骤保持锁定。
+      </p>
+
+      <section className="mt-6 rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">可行性四问</h3>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {feasibilityItems.map((item) => (
+            <label key={item.key} className="flex cursor-pointer items-start gap-2 rounded-md border border-border p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={feasibility[item.key]}
+                onChange={(e) =>
+                  patchDesign({ feasibility: { ...feasibility, [item.key]: e.target.checked } })
+                }
+              />
+              <span>
+                <span className="block text-sm font-medium">{item.label}</span>
+                <span className="block text-xs text-muted-foreground">{item.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {negatives > 0 && (
+          <p className="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            {negatives} 项可行性回答为"否"——建议退回更简单形态（单次 LLM 调用或代码编排的工作流）。仍可继续，但请让 system prompt 尽量简单。
+          </p>
+        )}
+      </section>
+
+      <section className="mt-4 rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">成功标准</h3>
+        <Textarea
+          className="mt-2 text-sm"
+          rows={2}
+          placeholder="可机器判定的 rubric：怎样的输出才算完成且正确？"
+          value={evaluation.success_criteria}
+          onChange={(e) =>
+            patchDesign({ evaluation: { ...evaluation, success_criteria: e.target.value } })
+          }
+        />
+        <div className="mt-3 flex items-center gap-2">
+          <Label className="text-xs text-muted-foreground">评估器</Label>
+          <Select
+            value={evaluation.evaluator}
+            onValueChange={(value) =>
+              patchDesign({
+                evaluation: { ...evaluation, evaluator: value as typeof evaluation.evaluator },
+              })
+            }
+          >
+            <SelectTrigger className="h-8 w-[200px] text-xs">{evaluation.evaluator}</SelectTrigger>
+            <SelectContent>
+              <SelectItem value="rule">rule（规则校验，首选）</SelectItem>
+              <SelectItem value="llm_judge">llm_judge</SelectItem>
+              <SelectItem value="environment">environment</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </section>
+
+      <section className="mt-4 rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">评估用例</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          每行一条。四类场景各至少一条。
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {caseFields.map((field) => (
+            <div key={field.key}>
+              <Label className="text-xs">
+                {field.label}
+                {evaluation[field.key].length === 0 && (
+                  <span className="ml-1 text-destructive">*</span>
+                )}
+              </Label>
+              <Textarea
+                className="mt-1 font-mono text-xs"
+                rows={3}
+                value={evaluation[field.key].join("\n")}
+                onChange={(e) =>
+                  patchDesign({
+                    evaluation: { ...evaluation, [field.key]: linesToList(e.target.value) },
+                  })
+                }
+              />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="mt-6 flex items-center justify-between">
+        <Button variant="outline" onClick={onBack}>
+          返回
+        </Button>
+        <div className="flex items-center gap-3">
+          {!gatePassed && (
+            <span className="text-xs text-muted-foreground">
+              填写成功标准与全部四类用例后才能继续。
+            </span>
+          )}
+          <Button onClick={onContinue} disabled={!gatePassed}>
+            继续设计
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewStep({
+  draft,
+  error,
+  canCreate,
+  saving,
+  mcpIntegrations,
+  onDraftChange,
+  onBack,
+  onCreate,
+}: {
+  draft: AgentDraft;
+  error: string | null;
+  canCreate: boolean;
+  saving: boolean;
+  mcpIntegrations: Integration[];
+  onDraftChange: (next: AgentDraft) => void;
+  onBack: () => void;
+  onCreate: () => void;
+}) {
+  const design: AgentDesign = draft.design ?? blankDesign();
+  const governance = design.governance ?? blankDesign().governance!;
+
+  const setGovernance = (patch: Partial<typeof governance>) => {
+    const nextGovernance = { ...governance, ...patch };
+    onDraftChange({
+      ...draft,
+      // timeout is enforcement, not prose: keep it in lockstep with the
+      // runtime's max_runtime_minutes.
+      max_runtime_minutes: nextGovernance.timeout_minutes,
+      design: { ...design, governance: nextGovernance },
+    });
+  };
+
+  const checks: Array<{ ok: boolean; label: string; detail: string }> = [
+    {
+      ok: draft.tools.length > 0 || draft.mcp_server_ids.length > 0,
+      label: "工具白名单",
+      detail:
+        draft.tools.length > 0
+          ? `已显式选择 ${draft.tools.length} 个工具：${draft.tools.map((t) => t.type).join(", ")}`
+          : "未选择工具——智能体仅凭语言能力运行。",
+    },
+    {
+      ok: governance.write_requires_approval,
+      label: "写操作需要人工确认",
+      detail: governance.write_requires_approval
+        ? "将挂载审批 MCP；写/破坏性操作会暂停等待人工确认。"
+        : "写操作将无人值守执行。仅只读智能体建议关闭。",
+    },
+    {
+      ok: governance.credential_isolation,
+      label: "凭证隔离",
+      detail:
+        draft.vault_keys.length > 0
+          ? `${draft.vault_keys.length} 个保险库密钥在运行时注入，绝不进入 prompt。`
+          : "未挂载任何凭证。",
+    },
+    {
+      ok: governance.timeout_minutes > 0,
+      label: "运行超时上限",
+      detail: `单次运行上限 ${governance.timeout_minutes} 分钟。`,
+    },
+    {
+      ok: evalGatePassed(design),
+      label: "评估已定义",
+      detail: design.evaluation?.success_criteria
+        ? `成功标准：${design.evaluation.success_criteria}`
+        : "缺少评估定义。",
+    },
+  ];
+
+  return (
+    <div className="mx-auto max-w-5xl px-4 py-6">
+      <h2 className="text-lg font-semibold">复核与治理</h2>
+      <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(320px,0.9fr)_minmax(380px,1.1fr)]">
+        <section className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">治理检查</h3>
+          <ul className="mt-3 grid gap-2">
+            {checks.map((check) => (
+              <li key={check.label} className="flex items-start gap-2 rounded-md border border-border p-3">
+                {check.ok ? (
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+                ) : (
+                  <XCircle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                )}
+                <span>
+                  <span className="block text-sm font-medium">{check.label}</span>
+                  <span className="block text-xs text-muted-foreground">{check.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-4 grid gap-3">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={governance.write_requires_approval}
+                onChange={(e) => setGovernance({ write_requires_approval: e.target.checked })}
+              />
+              写操作需要人工确认
+            </label>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">超时（分钟）</Label>
+              <Input
+                type="number"
+                min={1}
+                className="h-8 w-24 text-xs"
+                value={governance.timeout_minutes}
+                onChange={(e) => {
+                  const next = Number.parseInt(e.target.value, 10);
+                  if (Number.isFinite(next) && next > 0) setGovernance({ timeout_minutes: next });
+                }}
+              />
+            </div>
+          </div>
+          {error && (
+            <p className="mt-4 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+          )}
+          <div className="mt-5 flex items-center justify-between">
+            <Button variant="outline" onClick={onBack}>
+              返回设计
+            </Button>
+            <Button onClick={onCreate} disabled={!canCreate}>
+              <CheckCircle2 className="size-3.5" />
+              {saving ? "创建中..." : "创建智能体"}
+            </Button>
+          </div>
+        </section>
+        <section className="flex min-h-0 flex-col rounded-lg border border-border bg-card">
+          <div className="border-b border-border px-5 py-3 text-sm font-semibold">最终配置</div>
+          <ConfigPreview draft={draft} mcpIntegrations={mcpIntegrations} />
+        </section>
+      </div>
     </div>
   );
 }
@@ -722,7 +1049,7 @@ function ConfigStep({
             </div>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button type="button" onClick={onCreate} disabled={!canCreate || drafting}>
-                {saving ? "Creating..." : "Create this agent"}
+                {saving ? "创建中..." : "进入复核并创建"}
               </Button>
               <Button
                 type="button"

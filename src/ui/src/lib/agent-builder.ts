@@ -21,6 +21,33 @@ export interface AgentDraft {
   mcp_server_ids: string[];
   max_runtime_minutes: number;
   on_failure: string;
+  /** Methodology artifacts (feasibility gate, eval definition, governance).
+   *  Persisted in the agent's config JSON; not sent to the runtime. */
+  design?: AgentDesign;
+}
+
+export interface AgentDesign {
+  feasibility?: {
+    complexity: boolean;
+    value: boolean;
+    model_fit: boolean;
+    recoverable_errors: boolean;
+  };
+  evaluation?: {
+    task_distribution: Array<{ type: string; share?: number; example: string }>;
+    success_criteria: string;
+    normal_cases: string[];
+    edge_cases: string[];
+    recovery_cases: string[];
+    safety_cases: string[];
+    evaluator: "rule" | "llm_judge" | "environment";
+  };
+  governance?: {
+    write_requires_approval: boolean;
+    credential_isolation: boolean;
+    tool_whitelist: boolean;
+    timeout_minutes: number;
+  };
 }
 
 export type AgentTool = Record<string, string>;
@@ -409,7 +436,111 @@ export function stringifyAgentDraft(draft: AgentDraft): string {
   if (draft.mcp_server_ids.length > 0) lines.push(`mcp_servers: ${listBlock(draft.mcp_server_ids)}`);
   if (draft.max_runtime_minutes !== 30) lines.push(`max_runtime_minutes: ${draft.max_runtime_minutes}`);
   if (draft.on_failure !== DEFAULT_FAILURE) lines.push(`on_failure: ${scalar(draft.on_failure)}`);
+  if (draft.design && Object.keys(draft.design).length > 0) {
+    lines.push("design:", ...yamlLines(draft.design as YamlValue, 1));
+  }
   return lines.join("\n");
+}
+
+type YamlValue = string | number | boolean | YamlValue[] | { [key: string]: YamlValue };
+
+function yamlLines(value: YamlValue, depth: number): string[] {
+  const pad = "  ".repeat(depth);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const entries = Object.entries(item).filter(([, v]) => v !== undefined);
+        return entries.map(([k, v], idx) =>
+          `${pad}${idx === 0 ? "- " : "  "}${k}: ${scalar(String(v))}`,
+        );
+      }
+      return [`${pad}- ${scalar(String(item))}`];
+    });
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .filter(([, v]) => v !== undefined)
+      .flatMap(([k, v]) => {
+        if (v && typeof v === "object") {
+          const nested = yamlLines(v as YamlValue, depth + 1);
+          return nested.length > 0 ? [`${pad}${k}:`, ...nested] : [`${pad}${k}: []`];
+        }
+        return [`${pad}${k}: ${typeof v === "string" ? scalar(v) : String(v)}`];
+      });
+  }
+  return [`${pad}${typeof value === "string" ? scalar(value) : String(value)}`];
+}
+
+/** Parses an indented YAML-subset subtree (maps, scalar lists, lists of flat
+ *  maps) starting after `start`; returns the parsed value and the index of the
+ *  last consumed line. Only used for the design block. */
+function parseYamlSubtree(lines: string[], start: number, minIndent: number): { value: YamlValue; end: number } {
+  let i = start;
+  let map: { [key: string]: YamlValue } | null = null;
+  let list: YamlValue[] | null = null;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+    const indent = indentOf(line);
+    if (indent < minIndent) break;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("- ") || trimmed === "-") {
+      list = list ?? [];
+      const rest = trimmed.replace(/^-\s*/, "");
+      const kv = rest.match(/^([A-Za-z_][A-Za-z0-9_]*):(?:\s*(.*))?$/);
+      if (kv) {
+        // List item that is a flat map; following deeper-indented `k: v`
+        // lines belong to the same item.
+        const item: { [key: string]: YamlValue } = { [kv[1]]: parseScalarValue(kv[2] ?? "") };
+        i += 1;
+        while (i < lines.length) {
+          const next = lines[i];
+          if (!next.trim()) {
+            i += 1;
+            continue;
+          }
+          if (indentOf(next) <= indent || next.trim().startsWith("- ")) break;
+          const nkv = next.trim().match(/^([A-Za-z_][A-Za-z0-9_]*):(?:\s*(.*))?$/);
+          if (nkv) item[nkv[1]] = parseScalarValue(nkv[2] ?? "");
+          i += 1;
+        }
+        list.push(item);
+        continue;
+      }
+      list.push(parseScalarValue(rest));
+      i += 1;
+      continue;
+    }
+    const kv = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*):(?:\s*(.*))?$/);
+    if (!kv) {
+      i += 1;
+      continue;
+    }
+    map = map ?? {};
+    const raw = (kv[2] ?? "").trim();
+    if (raw) {
+      map[kv[1]] = raw.startsWith("[")
+        ? inlineList(raw)
+        : parseScalarValue(raw);
+      i += 1;
+    } else {
+      const nested = parseYamlSubtree(lines, i + 1, indent + 1);
+      map[kv[1]] = nested.value;
+      i = nested.end;
+    }
+  }
+  return { value: (map ?? list ?? "") as YamlValue, end: i };
+}
+
+function parseScalarValue(raw: string): YamlValue {
+  const value = unquote(raw);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+  return value;
 }
 
 function indentOf(line: string): number {
@@ -624,6 +755,15 @@ export function parseAgentDraftConfig(source: string): ParsedAgentDraft {
       continue;
     }
 
+    if (key === "design") {
+      const nested = parseYamlSubtree(lines, i + 1, 1);
+      if (nested.value && typeof nested.value === "object" && !Array.isArray(nested.value)) {
+        draft.design = nested.value as AgentDesign;
+      }
+      i = nested.end - 1;
+      continue;
+    }
+
     if (key === "vault_keys" || key === "skill_ids" || key === "rule_ids" || key === "mcp_servers") {
       const values = value ? inlineList(value) : [];
       if (!value) {
@@ -660,6 +800,40 @@ export function parseAgentDraftConfig(source: string): ParsedAgentDraft {
   return { draft, error: null };
 }
 
+/** Methodology red line: no evaluation definition, no design phase. */
+export function evalGatePassed(design: AgentDesign | undefined): boolean {
+  const evaluation = design?.evaluation;
+  if (!evaluation) return false;
+  return (
+    evaluation.success_criteria.trim().length > 0 &&
+    evaluation.normal_cases.length > 0 &&
+    evaluation.edge_cases.length > 0 &&
+    evaluation.recovery_cases.length > 0 &&
+    evaluation.safety_cases.length > 0
+  );
+}
+
+export function blankDesign(): AgentDesign {
+  return {
+    feasibility: { complexity: true, value: true, model_fit: true, recoverable_errors: true },
+    evaluation: {
+      task_distribution: [],
+      success_criteria: "",
+      normal_cases: [],
+      edge_cases: [],
+      recovery_cases: [],
+      safety_cases: [],
+      evaluator: "rule",
+    },
+    governance: {
+      write_requires_approval: true,
+      credential_isolation: true,
+      tool_whitelist: true,
+      timeout_minutes: 30,
+    },
+  };
+}
+
 export function createInputFromDraft(
   draft: AgentDraft,
   integrations: Integration[] = INTEGRATIONS,
@@ -678,7 +852,12 @@ export function createInputFromDraft(
   const mcpToolsets = resolvedMcpServers.map(({ id }) => ({ type: "mcp_toolset", mcp_server_name: id }));
   const allTools = [...baseTools, ...mcpToolsets];
   const subAgents = cleanSubAgents(draft.sub_agents);
-  const platformMcpIds = subAgents.length > 0 ? ["run_sub_agent"] : [];
+  const platformMcpIds = [
+    ...(subAgents.length > 0 ? ["run_sub_agent"] : []),
+    // Governance compiled to enforcement, not just prose: write approval
+    // attaches the platform approval MCP so the runtime can actually gate.
+    ...(draft.design?.governance?.write_requires_approval ? ["request_human_approval"] : []),
+  ];
 
   return {
     name: draft.name.trim(),
@@ -702,6 +881,11 @@ export function createInputFromDraft(
       mcp_servers: mcpServers,
       sub_agents: subAgents,
       platform_mcp_ids: platformMcpIds,
+      // Methodology artifacts; persisted for review/eval tooling, not
+      // consumed by the runtime.
+      ...(draft.design && Object.keys(draft.design).length > 0
+        ? { design: draft.design }
+        : {}),
     },
   };
 }

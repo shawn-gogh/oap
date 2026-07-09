@@ -776,9 +776,21 @@ export async function draftAgentConfigWithModel(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model,
-      max_tokens: 1200,
+      max_tokens: 2400,
       system:
-        `You design managed agent configs for LiteLLM Agent Platform. Return only valid YAML, with no markdown fence and no prose. Use these primary keys when relevant: name, description, model, runtime, system, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Use ${model} unless a different available model is clearly requested. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Do not emit provider-native toolset identifiers such as agent_toolset_20260401. If the selected runtime has no explicit LAP-managed tools, use tools: []. Do not include harness. Do not include provider-native multiagent or callable_agents. For sub-agents, only emit existing LAP agent references if the user provided exact IDs, using \`sub_agents:\` entries with \`agent_id\`. If useful helper agents are implied but no IDs are known, describe them in the system prompt as suggested roles instead of inventing IDs. Do not paste the user's request as a generic mission; synthesize a complete, specific system prompt that tells the agent how to behave, what to avoid, when to delegate to attached sub-agents, and when to ask for approval. Include schedule, vault_keys, skill_ids, or rule_ids only when the request clearly needs them.\n\n` +
+        `You design managed agent configs for LiteLLM Agent Platform, following a production-line methodology: assess feasibility first, derive everything from the task definition, and build governance in.\n\n` +
+        `METHODOLOGY (apply in order):\n` +
+        `1. Feasibility gate. Before designing, judge four questions: is the task multi-step and hard to fully pre-specify (complexity)? Is the result worth the cost and latency (value)? Are current models capable of this task class (model_fit)? Can errors be detected and recovered (recoverable_errors)? Record honest answers in design.feasibility. If most answers are "no", still emit a config but make the system prompt the simplest viable form (single-shot instructions, no autonomous looping) and say so in the description.\n` +
+        `2. Derive, don't parrot. Infer the task distribution (what request types, with a concrete input example each), success criteria (how completion is judged), and failure boundaries from the user's request; record them in design.evaluation. The system prompt must be synthesized from these — never paste the user's request back as a generic mission.\n` +
+        `3. The system prompt MUST state: the goal and constraints (not an enumerated step list); explicit stop conditions (when the task is done, when to give up); explicit confirmation conditions (which actions require asking the human first — any write, external send, or destructive action does by default); risk boundaries (what the agent must never do); and when to state uncertainty instead of fabricating conclusions.\n` +
+        `4. Minimal tools. Select only the tools the task actually needs — do not default to the full toolset. Every write-capable tool implies the confirmation rule above. Record governance decisions in design.governance.\n\n` +
+        `OUTPUT: return only valid YAML, no markdown fence, no prose. Use these primary keys when relevant: name, description, model, runtime, system, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, design. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Use ${model} unless a different available model is clearly requested. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Do not emit provider-native toolset identifiers such as agent_toolset_20260401. If the selected runtime has no explicit LAP-managed tools, use tools: []. Do not include harness. Do not include provider-native multiagent or callable_agents. For sub-agents, only emit existing LAP agent references if the user provided exact IDs, using \`sub_agents:\` entries with \`agent_id\`. If useful helper agents are implied but no IDs are known, describe them in the system prompt as suggested roles instead of inventing IDs. Include schedule, vault_keys, skill_ids, or rule_ids only when the request clearly needs them.\n\n` +
+        `The design key records the methodology artifacts and must always be present, shaped exactly like:\n` +
+        `design:\n` +
+        `  feasibility:\n    complexity: true\n    value: true\n    model_fit: true\n    recoverable_errors: true\n` +
+        `  evaluation:\n    success_criteria: "<machine-checkable rubric in one or two sentences>"\n    evaluator: rule\n    task_distribution:\n      - type: "<request type>"\n        example: "<concrete input example>"\n    normal_cases: ["<case>"]\n    edge_cases: ["<case>"]\n    recovery_cases: ["<case>"]\n    safety_cases: ["<case>"]\n` +
+        `  governance:\n    write_requires_approval: true\n    credential_isolation: true\n    tool_whitelist: true\n    timeout_minutes: 30\n` +
+        `evaluator is one of: rule (preferred when checkable by rules), llm_judge, environment. Include at least one entry in each case list, covering normal, boundary, failure-recovery, and safety/abuse scenarios.\n\n` +
         runtimeToolCatalogPrompt(runtimes),
       messages: [
         {
@@ -1727,6 +1739,48 @@ export async function createSlackOAuthState(agentId: string): Promise<string> {
 
 export async function deleteAgent(id: string): Promise<void> {
   await req(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// ── Agent evaluation runs ───────────────────────────────────────────────────
+
+export interface EvalRun {
+  id: string;
+  agent_id: string;
+  agent_version?: number | null;
+  model: string;
+  status: string;
+  total: number;
+  passed: number;
+  results: Array<{
+    category: string;
+    input: string;
+    answer: string;
+    pass: boolean;
+    verdict: string;
+  }>;
+  error?: string | null;
+  created_at: number;
+  completed_at?: number | null;
+}
+
+export async function listEvalRuns(agentId: string): Promise<EvalRun[]> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/eval-runs`);
+  const data = await jsonOrThrow<{ runs: EvalRun[] }>(res);
+  return data.runs ?? [];
+}
+
+export async function startEvalRun(agentId: string): Promise<EvalRun> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/eval-runs`, {
+    method: "POST",
+  });
+  return jsonOrThrow<EvalRun>(res);
+}
+
+export async function createImprovementProposal(agentId: string): Promise<{ id: string }> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/improvement-proposals`, {
+    method: "POST",
+  });
+  return jsonOrThrow<{ id: string }>(res);
 }
 
 // ── Agent workspace files (per-agent MinIO bucket) ─────────────────────────
