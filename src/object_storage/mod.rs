@@ -13,6 +13,7 @@ use std::time::Duration;
 use aws_sdk_s3::{
     config::{BehaviorVersion, Builder as S3ConfigBuilder, Credentials, Region},
     presigning::PresigningConfig,
+    primitives::ByteStream,
     Client,
 };
 
@@ -240,6 +241,23 @@ impl ObjectStorageClient {
             .map_err(|e| GatewayError::SandboxError(format!("delete object failed: {e}")))
     }
 
+    pub async fn put_bytes(
+        &self,
+        bucket: &str,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), GatewayError> {
+        self.internal
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from(bytes))
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| GatewayError::SandboxError(format!("put object {key} failed: {e}")))
+    }
+
     /// Deletes every object in the bucket, then the bucket itself. Used when
     /// a session is deleted; best-effort per-object (a single stuck object
     /// shouldn't block session deletion), but bucket deletion is reported.
@@ -279,7 +297,9 @@ impl ObjectStorageClient {
             .send()
             .await
             .map(|_| ())
-            .map_err(|e| GatewayError::SandboxError(format!("failed to delete bucket {bucket}: {e}")))
+            .map_err(|e| {
+                GatewayError::SandboxError(format!("failed to delete bucket {bucket}: {e}"))
+            })
     }
 }
 

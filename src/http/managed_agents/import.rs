@@ -7,6 +7,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 
+use crate::db::managed_agents::harnesses;
 use crate::{
     db::{
         credentials,
@@ -18,13 +19,16 @@ use crate::{
         ExternalAgent, ImportAgent, ImportAgentsRequest, ImportAgentsResponse,
         ImportProviderResponse,
     },
-    proxy::{auth::master_key::require_any_gateway_key, credential_crypto, state::AppState},
+    proxy::{
+        auth::master_key::{authenticate, require_any_gateway_key, AuthContext},
+        credential_crypto,
+        state::AppState,
+    },
     sdk::providers::{
         elastic::import_agents::ELASTIC_IMPORT_AGENTS, import_agents::ImportAgentsProvider,
         opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
 };
-use crate::db::managed_agents::harnesses;
 
 pub async fn discover(
     State(state): State<Arc<AppState>>,
@@ -51,7 +55,7 @@ pub async fn import(
     Path(provider_id): Path<String>,
     Json(input): Json<ImportAgentsRequest>,
 ) -> Result<(StatusCode, Json<ImportAgentsResponse>), GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
+    let auth = authenticate(&headers, &state).await?;
     if input.agents.is_empty() {
         return Err(GatewayError::InvalidJsonMessage(
             "at least one agent is required".to_owned(),
@@ -60,9 +64,10 @@ pub async fn import(
     let provider = resolve_provider(&state, &provider_id).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
-    let owner_id = owner_id(&input).to_owned();
+    let owner_id = owner_id_for_import(&input, &auth);
     let api_key = input.api_key.as_deref().map(str::trim);
     let credential_mode = input.credential_mode;
+    validate_credential_mode(&credential_mode, &auth)?;
     let runtime = runtime_for_import(&state, provider, &provider_id, &endpoint).await;
 
     let mut rows = Vec::with_capacity(input.agents.len());
@@ -84,6 +89,14 @@ pub async fn import(
             )
             .await?,
         );
+        if let Some(row) = rows.last() {
+            let _ = crate::db::managed_agents::registry::revisions::record(
+                pool,
+                row,
+                Some(&auth.user_id),
+            )
+            .await;
+        }
     }
 
     Ok((
@@ -206,13 +219,28 @@ fn shared_api_key(api_key: Option<&str>) -> Result<&str, GatewayError> {
     })
 }
 
-fn owner_id(input: &ImportAgentsRequest) -> &str {
-    input
-        .owner_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("internal")
+fn owner_id_for_import(input: &ImportAgentsRequest, auth: &AuthContext) -> String {
+    if auth.is_admin {
+        if let Some(owner_id) = input
+            .owner_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return owner_id.to_owned();
+        }
+    }
+    auth.user_id.clone()
+}
+
+fn validate_credential_mode(
+    credential_mode: &CredentialMode,
+    auth: &AuthContext,
+) -> Result<(), GatewayError> {
+    if matches!(credential_mode, CredentialMode::Shared) && !auth.is_admin {
+        return Err(GatewayError::Unauthorized);
+    }
+    Ok(())
 }
 
 fn agent_name(agent: &ImportAgent) -> &str {
@@ -280,7 +308,9 @@ fn source_config(
     credential_name: Option<String>,
 ) -> Value {
     json!({
+        "kind": "external_agent",
         "provider": provider.id(),
+        "provider_name": provider.name(),
         "api_spec": provider.api_spec(),
         "endpoint": endpoint,
         "external_agent_id": agent.external_id,

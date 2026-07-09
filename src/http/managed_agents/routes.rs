@@ -91,6 +91,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
 fn import_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
+            "/api/agents/import/opencode-files",
+            post(super::import_files::import_opencode_files),
+        )
+        .route(
             "/api/agents/import/{provider_id}/discover",
             post(super::import::discover),
         )

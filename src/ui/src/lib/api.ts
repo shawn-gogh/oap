@@ -464,6 +464,27 @@ export async function importProviderAgents(input: {
   return data.agents;
 }
 
+export async function importOpencodeAgentFiles(input: {
+  runtime?: string;
+  ownerId?: string;
+  files: Array<{ filename: string; content: string }>;
+}): Promise<Agent[]> {
+  const res = await req("/api/agents/import/opencode-files", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      runtime: input.runtime,
+      owner_id: input.ownerId,
+      files: input.files.map((file) => ({
+        filename: file.filename,
+        content: file.content,
+      })),
+    }),
+  });
+  const data = await jsonOrThrow<{ agents: Agent[] }>(res);
+  return data.agents;
+}
+
 export type ProviderCategory = "model" | "runtime";
 
 export interface AvailableProvider {
@@ -736,7 +757,18 @@ function yamlFromMessage(text: string): string {
   return (fenced?.[1] ?? text).trim();
 }
 
-function runtimeSelectionPrompt(runtimes: AgentRuntime[]): string {
+function jsonFromMessage(text: string): unknown {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = (fenced?.[1] ?? text).trim();
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("Model returned no JSON.");
+  return JSON.parse(raw.slice(start, end + 1));
+}
+
+type AgentDraftRuntimeChoice = Pick<AgentRuntime, "id" | "name" | "tools" | "connected">;
+
+function runtimeSelectionPrompt(runtimes: AgentDraftRuntimeChoice[]): string {
   // Steer the draft toward runtimes that are actually connected on this
   // install; a hardcoded claude_managed_agents default breaks deployments
   // without Anthropic credentials.
@@ -747,7 +779,7 @@ function runtimeSelectionPrompt(runtimes: AgentRuntime[]): string {
   return `The runtime must be one of these connected runtime IDs: ${ids.join(", ")}. Use ${ids[0]} unless the user explicitly names another one of them.`;
 }
 
-function runtimeToolCatalogPrompt(runtimes: AgentRuntime[]): string {
+function runtimeToolCatalogPrompt(runtimes: AgentDraftRuntimeChoice[]): string {
   if (runtimes.length === 0) {
     return [
       "Available runtime tools:",
@@ -764,10 +796,24 @@ function runtimeToolCatalogPrompt(runtimes: AgentRuntime[]): string {
   ].join("\n");
 }
 
+function skillCatalogPrompt(skills: Skill[]): string {
+  if (skills.length === 0) return "- no reusable skills available";
+  return skills
+    .slice(0, 40)
+    .map((skill) => {
+      const description = skill.description?.trim() || "No description.";
+      return `- ${skill.id}: ${skill.name}. ${description}`;
+    })
+    .join("\n");
+}
+
 export async function draftAgentConfigWithModel(
   desire: string,
-  runtimes: AgentRuntime[] = [],
+  runtimes: AgentDraftRuntimeChoice[] = [],
   requestedModel?: string,
+  context?: {
+    skills?: Skill[];
+  },
 ): Promise<string> {
   const models = await listModels();
   const model = draftModelFrom(models, requestedModel);
@@ -784,14 +830,15 @@ export async function draftAgentConfigWithModel(
         `2. Derive, don't parrot. Infer the task distribution (what request types, with a concrete input example each), success criteria (how completion is judged), and failure boundaries from the user's request; record them in design.evaluation. The system prompt must be synthesized from these — never paste the user's request back as a generic mission.\n` +
         `3. The system prompt MUST state: the goal and constraints (not an enumerated step list); explicit stop conditions (when the task is done, when to give up); explicit confirmation conditions (which actions require asking the human first — any write, external send, or destructive action does by default); risk boundaries (what the agent must never do); and when to state uncertainty instead of fabricating conclusions.\n` +
         `4. Minimal tools. Select only the tools the task actually needs — do not default to the full toolset. Every write-capable tool implies the confirmation rule above. Record governance decisions in design.governance.\n\n` +
-        `OUTPUT: return only valid YAML, no markdown fence, no prose. Use these primary keys when relevant: name, description, model, runtime, system, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, design. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Use ${model} unless a different available model is clearly requested. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Do not emit provider-native toolset identifiers such as agent_toolset_20260401. If the selected runtime has no explicit LAP-managed tools, use tools: []. Do not include harness. Do not include provider-native multiagent or callable_agents. For sub-agents, only emit existing LAP agent references if the user provided exact IDs, using \`sub_agents:\` entries with \`agent_id\`. If useful helper agents are implied but no IDs are known, describe them in the system prompt as suggested roles instead of inventing IDs. Include schedule, vault_keys, skill_ids, or rule_ids only when the request clearly needs them.\n\n` +
+        `OUTPUT: return only valid YAML, no markdown fence, no prose. Use these primary keys when relevant: name, description, model, runtime, system, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, design. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Recommend the model that best fits the user's agent, using ${model} only when no better available model is implied. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Do not emit provider-native toolset identifiers such as agent_toolset_20260401. If the selected runtime has no explicit LAP-managed tools, use tools: []. Do not include harness. Do not include provider-native multiagent or callable_agents. For sub-agents, only emit existing LAP agent references if the user provided exact IDs, using \`sub_agents:\` entries with \`agent_id\`. If useful helper agents are implied but no IDs are known, describe them in the system prompt as suggested roles instead of inventing IDs. Include schedule, vault_keys, skill_ids, or rule_ids only when the request clearly needs them. Attach skill_ids only from Available skills when they materially improve the agent.\n\n` +
         `The design key records the methodology artifacts and must always be present, shaped exactly like:\n` +
         `design:\n` +
         `  feasibility:\n    complexity: true\n    value: true\n    model_fit: true\n    recoverable_errors: true\n` +
         `  evaluation:\n    success_criteria: "<machine-checkable rubric in one or two sentences>"\n    evaluator: rule\n    task_distribution:\n      - type: "<request type>"\n        example: "<concrete input example>"\n    normal_cases: ["<case>"]\n    edge_cases: ["<case>"]\n    recovery_cases: ["<case>"]\n    safety_cases: ["<case>"]\n` +
         `  governance:\n    write_requires_approval: true\n    credential_isolation: true\n    tool_whitelist: true\n    timeout_minutes: 30\n` +
         `evaluator is one of: rule (preferred when checkable by rules), llm_judge, environment. Include at least one entry in each case list, covering normal, boundary, failure-recovery, and safety/abuse scenarios.\n\n` +
-        runtimeToolCatalogPrompt(runtimes),
+        runtimeToolCatalogPrompt(runtimes) +
+        `\n\nAvailable skills:\n${skillCatalogPrompt(context?.skills ?? [])}`,
       messages: [
         {
           role: "user",
@@ -805,6 +852,92 @@ export async function draftAgentConfigWithModel(
   const yaml = yamlFromMessage(text);
   if (!yaml) throw new Error("Model returned an empty config.");
   return yaml;
+}
+
+export interface AgentBuilderCopilotToolRecommendation {
+  tool: string;
+  action: "add" | "remove" | "keep";
+  reason: string;
+  risk?: string;
+}
+
+export interface AgentBuilderCopilotResponse {
+  summary: string;
+  clarification_questions: string[];
+  tool_recommendations: AgentBuilderCopilotToolRecommendation[];
+  risks: string[];
+  suggested_system_notes: string[];
+}
+
+export async function askAgentBuilderCopilot(input: {
+  mode: "clarify" | "explain" | "tools";
+  userMessage: string;
+  currentConfig: string;
+  runtime: string;
+  selectedTools: string[];
+  availableTools: Array<{ id: string; name: string; description: string }>;
+  requestedModel?: string;
+}): Promise<AgentBuilderCopilotResponse> {
+  const models = await listModels();
+  const model = draftModelFrom(models, input.requestedModel);
+  const availableTools = input.availableTools
+    .map((tool) => `- ${tool.id}: ${tool.name}. ${tool.description}`)
+    .join("\n");
+  const res = await req("/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1400,
+      system:
+        `You are the interactive Agent Builder Copilot for LiteLLM Agent Platform.\n` +
+        `Help the user improve the current managed-agent draft without taking over final decisions.\n` +
+        `Mode: ${input.mode}.\n\n` +
+        `Return only JSON with this exact shape:\n` +
+        `{"summary":"...","clarification_questions":["..."],"tool_recommendations":[{"tool":"read","action":"add|remove|keep","reason":"...","risk":"..."}],"risks":["..."],"suggested_system_notes":["..."]}\n\n` +
+        `Rules:\n` +
+        `- Ask at most 4 clarification questions.\n` +
+        `- Recommend only tools from Available tools.\n` +
+        `- Keep tools minimal. read/glob/grep are low risk, edit/write are write risk, bash is highest risk, web tools can exfiltrate context.\n` +
+        `- Do not recommend MCP toolsets directly.\n` +
+        `- For explain mode, explain current decisions and risks.\n` +
+        `- For tools mode, focus tool_recommendations and include concrete reasons.\n\n` +
+        `Runtime: ${input.runtime}\n` +
+        `Selected tools: ${input.selectedTools.join(", ") || "none"}\n` +
+        `Available tools:\n${availableTools || "- none"}`,
+      messages: [
+        {
+          role: "user",
+          content:
+            `User request:\n${input.userMessage.trim() || "(no extra message)"}\n\n` +
+            `Current agent YAML:\n${input.currentConfig}`,
+        },
+      ],
+    }),
+  });
+  const payload = await jsonOrThrow<unknown>(res);
+  const parsed = jsonFromMessage(messageText(payload)) as Partial<AgentBuilderCopilotResponse>;
+  return {
+    summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    clarification_questions: Array.isArray(parsed.clarification_questions)
+      ? parsed.clarification_questions.filter((item): item is string => typeof item === "string").slice(0, 4)
+      : [],
+    tool_recommendations: Array.isArray(parsed.tool_recommendations)
+      ? parsed.tool_recommendations
+          .filter((item): item is AgentBuilderCopilotToolRecommendation => {
+            if (!item || typeof item !== "object") return false;
+            const rec = item as AgentBuilderCopilotToolRecommendation;
+            return typeof rec.tool === "string" && ["add", "remove", "keep"].includes(rec.action);
+          })
+          .slice(0, 12)
+      : [],
+    risks: Array.isArray(parsed.risks)
+      ? parsed.risks.filter((item): item is string => typeof item === "string").slice(0, 6)
+      : [],
+    suggested_system_notes: Array.isArray(parsed.suggested_system_notes)
+      ? parsed.suggested_system_notes.filter((item): item is string => typeof item === "string").slice(0, 6)
+      : [],
+  };
 }
 
 export async function listSpendLogs(input?: {

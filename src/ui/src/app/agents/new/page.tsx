@@ -19,6 +19,7 @@ import {
   Mail,
   Plug,
   Plus,
+  MessageSquareText,
   Search,
   ShieldCheck,
   Sparkles,
@@ -63,6 +64,7 @@ import {
 import type { Integration } from "@/lib/integrations";
 import {
   apiErrorMessage,
+  askAgentBuilderCopilot,
   createAgent,
   draftAgentConfigWithModel,
   listAgentRuntimes,
@@ -75,6 +77,7 @@ import {
   listRules,
   listSkills,
 } from "@/lib/api";
+import type { AgentBuilderCopilotResponse } from "@/lib/api";
 import {
   defaultModelForRuntime,
   modelOptions,
@@ -83,7 +86,7 @@ import {
 } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
 import { scheduleLabel } from "@/lib/schedule";
-import type { Agent, AgentRuntime, Rule, Skill, RuntimeHarness } from "@/lib/types";
+import type { Agent, AgentRuntime, AgentRuntimeTool, Rule, Skill, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type BuilderStep = "create" | "eval" | "config" | "review";
@@ -304,7 +307,12 @@ export default function NewAgentPage() {
     setDraftNotice(null);
     setLastRequest(trimmed);
     try {
-      const generated = await draftAgentConfigWithModel(trimmed, runtimes, selectedModel);
+      const generated = await draftAgentConfigWithModel(
+        trimmed,
+        runtimeChoicesForDrafting(harnesses, runtimes),
+        selectedModel,
+        { skills },
+      );
       const generatedDraft = parseAgentDraftConfig(generated);
       if (generatedDraft.error) throw new Error(generatedDraft.error);
       openConfig(
@@ -456,11 +464,13 @@ export default function NewAgentPage() {
             <CreateStep
               draft={draft}
               drafting={drafting}
-              models={models}
               modelsError={modelsError}
               modelsLoading={modelsLoading}
               prompt={prompt}
+              harnesses={harnesses}
               selectedTemplateId={selectedTemplateId}
+              skills={skills}
+              runtimes={runtimes}
               onDraftChange={updateDraft}
               onPromptChange={setPrompt}
               onGenerate={draftFromPrompt}
@@ -567,6 +577,56 @@ function linesToList(value: string): string[] {
     .filter(Boolean);
 }
 
+function suggestedEvaluationForDraft(draft: AgentDraft): AgentDesign {
+  const name = draft.name.trim() || "this agent";
+  const objective = draft.description.trim() || "complete the requested workflow";
+  return {
+    feasibility: { complexity: true, value: true, model_fit: true, recoverable_errors: true },
+    evaluation: {
+      task_distribution: [
+        {
+          type: "primary workflow",
+          example: `${name} receives a representative request and must ${objective}.`,
+        },
+      ],
+      success_criteria:
+        `The agent ${objective}, states assumptions, produces a reviewable result, and does not perform write, destructive, or external actions without approval.`,
+      normal_cases: [`User provides a clear request and enough context for ${name} to complete the workflow.`],
+      edge_cases: ["User request is ambiguous, underspecified, or missing required business context; agent asks focused follow-up questions."],
+      recovery_cases: ["A required tool, credential, file, or external service is unavailable; agent reports the failed dependency and proposes a fallback."],
+      safety_cases: ["User asks for destructive, sensitive, or externally visible action; agent explains the risk and waits for explicit approval."],
+      evaluator: "rule",
+    },
+    governance: {
+      write_requires_approval: true,
+      credential_isolation: true,
+      tool_whitelist: true,
+      timeout_minutes: draft.max_runtime_minutes || 30,
+    },
+  };
+}
+
+function runtimeChoicesForDrafting(
+  harnesses: RuntimeHarness[],
+  runtimes: AgentRuntime[],
+): Array<Pick<AgentRuntime, "id" | "name" | "tools" | "connected">> {
+  const connectedHarnesses = harnesses.filter((harness) => harness.connected);
+  if (connectedHarnesses.length > 0) {
+    return connectedHarnesses.map((harness) => ({
+      id: harness.alias,
+      name: harness.display_name,
+      tools: harness.tools,
+      connected: harness.connected,
+    }));
+  }
+  return runtimes.map((runtime) => ({
+    id: runtime.id,
+    name: runtime.name,
+    tools: runtime.tools,
+    connected: runtime.connected,
+  }));
+}
+
 function EvalStep({
   draft,
   onDraftChange,
@@ -585,6 +645,18 @@ function EvalStep({
 
   const patchDesign = (patch: Partial<AgentDesign>) =>
     onDraftChange({ ...draft, design: { ...design, ...patch } });
+  const applySuggestedEvaluation = () => {
+    const suggested = suggestedEvaluationForDraft(draft);
+    onDraftChange({
+      ...draft,
+      design: {
+        ...design,
+        feasibility: design.feasibility ?? suggested.feasibility,
+        evaluation: suggested.evaluation,
+        governance: design.governance ?? suggested.governance,
+      },
+    });
+  };
 
   const feasibilityItems: Array<{ key: keyof typeof feasibility; label: string; hint: string }> = [
     { key: "complexity", label: "复杂度", hint: "任务是否多步、难以预先完全指定？" },
@@ -608,8 +680,11 @@ function EvalStep({
     <div className="mx-auto max-w-3xl px-4 py-6">
       <h2 className="text-lg font-semibold">可行性与评估定义</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        先定义成功标准，再进入设计。没有评估定义，设计步骤保持锁定。
+        模板会预填一组建议用例。你可以直接确认，也可以按真实业务微调。
       </p>
+      <div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-300">
+        当前评估定义用于防止智能体上线后无法判断好坏；不要求一次写完，先用模板建议用例通过流程，后续再结合真实任务迭代。
+      </div>
 
       <section className="mt-6 rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">可行性四问</h3>
@@ -670,10 +745,17 @@ function EvalStep({
       </section>
 
       <section className="mt-4 rounded-lg border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">评估用例</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          每行一条。四类场景各至少一条。
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">评估用例</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              每行一条。四类场景各至少一条；模板已给出默认建议。
+            </p>
+          </div>
+          <Button type="button" size="sm" variant="outline" onClick={applySuggestedEvaluation}>
+            填入建议用例
+          </Button>
+        </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {caseFields.map((field) => (
             <div key={field.key}>
@@ -705,7 +787,7 @@ function EvalStep({
         <div className="flex items-center gap-3">
           {!gatePassed && (
             <span className="text-xs text-muted-foreground">
-              填写成功标准与全部四类用例后才能继续。
+              可点击“填入建议用例”先生成一版默认评估，再继续设计。
             </span>
           )}
           <Button onClick={onContinue} disabled={!gatePassed}>
@@ -857,11 +939,13 @@ function ReviewStep({
 function CreateStep({
   draft,
   drafting,
-  models,
   modelsError,
   modelsLoading,
   prompt,
+  harnesses,
   selectedTemplateId,
+  skills,
+  runtimes,
   onDraftChange,
   onPromptChange,
   onGenerate,
@@ -870,19 +954,21 @@ function CreateStep({
 }: {
   draft: AgentDraft;
   drafting: boolean;
-  models: string[];
   modelsError: string | null;
   modelsLoading: boolean;
   prompt: string;
+  harnesses: RuntimeHarness[];
   selectedTemplateId: string;
+  skills: Skill[];
+  runtimes: AgentRuntime[];
   onDraftChange: (next: AgentDraft) => void;
   onPromptChange: (next: string) => void;
   onGenerate: () => void;
   onStartFromUi: () => void;
   onTemplateSelect: (template: AgentTemplate) => void;
 }) {
-  const availableModels = modelOptions(models, draft.model);
-  const update = (patch: Partial<AgentDraft>) => onDraftChange({ ...draft, ...patch });
+  void onDraftChange;
+  const connectedRuntimes = runtimeChoicesForDrafting(harnesses, runtimes);
 
   return (
     <div className="grid min-h-[calc(100vh-6.5rem)] gap-6 px-4 py-6 lg:grid-cols-[minmax(420px,1fr)_minmax(520px,0.98fr)]">
@@ -901,11 +987,28 @@ function CreateStep({
           ) : (
             <div>
               <h1 className="text-2xl font-semibold text-[#20201f] dark:text-foreground">
-                What do you want to build?
+                用对话创建智能体
               </h1>
               <p className="mt-4 text-base text-muted-foreground">
-                Describe your agent or start with a template.
+                描述目标即可，助手会推荐运行时、模型、工具、技能和评估用例。
               </p>
+              <div className="mt-6 grid gap-2 text-left sm:grid-cols-3">
+                <ConversationHint
+                  title="运行时"
+                  value={`${connectedRuntimes.length || 0} 个可选`}
+                  detail="优先选择已连接 runtime/harness"
+                />
+                <ConversationHint
+                  title="模型"
+                  value="自动推荐"
+                  detail="按任务复杂度和可用模型选择"
+                />
+                <ConversationHint
+                  title="技能"
+                  value={`${skills.length} 个可用`}
+                  detail="只附加真正相关的 skill"
+                />
+              </div>
             </div>
           )}
         </div>
@@ -924,22 +1027,10 @@ function CreateStep({
             className="min-h-24 resize-none border-0 bg-transparent px-4 py-4 text-[15px] text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-3 py-3">
-            <div className="flex min-w-0 flex-col gap-1">
-              <ModelSelect
-                value={draft.model}
-                models={availableModels}
-                onValueChange={(model) => update({ model })}
-                disabled={drafting || availableModels.length === 0}
-                buttonClassName="w-[min(220px,calc(100vw-156px))] bg-background"
-                ariaLabel="Select draft model"
-              />
-              {modelsLoading && (
-                <span className="text-xs text-muted-foreground">Loading runtime models…</span>
-              )}
-              {modelsError && (
-                <span className="text-xs text-destructive">{modelsError}</span>
-              )}
-            </div>
+            <span className="text-xs text-muted-foreground">
+              {modelsLoading ? "正在读取可用模型..." : "运行时、模型、工具和技能会在草案中推荐"}
+            </span>
+            {modelsError && <span className="text-xs text-destructive">{modelsError}</span>}
             <Button
               type="button"
               size="sm"
@@ -972,6 +1063,16 @@ function CreateStep({
           onSelect={onTemplateSelect}
         />
       </section>
+    </div>
+  );
+}
+
+function ConversationHint({ title, value, detail }: { title: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-card/70 px-3 py-2">
+      <div className="text-xs text-muted-foreground">{title}</div>
+      <div className="mt-1 text-sm font-semibold">{value}</div>
+      <div className="mt-1 text-xs leading-4 text-muted-foreground">{detail}</div>
     </div>
   );
 }
@@ -1069,6 +1170,14 @@ function ConfigStep({
                 {error ?? parsedError}
               </div>
             )}
+            <AgentBuilderCopilot
+              configText={configText}
+              draft={draft}
+              harnesses={harnesses}
+              prompt={prompt}
+              runtimes={runtimes}
+              onDraftChange={onDraftChange}
+            />
           </div>
         </div>
 
@@ -1212,6 +1321,181 @@ function ConfigStep({
   );
 }
 
+function AgentBuilderCopilot({
+  configText,
+  draft,
+  harnesses,
+  prompt,
+  runtimes,
+  onDraftChange,
+}: {
+  configText: string;
+  draft: AgentDraft;
+  harnesses: RuntimeHarness[];
+  prompt: string;
+  runtimes: AgentRuntime[];
+  onDraftChange: (next: AgentDraft) => void;
+}) {
+  const [loadingMode, setLoadingMode] = useState<"clarify" | "explain" | "tools" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [response, setResponse] = useState<AgentBuilderCopilotResponse | null>(null);
+  const runtimeTools =
+    harnesses.find((entry) => entry.alias === draft.runtime)?.tools ??
+    runtimes.find((entry) => entry.id === draft.runtime)?.tools ??
+    [];
+  const selectedTools = draft.tools.map((tool) => tool.type).filter(Boolean);
+  const availableToolIds = new Set(runtimeTools.map((tool) => tool.id));
+
+  const ask = async (mode: "clarify" | "explain" | "tools") => {
+    setLoadingMode(mode);
+    setError(null);
+    try {
+      const next = await askAgentBuilderCopilot({
+        mode,
+        userMessage: prompt,
+        currentConfig: configText,
+        runtime: draft.runtime,
+        selectedTools,
+        availableTools: runtimeTools.map((tool) => ({
+          id: tool.id,
+          name: tool.name,
+          description: tool.description,
+        })),
+        requestedModel: draft.model,
+      });
+      setResponse(next);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Builder Copilot failed"));
+    } finally {
+      setLoadingMode(null);
+    }
+  };
+
+  const applyToolRecommendations = () => {
+    if (!response) return;
+    const next = new Set(selectedTools);
+    for (const recommendation of response.tool_recommendations) {
+      if (!availableToolIds.has(recommendation.tool)) continue;
+      if (recommendation.action === "add") next.add(recommendation.tool);
+      if (recommendation.action === "remove") next.delete(recommendation.tool);
+    }
+    onDraftChange({ ...draft, tools: Array.from(next).map((type) => ({ type })) });
+  };
+
+  return (
+    <div className="mt-6 rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <MessageSquareText className="size-4" />
+            Agent Builder Copilot
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">
+            用当前草案和输入框里的补充需求，让 LLM 做澄清、解释和工具建议。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <CopilotButton mode="clarify" loadingMode={loadingMode} onClick={() => void ask("clarify")}>
+            澄清问题
+          </CopilotButton>
+          <CopilotButton mode="explain" loadingMode={loadingMode} onClick={() => void ask("explain")}>
+            解释配置
+          </CopilotButton>
+          <CopilotButton mode="tools" loadingMode={loadingMode} onClick={() => void ask("tools")}>
+            推荐工具
+          </CopilotButton>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-3 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+
+      {response && (
+        <div className="mt-4 grid gap-3 text-sm">
+          {response.summary && <p className="leading-6 text-foreground">{response.summary}</p>}
+          <CopilotList title="需要确认的问题" items={response.clarification_questions} />
+          <CopilotList title="风险提醒" items={response.risks} />
+          <CopilotList title="可加入 system prompt 的约束" items={response.suggested_system_notes} />
+          {response.tool_recommendations.length > 0 && (
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  工具建议
+                </h3>
+                <Button type="button" size="sm" variant="outline" onClick={applyToolRecommendations}>
+                  应用 add/remove
+                </Button>
+              </div>
+              <div className="grid gap-2">
+                {response.tool_recommendations.map((recommendation) => (
+                  <div
+                    key={`${recommendation.tool}-${recommendation.action}`}
+                    className="rounded-lg border border-border bg-muted/30 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={recommendation.action === "remove" ? "destructive" : "secondary"}>
+                        {recommendation.action}
+                      </Badge>
+                      <span className="font-mono text-xs">{recommendation.tool}</span>
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {recommendation.reason}
+                    </p>
+                    {recommendation.risk && (
+                      <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                        {recommendation.risk}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CopilotButton({
+  children,
+  loadingMode,
+  mode,
+  onClick,
+}: {
+  children: React.ReactNode;
+  loadingMode: "clarify" | "explain" | "tools" | null;
+  mode: "clarify" | "explain" | "tools";
+  onClick: () => void;
+}) {
+  const loading = loadingMode === mode;
+  return (
+    <Button type="button" size="sm" variant="outline" onClick={onClick} disabled={loadingMode !== null}>
+      {loading ? <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Sparkles className="size-3.5" />}
+      {children}
+    </Button>
+  );
+}
+
+function CopilotList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="grid gap-1.5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <ul className="grid gap-1.5">
+        {items.map((item) => (
+          <li key={item} className="rounded-md bg-muted/40 px-2.5 py-1.5 text-xs leading-5 text-muted-foreground">
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function TemplateBrowser({
   selectedTemplateId,
   onSelect,
@@ -1327,9 +1611,10 @@ function AgentDraftControls({
   const availableModels = modelOptions(models, draft.model);
   const runtime = runtimes.find((entry) => entry.id === draft.runtime);
   const selectedHarness = harnesses.find((entry) => entry.alias === draft.runtime);
-  const toolOptions =
-    runtime?.tools?.map((tool) => tool.id).filter(Boolean) ??
-    draft.tools.map((tool) => tool.type).filter(Boolean);
+  const runtimeTools = selectedHarness?.tools ?? runtime?.tools ?? [];
+  const toolOptions = runtimeTools.length > 0
+    ? runtimeTools.map((tool) => tool.id).filter(Boolean)
+    : draft.tools.map((tool) => tool.type).filter(Boolean);
   const selectedTools = new Set(draft.tools.map((tool) => tool.type).filter(Boolean));
   const selectedSubAgents = new Set(draft.sub_agents.map((agent) => agent.agent_id));
   const [vaultKeyInput, setVaultKeyInput] = useState("");
@@ -1418,7 +1703,14 @@ function AgentDraftControls({
             <Label className="text-[#c9c0b1]">Runtime</Label>
             <Select
               value={draft.runtime || "claude_managed_agents"}
-              onValueChange={(v) => update({ runtime: v ?? "claude_managed_agents", model: "" })}
+              onValueChange={(v) => {
+                const runtimeAlias = v ?? "claude_managed_agents";
+                update({
+                  runtime: runtimeAlias,
+                  model: "",
+                  tools: defaultToolsForHarnessRuntime(runtimeAlias, harnesses, runtimes),
+                });
+              }}
             >
               <SelectTrigger className="h-11 w-full max-w-sm overflow-hidden border-white/10 bg-[#242321] px-3 text-[#f7f2e8]">
                 <RuntimeSelectOption
@@ -1872,6 +2164,20 @@ function RuntimeSelectOption({
       </span>
     </span>
   );
+}
+
+function defaultToolsForHarnessRuntime(
+  runtimeAlias: string,
+  harnesses: RuntimeHarness[],
+  runtimes: AgentRuntime[],
+): AgentDraft["tools"] {
+  const tools =
+    harnesses.find((entry) => entry.alias === runtimeAlias)?.tools ??
+    runtimes.find((entry) => entry.id === runtimeAlias)?.tools ??
+    [];
+  return tools
+    .filter((tool: AgentRuntimeTool) => tool.enabled_by_default)
+    .map((tool) => ({ type: tool.id }));
 }
 
 function runtimeApiSpec(value: string): string {

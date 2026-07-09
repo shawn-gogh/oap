@@ -1,7 +1,7 @@
 use litellm_rust::db::managed_agents::{messages, sessions as db_sessions};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::support::{request_json, AppFixture};
+use crate::support::{AppFixture, request_json};
 
 pub async fn assert_human_approval(fixture: &AppFixture, agent_id: &str) {
     assert_multiple_async_approvals(fixture, agent_id).await;
@@ -148,10 +148,17 @@ async fn assert_resume_message(fixture: &AppFixture, session_id: &str, expected:
 }
 
 async fn seed_empty_session(fixture: &AppFixture, agent_id: &str, title: &str) -> String {
-    db_sessions::repository::create(&fixture.pool, "claude-code", Some(agent_id), title, None)
-        .await
-        .unwrap()
-        .id
+    db_sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        Some(agent_id),
+        title,
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+    .id
 }
 
 fn is_target_approval(item: &Value, title: &str) -> bool {
@@ -192,5 +199,8 @@ async fn assert_approval_with_options(fixture: &AppFixture, agent_id: &str) {
 
     let payload = content_json(&call);
     assert_eq!(payload["status"], json!("pending"));
-    assert_eq!(payload["arguments"]["options"], json!(["staging", "production"]));
+    assert_eq!(
+        payload["arguments"]["options"],
+        json!(["staging", "production"])
+    );
 }

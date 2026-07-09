@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { FileUp, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { RuntimeProviderLogo } from "@/components/runtime-provider-logo";
 import {
   discoverProviderAgents,
+  importOpencodeAgentFiles,
   importProviderAgents,
   listRuntimeHarnesses,
   type ExternalAgent,
@@ -30,6 +31,7 @@ interface ImportAgentDialogProps {
 }
 
 export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgentDialogProps) {
+  const [mode, setMode] = useState<"remote" | "files">("remote");
   const [providers, setProviders] = useState<RuntimeHarness[]>([]);
   const [providersLoading, setProvidersLoading] = useState(false);
   const [providerId, setProviderId] = useState("");
@@ -37,6 +39,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   const [apiKey, setApiKey] = useState("");
   const [credentialMode, setCredentialMode] = useState<"shared" | "byo">("shared");
   const [externalAgents, setExternalAgents] = useState<ExternalAgent[]>([]);
+  const [agentFiles, setAgentFiles] = useState<Array<{ filename: string; content: string }>>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -70,10 +73,12 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   }, [externalAgents, query]);
 
   const reset = () => {
+    setMode("remote");
     setEndpoint("");
     setApiKey("");
     setCredentialMode("shared");
     setExternalAgents([]);
+    setAgentFiles([]);
     setSelectedIds([]);
     setQuery("");
     setError(null);
@@ -99,6 +104,28 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   };
 
   const importSelected = async () => {
+    if (mode === "files") {
+      if (agentFiles.length === 0) {
+        setError("Select at least one .md agent file.");
+        return;
+      }
+      setSaving(true);
+      setError(null);
+      try {
+        const imported = await importOpencodeAgentFiles({
+          runtime: providerId || undefined,
+          files: agentFiles,
+        });
+        onImported(imported);
+        close(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     const selected = externalAgents.filter((agent) => selectedIds.includes(agent.id));
     if (selected.length === 0) {
       setError("Select at least one agent.");
@@ -135,6 +162,28 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     );
   };
 
+  const loadAgentFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setError(null);
+    const markdownFiles = Array.from(files).filter((file) => /\.(md|markdown)$/i.test(file.name));
+    if (markdownFiles.length === 0) {
+      setAgentFiles([]);
+      setError("Select .md or .markdown files.");
+      return;
+    }
+    try {
+      const loaded = await Promise.all(
+        markdownFiles.map(async (file) => ({
+          filename: file.name,
+          content: await file.text(),
+        })),
+      );
+      setAgentFiles(loaded);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="w-[94vw] sm:max-w-3xl max-h-[88vh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
@@ -142,8 +191,31 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           <DialogTitle>Import agents</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-6 py-4 overflow-y-auto">
+          <div className="grid grid-cols-2 rounded-lg border border-border bg-muted/30 p-1">
+            {[
+              { value: "remote" as const, label: "Remote runtime" },
+              { value: "files" as const, label: "Markdown files" },
+            ].map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setMode(option.value);
+                  setError(null);
+                }}
+                className={cn(
+                  "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
+                  mode === option.value
+                    ? "bg-background text-foreground shadow-sm"
+                    : "hover:text-foreground",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <div className="grid gap-1.5">
-            <Label>Platform</Label>
+            <Label>{mode === "files" ? "Runtime" : "Platform"}</Label>
             <div className="grid gap-2">
               {providers.map((provider) => {
                 const selected = provider.alias === providerId;
@@ -181,64 +253,94 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               )}
             </div>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="import-endpoint">{providerName} endpoint</Label>
-            <Input
-              id="import-endpoint"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-              placeholder="https://deployment.kb.us-central1.gcp.cloud.es.io"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="import-key">{providerName} API key</Label>
-            <Input
-              id="import-key"
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="API key"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Credential policy</Label>
-            <div className="grid grid-cols-2 rounded-lg border border-border bg-muted/30 p-1">
-              {[
-                { value: "shared" as const, label: "Shared key" },
-                { value: "byo" as const, label: "BYO key" },
-              ].map((option) => (
-                <button
-                  key={option.value}
+          {mode === "remote" ? (
+            <>
+              <div className="grid gap-1.5">
+                <Label htmlFor="import-endpoint">{providerName} endpoint</Label>
+                <Input
+                  id="import-endpoint"
+                  value={endpoint}
+                  onChange={(e) => setEndpoint(e.target.value)}
+                  placeholder="https://deployment.kb.us-central1.gcp.cloud.es.io"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="import-key">{providerName} API key</Label>
+                <Input
+                  id="import-key"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="API key"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Credential policy</Label>
+                <div className="grid grid-cols-2 rounded-lg border border-border bg-muted/30 p-1">
+                  {[
+                    { value: "shared" as const, label: "Shared key" },
+                    { value: "byo" as const, label: "BYO key" },
+                  ].map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setCredentialMode(option.value)}
+                      className={cn(
+                        "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
+                        credentialMode === option.value
+                          ? "bg-background text-foreground shadow-sm"
+                          : "hover:text-foreground",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
                   type="button"
-                  onClick={() => setCredentialMode(option.value)}
-                  className={cn(
-                    "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
-                    credentialMode === option.value
-                      ? "bg-background text-foreground shadow-sm"
-                      : "hover:text-foreground",
-                  )}
+                  variant="outline"
+                  onClick={discover}
+                  disabled={loading || !providerId || !endpoint.trim() || !apiKey.trim()}
                 >
-                  {option.label}
-                </button>
-              ))}
+                  {loading ? "Connecting..." : "Connect"}
+                </Button>
+                {externalAgents.length > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    {externalAgents.length} agent{externalAgents.length === 1 ? "" : "s"} found
+                  </span>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="grid gap-2">
+              <Label htmlFor="opencode-agent-files">OpenCode agent markdown</Label>
+              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
+                <FileUp className="size-4" />
+                <span>{agentFiles.length ? `${agentFiles.length} file(s) selected` : "Choose .md files"}</span>
+                <input
+                  id="opencode-agent-files"
+                  type="file"
+                  multiple
+                  accept=".md,.markdown,text/markdown,text/plain"
+                  className="sr-only"
+                  onChange={(event) => void loadAgentFiles(event.target.files)}
+                />
+              </label>
+              {agentFiles.length > 0 && (
+                <div className="max-h-44 divide-y divide-border overflow-y-auto rounded-md border border-border">
+                  {agentFiles.map((file) => (
+                    <div key={file.filename} className="px-3 py-2">
+                      <div className="truncate text-sm font-medium">{file.filename}</div>
+                      <div className="text-xs text-muted-foreground">{file.content.length} chars</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={discover}
-              disabled={loading || !providerId || !endpoint.trim() || !apiKey.trim()}
-            >
-              {loading ? "Connecting..." : "Connect"}
-            </Button>
-            {externalAgents.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                {externalAgents.length} agent{externalAgents.length === 1 ? "" : "s"} found
-              </span>
-            )}
-          </div>
-          {externalAgents.length > 0 && (
+          )}
+          {mode === "remote" && externalAgents.length > 0 && (
             <div className="grid gap-2">
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
@@ -298,8 +400,13 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           <Button variant="outline" onClick={() => close(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={importSelected} disabled={saving || selectedIds.length === 0}>
-            {saving ? "Importing..." : `Import ${selectedIds.length || ""}`.trim()}
+          <Button
+            onClick={importSelected}
+            disabled={saving || (mode === "remote" ? selectedIds.length === 0 : agentFiles.length === 0)}
+          >
+            {saving
+              ? "Importing..."
+              : `Import ${mode === "remote" ? selectedIds.length || "" : agentFiles.length || ""}`.trim()}
           </Button>
         </DialogFooter>
       </DialogContent>
