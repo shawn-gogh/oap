@@ -34,18 +34,22 @@ import {
 
 function formatTime(ts?: number | null): string {
   if (!ts) return "Never";
+  // Legacy in-memory keys reported seconds; DB-backed keys report millis.
+  const millis = ts > 1e12 ? ts : ts * 1000;
   return new Intl.DateTimeFormat(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(new Date(ts * 1000));
+  }).format(new Date(millis));
 }
 
 export function ApiKeysPanel() {
   const [keys, setKeys] = useState<GatewayApiKey[] | null>(null);
   const [label, setLabel] = useState("");
+  const [userId, setUserId] = useState("");
+  const [role, setRole] = useState("user");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreatedGatewayApiKey | null>(null);
@@ -69,6 +73,8 @@ export function ApiKeysPanel() {
   const closeCreate = () => {
     setShowCreate(false);
     setLabel("");
+    setUserId("");
+    setRole("user");
     setCreated(null);
     setFormError(null);
   };
@@ -83,7 +89,7 @@ export function ApiKeysPanel() {
     setCreated(null);
     setFormError(null);
     try {
-      const key = await createGatewayApiKey(name);
+      const key = await createGatewayApiKey(name, userId.trim() || undefined, role);
       setCreated(key);
       await load();
     } catch (err) {
@@ -145,6 +151,8 @@ export function ApiKeysPanel() {
             <TableRow className="bg-muted/20 hover:bg-muted/20">
               <TableHead className="px-4">Key name</TableHead>
               <TableHead>Key ID</TableHead>
+              <TableHead>User</TableHead>
+              <TableHead>Role</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Last active</TableHead>
               <TableHead className="w-14 text-right">Actions</TableHead>
@@ -157,6 +165,10 @@ export function ApiKeysPanel() {
                 <TableCell className="font-mono text-xs text-muted-foreground">
                   {key.id}
                 </TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
+                  {key.user_id || "—"}
+                </TableCell>
+                <TableCell className="text-muted-foreground">{key.role || "user"}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {formatTime(key.created_at)}
                 </TableCell>
@@ -208,6 +220,23 @@ export function ApiKeysPanel() {
                 }}
                 autoFocus
               />
+              <Label htmlFor="key-user">User ID (optional)</Label>
+              <Input
+                id="key-user"
+                value={userId}
+                onChange={(event) => setUserId(event.target.value)}
+                placeholder="Defaults to the key's own ID"
+              />
+              <Label htmlFor="key-role">Role</Label>
+              <select
+                id="key-role"
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              >
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
               {formError && (
                 <p className="text-sm text-destructive">{formError}</p>
               )}

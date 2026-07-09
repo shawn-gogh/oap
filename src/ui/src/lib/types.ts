@@ -10,6 +10,7 @@ export interface OpencodeSession {
   provider_url?: string;
   status?: string;
   workspace_bucket?: string;
+  owner_id?: string;
   environment?: Record<string, unknown>;
   /** @deprecated use agent */
   harness?: string;

@@ -79,6 +79,25 @@ impl ObjectStorageClient {
         format!("workspace-{}", session_id.replace('_', "-").to_lowercase())
     }
 
+    /// Bucket holding an agent's knowledge/template files, seeded into each
+    /// new session workspace. Derived by convention like session buckets —
+    /// no column needed.
+    pub fn agent_bucket_name(agent_id: &str) -> String {
+        format!(
+            "agent-workspace-{}",
+            agent_id.replace('_', "-").to_lowercase()
+        )
+    }
+
+    pub async fn bucket_exists(&self, bucket: &str) -> bool {
+        self.internal
+            .head_bucket()
+            .bucket(bucket)
+            .send()
+            .await
+            .is_ok()
+    }
+
     pub async fn ensure_bucket(&self, bucket: &str) -> Result<(), GatewayError> {
         if self
             .internal
@@ -167,6 +186,49 @@ impl ObjectStorageClient {
         Ok(items)
     }
 
+    pub async fn copy_object(
+        &self,
+        src_bucket: &str,
+        key: &str,
+        dst_bucket: &str,
+    ) -> Result<(), GatewayError> {
+        // copy_source is a URL path, so the key must be percent-encoded.
+        let encoded_key: String = key
+            .split('/')
+            .map(|seg| urlencoding_encode(seg))
+            .collect::<Vec<_>>()
+            .join("/");
+        self.internal
+            .copy_object()
+            .copy_source(format!("{src_bucket}/{encoded_key}"))
+            .bucket(dst_bucket)
+            .key(key)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| GatewayError::SandboxError(format!("copy object {key} failed: {e}")))
+    }
+
+    /// Copies every object from `src_bucket` into `dst_bucket`. A missing
+    /// source bucket counts as empty (agent workspaces are created lazily on
+    /// first upload, so most agents won't have one).
+    pub async fn copy_all(&self, src_bucket: &str, dst_bucket: &str) -> Result<(), GatewayError> {
+        if self
+            .internal
+            .head_bucket()
+            .bucket(src_bucket)
+            .send()
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+        for obj in self.list_objects(src_bucket).await? {
+            self.copy_object(src_bucket, &obj.key, dst_bucket).await?;
+        }
+        Ok(())
+    }
+
     pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), GatewayError> {
         self.internal
             .delete_object()
@@ -219,6 +281,22 @@ impl ObjectStorageClient {
             .map(|_| ())
             .map_err(|e| GatewayError::SandboxError(format!("failed to delete bucket {bucket}: {e}")))
     }
+}
+
+/// Minimal percent-encoding for one path segment of an S3 CopySource header
+/// (RFC 3986 unreserved characters pass through). Avoids pulling in a crate
+/// for the one place we need it.
+fn urlencoding_encode(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn presigning_config(ttl: Duration) -> Result<PresigningConfig, GatewayError> {

@@ -1,6 +1,5 @@
 import type {
   Agent,
-  AgentFile,
   AgentRunStart,
   AgentRuntime,
   AgentRuntimeId,
@@ -589,6 +588,8 @@ export async function testHarnessServer(
 export interface GatewayApiKey {
   id: string;
   label?: string | null;
+  user_id?: string | null;
+  role?: string | null;
   created_at: number;
   last_used_at?: number | null;
 }
@@ -603,11 +604,15 @@ export async function listGatewayApiKeys(): Promise<GatewayApiKey[]> {
   return data.keys;
 }
 
-export async function createGatewayApiKey(label?: string): Promise<CreatedGatewayApiKey> {
+export async function createGatewayApiKey(
+  label?: string,
+  userId?: string,
+  role?: string,
+): Promise<CreatedGatewayApiKey> {
   const res = await req("/api/keys", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, user_id: userId || undefined, role: role || undefined }),
   });
   return jsonOrThrow<CreatedGatewayApiKey>(res);
 }
@@ -1724,21 +1729,52 @@ export async function deleteAgent(id: string): Promise<void> {
   await req(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function listAgentFiles(agentId: string): Promise<AgentFile[]> {
-  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/files`);
-  const data = await jsonOrThrow<{ files: AgentFile[] }>(res);
-  return data.files ?? [];
+// ── Agent workspace files (per-agent MinIO bucket) ─────────────────────────
+// Knowledge/template files copied into every new session workspace.
+// Upload/download go directly browser<->MinIO via presigned URLs.
+
+export async function listAgentFiles(agentId: string): Promise<WorkspaceFile[]> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/workspace/files`);
+  return jsonOrThrow<WorkspaceFile[]>(res);
 }
 
-export async function downloadAgentFile(agentId: string, filePath: string): Promise<Blob> {
+export async function requestAgentUploadUrl(
+  agentId: string,
+  path: string,
+): Promise<{ url: string; path: string }> {
   const res = await req(
-    `/api/agents/${encodeURIComponent(agentId)}/files/${encodeURIComponent(filePath)}`,
+    `/api/agents/${encodeURIComponent(agentId)}/workspace/files/upload-url`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
   );
+  return jsonOrThrow<{ url: string; path: string }>(res);
+}
+
+export async function uploadAgentFile(agentId: string, file: File, path: string): Promise<void> {
+  const { url } = await requestAgentUploadUrl(agentId, path);
+  const res = await fetch(url, { method: "PUT", body: file });
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, body);
+    throw new ApiError(res.status, `upload failed: ${await res.text().catch(() => "")}`);
   }
-  return res.blob();
+}
+
+export async function agentFileDownloadUrl(agentId: string, path: string): Promise<string> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/workspace/files/download-url?path=${encodeURIComponent(path)}`,
+  );
+  const data = await jsonOrThrow<{ url: string }>(res);
+  return data.url;
+}
+
+export async function deleteAgentFile(agentId: string, path: string): Promise<void> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/workspace/files?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
+  await jsonOrThrow<boolean>(res);
 }
 
 // ── Session workspace files (per-session MinIO bucket) ────────────────────

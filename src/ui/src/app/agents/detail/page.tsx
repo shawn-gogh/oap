@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
@@ -29,11 +30,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
   DEFAULT_VAULT_USER,
+  agentFileDownloadUrl,
   deleteAgent,
+  deleteAgentFile,
   deleteMemory,
-  downloadAgentFile,
   getAgent,
   listAgentFiles,
+  uploadAgentFile,
   listMemory,
   listSessions,
   listVaultKeysForUser,
@@ -43,11 +46,11 @@ import {
 import { scheduleLabel } from "@/lib/schedule";
 import type {
   Agent,
-  AgentFile,
   AgentRuntimeId,
   Memory,
   OpencodeSession,
   VaultKeyEntry,
+  WorkspaceFile,
 } from "@/lib/types";
 
 function timeAgo(ms: number): string {
@@ -127,7 +130,9 @@ function AgentDetail() {
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [sessions, setSessions] = useState<OpencodeSession[]>([]);
-  const [files, setFiles] = useState<AgentFile[]>([]);
+  const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [filesLoading, setFilesLoading] = useState(false);
   const [fileQuery, setFileQuery] = useState("");
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
@@ -238,18 +243,49 @@ function AgentDetail() {
     router.push(`/sessions/?agent=${encodeURIComponent(id)}`);
   };
 
-  const handleDownloadFile = async (file: AgentFile) => {
+  const handleDownloadFile = async (file: WorkspaceFile) => {
     setDownloadingPath(file.path);
     try {
-      const blob = await downloadAgentFile(id, file.path);
-      const url = URL.createObjectURL(blob);
+      const url = await agentFileDownloadUrl(id, file.path);
+      // Anchor click instead of window.open: the presign round-trip consumes
+      // the user-gesture window and window.open would be popup-blocked.
       const a = document.createElement("a");
       a.href = url;
       a.download = fileNameFromPath(file.path);
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDownloadingPath(null);
+    }
+  };
+
+  const handleUploadFiles = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0 || !id) return;
+    setUploadingFiles(true);
+    try {
+      for (const file of Array.from(fileList)) {
+        await uploadAgentFile(id, file, file.name);
+      }
+      await loadFiles();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploadingFiles(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleDeleteFile = async (file: WorkspaceFile) => {
+    if (!confirm(`Delete "${file.path}" from the agent workspace?`)) return;
+    setDownloadingPath(file.path);
+    try {
+      await deleteAgentFile(id, file.path);
+      await loadFiles();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -520,7 +556,7 @@ function AgentDetail() {
                         Workspace Files
                       </h2>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Persisted files copied into this agent's workspace on each run.
+                        Knowledge files copied into every new session workspace of this agent.
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -533,6 +569,24 @@ function AgentDetail() {
                           className="h-8 pl-8 text-xs"
                         />
                       </div>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => handleUploadFiles(e.target.files)}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploadingFiles}
+                      >
+                        <Upload className="size-3.5" />
+                        <span className="ml-1.5 text-xs">{uploadingFiles ? "Uploading..." : "Upload"}</span>
+                      </Button>
                       <Button
                         type="button"
                         size="sm"
@@ -550,7 +604,7 @@ function AgentDetail() {
                     <div className="grid grid-cols-3 border-b border-border bg-muted/20 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                       <span>Path</span>
                       <span className="text-right">Size</span>
-                      <span className="text-right">Download</span>
+                      <span className="text-right">Actions</span>
                     </div>
                     {filesLoading && files.length === 0 ? (
                       <div className="p-6 text-sm text-muted-foreground">Loading files...</div>
@@ -562,7 +616,7 @@ function AgentDetail() {
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {files.length === 0
-                            ? "Upload or persist files to make them available on future runs."
+                            ? "Upload files to make them available in every new session."
                             : "Adjust the search to broaden the file list."}
                         </p>
                       </div>
@@ -571,20 +625,22 @@ function AgentDetail() {
                         {visibleFiles.map((file) => (
                           <div
                             key={file.path}
-                            className="grid grid-cols-[minmax(0,1fr)_72px_44px] items-center gap-3 px-3 py-2.5"
+                            className="grid grid-cols-[minmax(0,1fr)_72px_84px] items-center gap-3 px-3 py-2.5"
                           >
                             <div className="min-w-0">
                               <p className="truncate font-mono text-xs" title={file.path}>
                                 {file.path}
                               </p>
-                              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                                {file.encoding === "base64" ? "Binary" : "Text"} · Updated {formatMemoryDate(file.updated_at)}
-                              </p>
+                              {file.updated_at != null && (
+                                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                  Updated {formatMemoryDate(file.updated_at)}
+                                </p>
+                              )}
                             </div>
                             <span className="text-right font-mono text-xs text-muted-foreground">
                               {formatBytes(file.size_bytes)}
                             </span>
-                            <div className="flex justify-end">
+                            <div className="flex justify-end gap-1">
                               <Button
                                 type="button"
                                 size="sm"
@@ -595,6 +651,17 @@ function AgentDetail() {
                                 aria-label={`Download ${file.path}`}
                               >
                                 <Download className="size-3.5" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-8 w-8 p-0"
+                                onClick={() => handleDeleteFile(file)}
+                                disabled={downloadingPath === file.path}
+                                aria-label={`Delete ${file.path}`}
+                              >
+                                <Trash2 className="size-3.5" />
                               </Button>
                             </div>
                           </div>

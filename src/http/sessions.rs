@@ -37,7 +37,9 @@ pub(crate) use runtime_events_api::runtime_event_stream_for_session;
 pub use runtime_events_api::{runtime_event_list, runtime_events};
 pub(crate) use runtime_sdk::lap_from_credential;
 use runtime_sdk::{register_runtime_session, runtime_sdk_client};
-use storage::{db, persist_message, resolve_session_request, session};
+use storage::{
+    auth_db, db, owned_session, persist_message, resolve_session_request, session,
+};
 pub use types::{CreateSessionRequest, MessageResponse, PromptRequest, SessionResponse};
 pub use workspace_api::{create_upload_url, delete_file, download_url, list_files};
 
@@ -45,8 +47,9 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<SessionResponse>>, GatewayError> {
-    let pool = db(&state, &headers).await?;
-    let rows = sessions::repository::list(pool).await?;
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    let owner_filter = (!auth.is_admin).then_some(auth.user_id.as_str());
+    let rows = sessions::repository::list(pool, owner_filter).await?;
     Ok(Json(rows.into_iter().map(SessionResponse::from).collect()))
 }
 
@@ -55,9 +58,12 @@ pub async fn create(
     headers: HeaderMap,
     Json(input): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, GatewayError> {
-    let pool = db(&state, &headers).await?.clone();
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    let pool = pool.clone();
     if input.has_runtime() {
-        return create_runtime_session(state, &pool, input).await.map(Json);
+        return create_runtime_session(state, &pool, input, Some(&auth.user_id))
+            .await
+            .map(Json);
     }
     let resolved = resolve_session_request(&state, &pool, input).await?;
     let row = sessions::repository::create(
@@ -66,6 +72,7 @@ pub async fn create(
         resolved.agent_id.as_deref(),
         &resolved.title,
         resolved.timezone.as_deref(),
+        Some(&auth.user_id),
     )
     .await?;
     state.agent_runs.track_run(&resolved.harness, &row.id);
@@ -77,8 +84,8 @@ pub async fn get(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionResponse>, GatewayError> {
-    let pool = db(&state, &headers).await?;
-    let row = session(pool, &session_id).await?;
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    let row = owned_session(pool, &auth, &session_id).await?;
     Ok(Json(SessionResponse::from(row)))
 }
 
@@ -87,11 +94,9 @@ pub async fn delete(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<Json<bool>, GatewayError> {
-    let pool = db(&state, &headers).await?;
-    if let (Some(storage), Ok(Some(row))) = (
-        &state.object_storage,
-        sessions::repository::get(pool, &session_id).await,
-    ) {
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    let row = owned_session(pool, &auth, &session_id).await?;
+    if let Some(storage) = &state.object_storage {
         if let Some(bucket) = row.workspace_bucket.as_deref() {
             // Best-effort: a storage hiccup shouldn't block deleting the session row.
             let _ = storage.delete_bucket_recursive(bucket).await;
@@ -105,7 +110,8 @@ pub async fn messages(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<MessageResponse>>, GatewayError> {
-    let pool = db(&state, &headers).await?;
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    owned_session(pool, &auth, &session_id).await?;
     let rows = messages::repository::list(pool, &session_id).await?;
     rows.into_iter()
         .map(MessageResponse::try_from)
@@ -119,7 +125,9 @@ pub async fn prompt_async(
     Path(session_id): Path<String>,
     Json(input): Json<PromptRequest>,
 ) -> Result<StatusCode, GatewayError> {
-    let pool = db(&state, &headers).await?.clone();
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    let pool = pool.clone();
+    owned_session(&pool, &auth, &session_id).await?;
     let prompt = input.prompt_text()?;
     let model = input
         .model_id()
@@ -197,7 +205,8 @@ pub async fn abort(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, GatewayError> {
-    let pool = db(&state, &headers).await?;
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    owned_session(pool, &auth, &session_id).await?;
     if let Ok(Some(row)) = sessions::repository::get(pool, &session_id).await {
         if let Some(runtime) = row.runtime.as_deref() {
             if let Ok(resolved) =
@@ -238,8 +247,8 @@ pub async fn interrupt(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, GatewayError> {
-    let pool = db(&state, &headers).await?;
-    let Ok(Some(row)) = sessions::repository::get(pool, &session_id).await else {
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    let Ok(row) = owned_session(pool, &auth, &session_id).await else {
         return Ok(StatusCode::NO_CONTENT);
     };
     let Some(runtime) = row.runtime.as_deref() else {

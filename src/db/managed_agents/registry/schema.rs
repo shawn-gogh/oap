@@ -33,6 +33,9 @@ pub struct ManagedAgentRow {
 #[derive(Debug, Deserialize)]
 pub struct CreateManagedAgent {
     pub name: String,
+    /// Optional in the request; the handler fills it from the authenticated
+    /// identity (non-admin callers can't claim someone else's owner_id).
+    #[serde(default)]
     pub owner_id: String,
     pub description: Option<String>,
     pub runtime: Option<String>,

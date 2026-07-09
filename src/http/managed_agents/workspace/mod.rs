@@ -1,6 +1,7 @@
-//! Per-session workspace file API. Upload/download go directly between the
-//! browser and MinIO via presigned URLs — this only issues/revokes those URLs
-//! and lists/deletes objects, it never proxies file bytes through the gateway.
+//! Agent-level workspace: a MinIO bucket of knowledge/template files that is
+//! copied into every new session workspace. Mirrors the per-session workspace
+//! API (src/http/sessions/workspace_api.rs) — presigned URLs only, the
+//! gateway never proxies file bytes.
 
 use std::{sync::Arc, time::Duration};
 
@@ -11,9 +12,15 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{errors::GatewayError, object_storage::ObjectStorageClient, proxy::state::AppState};
-
-use super::storage::{auth_db, owned_session};
+use crate::{
+    db::managed_agents::registry::repository,
+    errors::GatewayError,
+    object_storage::ObjectStorageClient,
+    proxy::{
+        auth::master_key::authenticate,
+        state::AppState,
+    },
+};
 
 const PRESIGN_TTL: Duration = Duration::from_secs(15 * 60);
 
@@ -40,34 +47,40 @@ pub struct PresignedUrlResponse {
     pub path: String,
 }
 
-async fn workspace_bucket(
+use super::assert_agent_access;
+
+async fn agent_workspace_bucket(
     state: &AppState,
     headers: &HeaderMap,
-    session_id: &str,
+    agent_id: &str,
 ) -> Result<(String, ObjectStorageClient), GatewayError> {
-    let (pool, auth) = auth_db(state, headers).await?;
-    let row = owned_session(pool, &auth, session_id).await?;
-    let bucket = row.workspace_bucket.ok_or_else(|| {
-        GatewayError::NotFound(format!("session {session_id} has no workspace"))
-    })?;
+    let auth = authenticate(headers, state).await?;
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    let agent = repository::get(pool, agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound(format!("agent {agent_id}")))?;
+    assert_agent_access(&auth, &agent)?;
     let storage = state
         .object_storage
         .clone()
         .ok_or_else(|| GatewayError::InvalidConfig("object storage is not configured".to_owned()))?;
-    Ok((bucket, storage))
+    Ok((ObjectStorageClient::agent_bucket_name(agent_id), storage))
 }
 
 pub async fn list_files(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(session_id): Path<String>,
+    Path(agent_id): Path<String>,
 ) -> Result<Json<Vec<WorkspaceFileResponse>>, GatewayError> {
-    let (bucket, storage) = workspace_bucket(&state, &headers, &session_id).await?;
+    let (bucket, storage) = agent_workspace_bucket(&state, &headers, &agent_id).await?;
+    // Bucket is created lazily on first upload; absent bucket = empty list.
+    if !storage.bucket_exists(&bucket).await {
+        return Ok(Json(Vec::new()));
+    }
     let objects = storage.list_objects(&bucket).await?;
     Ok(Json(
         objects
             .into_iter()
-            .filter(|obj| !is_internal_path(&obj.key))
             .map(|obj| WorkspaceFileResponse {
                 path: obj.key,
                 size_bytes: obj.size,
@@ -77,21 +90,15 @@ pub async fn list_files(
     ))
 }
 
-/// Each session's bucket is mounted as the opencode project directory, so it
-/// also carries opencode's own bookkeeping (a `git init`'d repo, its agent
-/// config) — implementation detail the user never uploaded, not their content.
-fn is_internal_path(path: &str) -> bool {
-    path.starts_with(".git/") || path == ".git" || path.starts_with(".opencode/") || path == "opencode.json"
-}
-
 pub async fn create_upload_url(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(session_id): Path<String>,
+    Path(agent_id): Path<String>,
     Json(input): Json<UploadUrlRequest>,
 ) -> Result<Json<PresignedUrlResponse>, GatewayError> {
     let path = normalize_path(&input.path)?;
-    let (bucket, storage) = workspace_bucket(&state, &headers, &session_id).await?;
+    let (bucket, storage) = agent_workspace_bucket(&state, &headers, &agent_id).await?;
+    storage.ensure_bucket(&bucket).await?;
     let url = storage.presign_put(&bucket, &path, PRESIGN_TTL).await?;
     Ok(Json(PresignedUrlResponse { url, path }))
 }
@@ -99,11 +106,11 @@ pub async fn create_upload_url(
 pub async fn download_url(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(session_id): Path<String>,
+    Path(agent_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<Json<PresignedUrlResponse>, GatewayError> {
     let path = normalize_path(&query.path)?;
-    let (bucket, storage) = workspace_bucket(&state, &headers, &session_id).await?;
+    let (bucket, storage) = agent_workspace_bucket(&state, &headers, &agent_id).await?;
     let url = storage.presign_get(&bucket, &path, PRESIGN_TTL).await?;
     Ok(Json(PresignedUrlResponse { url, path }))
 }
@@ -111,19 +118,15 @@ pub async fn download_url(
 pub async fn delete_file(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(session_id): Path<String>,
+    Path(agent_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<Json<bool>, GatewayError> {
     let path = normalize_path(&query.path)?;
-    let (bucket, storage) = workspace_bucket(&state, &headers, &session_id).await?;
+    let (bucket, storage) = agent_workspace_bucket(&state, &headers, &agent_id).await?;
     storage.delete_object(&bucket, &path).await?;
     Ok(Json(true))
 }
 
-/// Rejects paths that could escape the object's intended key namespace
-/// (leading slash, `..` segments) — these aren't filesystem paths so `..`
-/// can't traverse anything, but a client-controlled key with `../` segments
-/// makes bucket listings confusing and is never a legitimate upload path.
 fn normalize_path(path: &str) -> Result<String, GatewayError> {
     let trimmed = path.trim().trim_start_matches('/');
     if trimmed.is_empty() {

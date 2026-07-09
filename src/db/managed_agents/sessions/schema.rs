@@ -19,4 +19,5 @@ pub struct SessionRow {
     pub provider_run_id: Option<String>,
     pub status: String,
     pub workspace_bucket: Option<String>,
+    pub owner_id: Option<String>,
 }

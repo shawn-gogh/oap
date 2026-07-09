@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 
@@ -45,14 +45,16 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::registry::resume::resume),
         )
         .route(
-            "/api/agents/{agent_id}/files",
-            get(super::files::list::list).delete(super::files::delete_all::delete_all),
+            "/api/agents/{agent_id}/workspace/files",
+            get(super::workspace::list_files).delete(super::workspace::delete_file),
         )
         .route(
-            "/api/agents/{agent_id}/files/{*path}",
-            put(super::files::upsert::upsert)
-                .get(super::files::get::get)
-                .delete(super::files::delete::delete),
+            "/api/agents/{agent_id}/workspace/files/upload-url",
+            post(super::workspace::create_upload_url),
+        )
+        .route(
+            "/api/agents/{agent_id}/workspace/files/download-url",
+            get(super::workspace::download_url),
         )
         .route(
             "/api/agents/{agent_id}/memory",

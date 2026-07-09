@@ -12,7 +12,7 @@ use crate::{
         schema::{ManagedAgentRow, UpdateManagedAgent},
     },
     errors::GatewayError,
-    proxy::state::AppState,
+    proxy::{auth::master_key::authenticate, state::AppState},
 };
 
 pub async fn update(
@@ -21,7 +21,12 @@ pub async fn update(
     Path(agent_id): Path<String>,
     Json(input): Json<UpdateManagedAgent>,
 ) -> Result<Json<ManagedAgentRow>, GatewayError> {
+    let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?;
+    let existing = repository::get(pool, &agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+    super::super::assert_agent_access(&auth, &existing)?;
     let row = repository::update(pool, &agent_id, input)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;

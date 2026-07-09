@@ -8,7 +8,10 @@ use crate::{
         sessions::{self, schema::SessionRow},
     },
     errors::GatewayError,
-    proxy::{auth::master_key::require_any_gateway_key, state::AppState},
+    proxy::{
+        auth::master_key::{authenticate, require_any_gateway_key, AuthContext},
+        state::AppState,
+    },
 };
 
 use super::types::{CreateSessionRequest, ResolvedSession};
@@ -117,4 +120,37 @@ pub(super) async fn db<'a>(
 ) -> Result<&'a PgPool, GatewayError> {
     require_any_gateway_key(headers, state).await?;
     state.db.as_ref().ok_or(GatewayError::MissingDatabase)
+}
+
+/// Like `db`, but also resolves the caller's identity for ownership checks.
+pub(super) async fn auth_db<'a>(
+    state: &'a AppState,
+    headers: &HeaderMap,
+) -> Result<(&'a PgPool, AuthContext), GatewayError> {
+    let auth = authenticate(headers, state).await?;
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    Ok((pool, auth))
+}
+
+/// Admin sees everything; everyone else only their own sessions. Reports
+/// NotFound rather than Forbidden so session ids aren't enumerable.
+pub(super) fn assert_session_access(
+    auth: &AuthContext,
+    row: &SessionRow,
+) -> Result<(), GatewayError> {
+    if auth.is_admin || row.owner_id.as_deref() == Some(auth.user_id.as_str()) {
+        Ok(())
+    } else {
+        Err(GatewayError::NotFound("session not found".to_owned()))
+    }
+}
+
+pub(super) async fn owned_session(
+    pool: &PgPool,
+    auth: &AuthContext,
+    session_id: &str,
+) -> Result<SessionRow, GatewayError> {
+    let row = session(pool, session_id).await?;
+    assert_session_access(auth, &row)?;
+    Ok(row)
 }

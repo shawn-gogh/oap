@@ -38,14 +38,21 @@ pub(super) async fn create_runtime_session(
     state: Arc<AppState>,
     pool: &PgPool,
     input: CreateSessionRequest,
+    owner: Option<&str>,
 ) -> Result<SessionResponse, GatewayError> {
-    let mut created = create_runtime_session_row(&state, pool, input).await?;
+    let mut created = create_runtime_session_row(&state, pool, input, owner).await?;
     // Workspaces are opt-in per runtime — only local-opencode's per-session
     // process model (see runtime_provision.rs) can actually mount one today.
     if created.resolved.alias == "local-opencode" {
         if let Some(storage) = &state.object_storage {
             let bucket = crate::object_storage::ObjectStorageClient::bucket_name(&created.row.id);
             storage.ensure_bucket(&bucket).await?;
+            // Seed the session workspace with the agent's knowledge/template
+            // files before provisioning, so they're present when opencode
+            // mounts the bucket. Session edits never write back.
+            let agent_bucket =
+                crate::object_storage::ObjectStorageClient::agent_bucket_name(&created.agent.id);
+            storage.copy_all(&agent_bucket, &bucket).await?;
             sessions::repository::set_workspace_bucket(pool, &created.row.id, &bucket).await?;
             created.row.workspace_bucket = Some(bucket);
         }
@@ -133,6 +140,7 @@ async fn create_runtime_session_for_agent_input(
             timezone: None,
             tz: None,
         },
+        None,
     )
     .await?;
     Ok(response.id().to_owned())
@@ -152,6 +160,7 @@ async fn create_runtime_session_row(
     state: &AppState,
     pool: &PgPool,
     input: CreateSessionRequest,
+    owner: Option<&str>,
 ) -> Result<CreatedRuntimeSession, GatewayError> {
     let alias = input.runtime.as_deref().unwrap_or_default();
     let resolved = crate::http::runtime_resolution::resolve_runtime(pool, state, alias).await?;
@@ -179,6 +188,13 @@ async fn create_runtime_session_row(
             environment: stored_environment.clone(),
             provider_session_id: None,
             provider_run_id: None,
+            // Channel/routine-originated sessions carry no caller identity;
+            // they inherit the agent's owner (or "system" for legacy agents).
+            owner_id: Some(
+                owner
+                    .or(agent.owner_id.as_deref())
+                    .unwrap_or("system"),
+            ),
         },
     )
     .await?;

@@ -18,6 +18,7 @@ pub struct CreateRuntimeSession<'a> {
     pub environment: Value,
     pub provider_session_id: Option<&'a str>,
     pub provider_run_id: Option<&'a str>,
+    pub owner_id: Option<&'a str>,
 }
 
 pub async fn create(
@@ -26,13 +27,14 @@ pub async fn create(
     agent_id: Option<&str>,
     title: &str,
     timezone: Option<&str>,
+    owner_id: Option<&str>,
 ) -> Result<SessionRow, GatewayError> {
     let session_id = id("ses");
     sqlx::query_as::<_, SessionRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentSessionsTable"
-          (id, harness, agent_id, title, created_at, tz)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (id, harness, agent_id, title, created_at, tz, owner_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         "#,
     )
@@ -42,6 +44,7 @@ pub async fn create(
     .bind(title)
     .bind(now_ms())
     .bind(timezone)
+    .bind(owner_id)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -57,9 +60,9 @@ pub async fn create_runtime(
         INSERT INTO "LiteLLM_ManagedAgentSessionsTable" (
           id, harness, agent_id, title, created_at, tz, runtime,
           runtime_agent_ref_id, environment_json, provider_session_id,
-          provider_run_id, status
+          provider_run_id, status, owner_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $2, $7, $8, $9, $10, 'starting')
+        VALUES ($1, $2, $3, $4, $5, $6, $2, $7, $8, $9, $10, 'starting', $11)
         RETURNING *
         "#,
     )
@@ -73,6 +76,7 @@ pub async fn create_runtime(
     .bind(input.environment)
     .bind(input.provider_session_id)
     .bind(input.provider_run_id)
+    .bind(input.owner_id)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -152,14 +156,18 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     Ok(())
 }
 
-pub async fn list(pool: &PgPool) -> Result<Vec<SessionRow>, GatewayError> {
+/// `owner`: None lists everything (admin); Some(user) restricts to that
+/// user's sessions. Legacy NULL-owner rows are only visible to admins.
+pub async fn list(pool: &PgPool, owner: Option<&str>) -> Result<Vec<SessionRow>, GatewayError> {
     sqlx::query_as::<_, SessionRow>(
         r#"
         SELECT *
         FROM "LiteLLM_ManagedAgentSessionsTable"
+        WHERE $1::TEXT IS NULL OR owner_id = $1
         ORDER BY COALESCE(updated_at, created_at) DESC
         "#,
     )
+    .bind(owner)
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)

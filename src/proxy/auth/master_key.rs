@@ -9,8 +9,29 @@ use axum::http::{header::AUTHORIZATION, HeaderMap};
 use crate::{errors::GatewayError, proxy::state::AppState};
 
 // Cache litellm key validation results for 60 s to avoid a round-trip on every request.
-static LITELLM_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, bool)>>> = Mutex::new(None);
+static LITELLM_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>> =
+    Mutex::new(None);
+// Same TTL cache for DB-backed gateway keys, keyed by key hash.
+static GATEWAY_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>> =
+    Mutex::new(None);
 const CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Identity derived from the presented key. `user_id` is the ownership
+/// boundary for sessions/agents/workspaces; admins bypass it.
+#[derive(Debug, Clone)]
+pub struct AuthContext {
+    pub user_id: String,
+    pub is_admin: bool,
+}
+
+impl AuthContext {
+    pub fn admin() -> Self {
+        Self {
+            user_id: "admin".to_owned(),
+            is_admin: true,
+        }
+    }
+}
 
 pub fn require_master_key(
     headers: &HeaderMap,
@@ -31,11 +52,19 @@ pub async fn require_any_gateway_key(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<(), GatewayError> {
+    authenticate(headers, state).await.map(|_| ())
+}
+
+/// Validates the presented key and resolves it to an identity.
+pub async fn authenticate(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
     let master_key = state.config.general_settings.master_key.as_deref();
 
-    // No auth configured — allow all.
+    // No auth configured — open mode, everyone is the admin.
     let Some(configured_master_key) = master_key else {
-        return Ok(());
+        return Ok(AuthContext::admin());
     };
 
     let Some(key) = presented_key(headers) else {
@@ -44,54 +73,124 @@ pub async fn require_any_gateway_key(
 
     // Fast path: local master key.
     if key == configured_master_key {
-        return Ok(());
+        return Ok(AuthContext::admin());
     }
 
-    // Fast path: locally-created API key.
+    // DB-persisted gateway API key (cached by hash).
+    if let Some(pool) = &state.db {
+        let hash = crate::db::managed_agents::api_keys::repository::hash_key(key);
+        if let Some(cached) = cache_get(&GATEWAY_KEY_CACHE, &hash) {
+            if let Some(ctx) = cached {
+                return Ok(ctx);
+            }
+        } else {
+            let found = crate::db::managed_agents::api_keys::repository::find_by_key(pool, key)
+                .await
+                .ok()
+                .flatten()
+                .map(|row| AuthContext {
+                    is_admin: row.is_admin(),
+                    user_id: row.user_id,
+                });
+            cache_put(&GATEWAY_KEY_CACHE, hash, found.clone());
+            if let Some(ctx) = found {
+                return Ok(ctx);
+            }
+        }
+    }
+
+    // Legacy in-memory API keys (kept for DB-less deployments).
     if state.api_keys.accepts(key) {
-        return Ok(());
+        return Ok(AuthContext {
+            user_id: format!("key:{}", short_hash(key)),
+            is_admin: false,
+        });
     }
 
-    // Slow path: validate against litellm if configured.
+    // Slow path: validate against litellm if configured. Never admin.
     if let Some(base_url) = state.config.general_settings.litellm_base_url.as_deref() {
-        if validate_with_litellm(key, base_url, &state.http).await {
-            return Ok(());
+        if let Some(ctx) = validate_with_litellm(key, base_url, &state.http).await {
+            return Ok(ctx);
         }
     }
 
     Err(GatewayError::Unauthorized)
 }
 
-/// Call litellm's /key/info to validate a foreign key.
-/// Results are cached for CACHE_TTL to reduce latency.
-async fn validate_with_litellm(key: &str, base_url: &str, client: &reqwest::Client) -> bool {
-    // Check cache first.
-    {
-        let mut guard = LITELLM_KEY_CACHE.lock().unwrap();
-        let cache = guard.get_or_insert_with(HashMap::new);
-        if let Some((ts, result)) = cache.get(key) {
-            if ts.elapsed() < CACHE_TTL {
-                return *result;
-            }
-            cache.remove(key);
+fn short_hash(key: &str) -> String {
+    let hash = crate::db::managed_agents::api_keys::repository::hash_key(key);
+    hash[..16].to_owned()
+}
+
+fn cache_get(
+    cache: &Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>,
+    key: &str,
+) -> Option<Option<AuthContext>> {
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+    let map = guard.get_or_insert_with(HashMap::new);
+    match map.get(key) {
+        Some((ts, ctx)) if ts.elapsed() < CACHE_TTL => Some(ctx.clone()),
+        Some(_) => {
+            map.remove(key);
+            None
         }
+        None => None,
+    }
+}
+
+fn cache_put(
+    cache: &Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>,
+    key: String,
+    ctx: Option<AuthContext>,
+) {
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(key, (Instant::now(), ctx));
+}
+
+/// Call litellm's /key/info to validate a foreign key and derive an identity
+/// (litellm's user_id when present, else a hash of the key).
+/// Results are cached for CACHE_TTL to reduce latency.
+async fn validate_with_litellm(
+    key: &str,
+    base_url: &str,
+    client: &reqwest::Client,
+) -> Option<AuthContext> {
+    if let Some(cached) = cache_get(&LITELLM_KEY_CACHE, key) {
+        return cached;
     }
 
     let url = format!("{}/key/info", base_url.trim_end_matches('/'));
-    let result = client
+    let response = client
         .get(&url)
         .header("Authorization", format!("Bearer {key}"))
         .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
+        .await;
 
-    {
-        let mut guard = LITELLM_KEY_CACHE.lock().unwrap();
-        let cache = guard.get_or_insert_with(HashMap::new);
-        cache.insert(key.to_owned(), (Instant::now(), result));
-    }
+    let result = match response {
+        Ok(r) if r.status().is_success() => {
+            let user_id = r
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.pointer("/info/user_id")
+                        .or_else(|| v.pointer("/user_id"))
+                        .and_then(|u| u.as_str())
+                        .map(str::to_owned)
+                })
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| format!("litellm:{}", short_hash(key)));
+            Some(AuthContext {
+                user_id,
+                is_admin: false,
+            })
+        }
+        _ => None,
+    };
 
+    cache_put(&LITELLM_KEY_CACHE, key.to_owned(), result.clone());
     result
 }
 
