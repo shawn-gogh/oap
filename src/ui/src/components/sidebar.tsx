@@ -20,6 +20,7 @@ import {
   Zap,
   Trash2,
   Users,
+  LogOut,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
@@ -30,7 +31,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { apiErrorMessage, deleteSession, listSessions, listInbox } from "@/lib/api";
+import {
+  apiErrorMessage,
+  clearStoredMasterKey,
+  deleteSession,
+  getCurrentUser,
+  listSessions,
+  listInbox,
+  type CurrentUser,
+} from "@/lib/api";
 import type { OpencodeSession } from "@/lib/types";
 
 type NavItem = {
@@ -73,6 +82,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const [sessions, setSessions] = useState<OpencodeSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const load = async () => {
     try {
       const list = await listSessions();
@@ -102,6 +112,10 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
     const t = setInterval(loadCount, 5000);
     return () => clearInterval(t);
   }, [pathname]);
+
+  useEffect(() => {
+    getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
+  }, []);
 
   if (embedded) return null;
 
@@ -137,6 +151,17 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           icon: KeyRound,
           active: (path) => path.startsWith("/keys"),
         },
+        ...(currentUser?.is_admin ? [{
+          label: "用户管理",
+          href: "/users/",
+          icon: Users,
+          active: (path: string) => path.startsWith("/users"),
+        }, {
+          label: "用户组",
+          href: "/groups/",
+          icon: Users,
+          active: (path: string) => path.startsWith("/groups"),
+        }] : []),
         {
           label: "Teams",
           href: "/teams/",
@@ -333,6 +358,30 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
       </div>
 
       <div className="border-t border-border p-2 sm:p-3">
+        <DropdownMenu>
+          <DropdownMenuTrigger className="mb-1 flex h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-sm hover:bg-muted sm:justify-start">
+            <Users className="size-4" />
+            <span className="hidden min-w-0 flex-1 truncate text-left sm:inline">
+              {currentUser?.display_name || "账户"}
+            </span>
+            <ChevronDown className="hidden size-3.5 sm:inline" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">
+              <div className="truncate font-medium text-foreground">{currentUser?.display_name || "账户"}</div>
+              <div className="truncate font-mono">{currentUser?.id}</div>
+            </div>
+            <DropdownMenuItem
+              onClick={() => {
+                clearStoredMasterKey();
+                router.replace("/login/");
+              }}
+            >
+              <LogOut className="size-4" />
+              退出登录
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           onClick={() => router.push("/settings/")}
           variant={pathname?.startsWith("/settings") ? "secondary" : "ghost"}

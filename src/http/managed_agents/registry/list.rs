@@ -35,10 +35,20 @@ pub async fn list(
                 &auth.user_id,
             )
             .await?;
+            let group_granted =
+                crate::db::managed_agents::groups::agent_grants::agent_ids_for_user(
+                    pool,
+                    &auth.user_id,
+                )
+                .await?;
             rows.into_iter()
                 .filter(|row| match row.owner_id.as_deref() {
                     None => true,
-                    Some(owner) => owner == auth.user_id || granted.iter().any(|id| id == &row.id),
+                    Some(owner) => {
+                        owner == auth.user_id
+                            || granted.iter().any(|id| id == &row.id)
+                            || group_granted.iter().any(|id| id == &row.id)
+                    }
                 })
                 .collect()
         };

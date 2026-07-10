@@ -26,6 +26,9 @@ pub enum GatewayError {
     #[error("invalid request json: {0}")]
     InvalidJsonMessage(String),
 
+    #[error("invalid request: {0}")]
+    BadRequest(String),
+
     #[error("database is not configured")]
     MissingDatabase,
 
@@ -91,6 +94,7 @@ impl GatewayError {
             Self::MissingDatabase => StatusCode::SERVICE_UNAVAILABLE,
             Self::InvalidJson(_)
             | Self::InvalidJsonMessage(_)
+            | Self::BadRequest(_)
             | Self::MissingModel
             | Self::MissingMcpServer => StatusCode::BAD_REQUEST,
             Self::UnknownModel(_)

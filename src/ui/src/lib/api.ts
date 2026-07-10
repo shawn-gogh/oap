@@ -249,6 +249,54 @@ export async function whoami(): Promise<void> {
   }
 }
 
+export interface CurrentUser {
+  id: string;
+  display_name: string;
+  email?: string | null;
+  is_admin: boolean;
+}
+
+export interface ManagedUser {
+  id: string;
+  display_name: string;
+  email?: string | null;
+  status: "active" | "disabled" | string;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  return jsonOrThrow<CurrentUser>(await req("/api/auth/me"));
+}
+
+export async function listUsers(query = ""): Promise<ManagedUser[]> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("query", query.trim());
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const data = await jsonOrThrow<{ users: ManagedUser[] }>(await req(`/api/users${suffix}`));
+  return data.users;
+}
+
+export async function createUser(input: {
+  id: string;
+  display_name: string;
+  email?: string;
+}): Promise<ManagedUser> {
+  return jsonOrThrow<ManagedUser>(await req("/api/users", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function updateUserStatus(id: string, status: "active" | "disabled"): Promise<ManagedUser> {
+  return jsonOrThrow<ManagedUser>(await req(`/api/users/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status }),
+  }));
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -1945,6 +1993,129 @@ export async function deleteAgentGrant(agentId: string, granteeUserId: string): 
     { method: "DELETE" },
   );
   await jsonOrThrow<boolean>(res);
+}
+
+export async function listGrantableUsers(agentId: string, query = ""): Promise<ManagedUser[]> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("query", query.trim());
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const data = await jsonOrThrow<{ users: ManagedUser[] }>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/grantable-users${suffix}`),
+  );
+  return data.users;
+}
+
+export interface ManagedGroup {
+  id: string;
+  name: string;
+  description?: string | null;
+  status: "active" | "disabled" | string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface GroupMember {
+  group_id: string;
+  user_id: string;
+  member_role: "member" | "group_admin" | string;
+  added_by: string;
+  created_at: number;
+}
+
+export interface AgentGroupGrant {
+  id: string;
+  agent_id: string;
+  group_id: string;
+  permission: "use" | "edit" | string;
+  granted_by: string;
+  created_at: number;
+}
+
+export async function listGroups(query = ""): Promise<ManagedGroup[]> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("query", query.trim());
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const data = await jsonOrThrow<{ groups: ManagedGroup[] }>(await req(`/api/groups${suffix}`));
+  return data.groups;
+}
+
+export async function createGroup(input: { name: string; description?: string }): Promise<ManagedGroup> {
+  return jsonOrThrow<ManagedGroup>(await req("/api/groups", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function updateGroupStatus(id: string, status: "active" | "disabled"): Promise<ManagedGroup> {
+  return jsonOrThrow<ManagedGroup>(await req(`/api/groups/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status }),
+  }));
+}
+
+export async function listGroupMembers(groupId: string): Promise<GroupMember[]> {
+  const data = await jsonOrThrow<{ members: GroupMember[] }>(
+    await req(`/api/groups/${encodeURIComponent(groupId)}/members`),
+  );
+  return data.members;
+}
+
+export async function addGroupMember(
+  groupId: string,
+  userId: string,
+  memberRole = "member",
+): Promise<GroupMember> {
+  return jsonOrThrow<GroupMember>(await req(`/api/groups/${encodeURIComponent(groupId)}/members`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: userId, member_role: memberRole }),
+  }));
+}
+
+export async function deleteGroupMember(groupId: string, userId: string): Promise<void> {
+  await jsonOrThrow<boolean>(await req(
+    `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  ));
+}
+
+export async function listAgentGroupGrants(agentId: string): Promise<AgentGroupGrant[]> {
+  const data = await jsonOrThrow<{ grants: AgentGroupGrant[] }>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants`),
+  );
+  return data.grants;
+}
+
+export async function createAgentGroupGrant(
+  agentId: string,
+  groupId: string,
+  permission: string,
+): Promise<AgentGroupGrant> {
+  return jsonOrThrow<AgentGroupGrant>(await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ group_id: groupId, permission }),
+  }));
+}
+
+export async function deleteAgentGroupGrant(agentId: string, groupId: string): Promise<void> {
+  await jsonOrThrow<boolean>(await req(
+    `/api/agents/${encodeURIComponent(agentId)}/group-grants/${encodeURIComponent(groupId)}`,
+    { method: "DELETE" },
+  ));
+}
+
+export async function listGrantableGroups(agentId: string, query = ""): Promise<ManagedGroup[]> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("query", query.trim());
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const data = await jsonOrThrow<{ groups: ManagedGroup[] }>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/grantable-groups${suffix}`),
+  );
+  return data.groups;
 }
 
 export async function createImprovementProposal(agentId: string): Promise<{ id: string }> {

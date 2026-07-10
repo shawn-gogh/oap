@@ -26,6 +26,7 @@ pub fn localized_error_message(err: &GatewayError) -> String {
         GatewayError::HttpClient(e) => format!("HTTP 客户端初始化失败：{e}"),
         GatewayError::InvalidJson(e) => format!("请求 JSON 无效：{e}"),
         GatewayError::InvalidJsonMessage(s) => format!("请求 JSON 无效：{s}"),
+        GatewayError::BadRequest(s) => s.clone(),
         GatewayError::MissingDatabase => "数据库未配置。".to_owned(),
         GatewayError::Database(e) => format!("数据库请求失败：{e}"),
         GatewayError::Migration(e) => format!("数据库迁移失败：{e}"),

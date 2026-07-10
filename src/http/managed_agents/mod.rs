@@ -64,6 +64,15 @@ pub(crate) async fn assert_agent_edit(
             .await?;
     if grant.is_some_and(|g| g.permission == "edit") {
         Ok(())
+    } else if crate::db::managed_agents::groups::agent_grants::has_permission(
+        pool,
+        &agent.id,
+        &auth.user_id,
+        Some("edit"),
+    )
+    .await?
+    {
+        Ok(())
     } else {
         Err(GatewayError::NotFound(format!("agent {}", agent.id)))
     }
@@ -88,6 +97,15 @@ pub(crate) async fn assert_agent_use(
         crate::db::managed_agents::agent_grants::repository::find(pool, &agent.id, &auth.user_id)
             .await?;
     if grant.is_some() {
+        Ok(())
+    } else if crate::db::managed_agents::groups::agent_grants::has_permission(
+        pool,
+        &agent.id,
+        &auth.user_id,
+        None,
+    )
+    .await?
+    {
         Ok(())
     } else {
         Err(GatewayError::NotFound(format!("agent {}", agent.id)))

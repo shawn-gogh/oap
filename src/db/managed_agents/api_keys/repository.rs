@@ -33,6 +33,11 @@ pub async fn create(
         Some("admin") => "admin",
         _ => "user",
     };
+    let user_id = user_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&id);
+    crate::db::managed_agents::users::repository::ensure(pool, user_id).await?;
     let row = sqlx::query_as::<_, GatewayApiKeyRow>(
         r#"INSERT INTO "LiteLLM_GatewayApiKeysTable"
              (id, key_hash, label, user_id, role, created_at)
@@ -42,7 +47,7 @@ pub async fn create(
     .bind(&id)
     .bind(hash_key(&key))
     .bind(label.map(str::trim).filter(|l| !l.is_empty()))
-    .bind(user_id.map(str::trim).filter(|u| !u.is_empty()).unwrap_or(&id))
+    .bind(user_id)
     .bind(role)
     .bind(now_ms())
     .fetch_one(pool)

@@ -19,6 +19,7 @@ import {
   Search,
   Trash2,
   Upload,
+  Users,
   X,
 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
@@ -33,10 +34,18 @@ import {
   DEFAULT_VAULT_USER,
   agentFileDownloadUrl,
   createAgentGrant,
+  createAgentGroupGrant,
   createImprovementProposal,
   deleteAgentGrant,
+  deleteAgentGroupGrant,
   listAgentGrants,
+  listAgentGroupGrants,
+  listGrantableGroups,
+  listGrantableUsers,
   type AgentGrant,
+  type AgentGroupGrant,
+  type ManagedGroup,
+  type ManagedUser,
   listEvalRuns,
   startEvalRun,
   type EvalRun,
@@ -157,7 +166,13 @@ function AgentDetail() {
   const [proposing, setProposing] = useState(false);
   const [proposalNotice, setProposalNotice] = useState<string | null>(null);
   const [grants, setGrants] = useState<AgentGrant[]>([]);
+  const [groupGrants, setGroupGrants] = useState<AgentGroupGrant[]>([]);
+  const [grantableUsers, setGrantableUsers] = useState<ManagedUser[]>([]);
+  const [grantableGroups, setGrantableGroups] = useState<ManagedGroup[]>([]);
   const [grantUser, setGrantUser] = useState("");
+  const [grantUserQuery, setGrantUserQuery] = useState("");
+  const [grantGroup, setGrantGroup] = useState("");
+  const [grantGroupQuery, setGrantGroupQuery] = useState("");
   const [grantPermission, setGrantPermission] = useState("use");
   const [grantBusy, setGrantBusy] = useState(false);
   const [grantError, setGrantError] = useState<string | null>(null);
@@ -227,6 +242,7 @@ function AgentDetail() {
           .then(setGrants)
           // 非 owner 看不到授权列表（404）——直接隐藏卡片。
           .catch(() => setGrantsVisible(false));
+        listAgentGroupGrants(id).then(setGroupGrants).catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -234,6 +250,30 @@ function AgentDetail() {
       }
     })();
   }, [id]);
+
+  useEffect(() => {
+    const query = grantUserQuery.trim();
+    if (query.length < 2) {
+      setGrantableUsers([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      listGrantableUsers(id, query).then(setGrantableUsers).catch(() => setGrantableUsers([]));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [grantUserQuery, id]);
+
+  useEffect(() => {
+    const query = grantGroupQuery.trim();
+    if (query.length < 2) {
+      setGrantableGroups([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      listGrantableGroups(id, query).then(setGrantableGroups).catch(() => setGrantableGroups([]));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [grantGroupQuery, id]);
 
   const visibleFiles = useMemo(() => {
     const q = fileQuery.trim().toLowerCase();
@@ -382,6 +422,7 @@ function AgentDetail() {
       await createAgentGrant(id, user, grantPermission);
       setGrants(await listAgentGrants(id));
       setGrantUser("");
+      setGrantUserQuery("");
     } catch (e) {
       setGrantError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -395,6 +436,36 @@ function AgentDetail() {
     try {
       await deleteAgentGrant(id, granteeUserId);
       setGrants(await listAgentGrants(id));
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const addGroupGrant = async () => {
+    const group = grantGroup.trim();
+    if (!group || grantBusy) return;
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await createAgentGroupGrant(id, group, grantPermission);
+      setGroupGrants(await listAgentGroupGrants(id));
+      setGrantGroup("");
+      setGrantGroupQuery("");
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const removeGroupGrant = async (groupId: string) => {
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await deleteAgentGroupGrant(id, groupId);
+      setGroupGrants(await listAgentGroupGrants(id));
     } catch (e) {
       setGrantError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -689,14 +760,26 @@ function AgentDetail() {
                   <Card className="overflow-hidden">
                     <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
                       <Input
+                        value={grantUserQuery}
+                        onChange={(e) => {
+                          setGrantUserQuery(e.target.value);
+                          setGrantUser("");
+                        }}
+                        placeholder="搜索姓名、邮箱或用户 ID"
+                        className="h-8 max-w-[200px] text-xs"
+                      />
+                      <select
                         value={grantUser}
                         onChange={(e) => setGrantUser(e.target.value)}
-                        placeholder="用户 ID（user_id）"
-                        className="h-8 max-w-[240px] text-xs"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void addGrant();
-                        }}
-                      />
+                        className="h-8 max-w-[240px] rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="">从搜索结果选择用户</option>
+                        {grantableUsers.map((user) => (
+                          <option key={user.id} value={user.id} disabled={user.status !== "active"}>
+                            {user.display_name} ({user.id}){user.status !== "active" ? " · 已禁用" : ""}
+                          </option>
+                        ))}
+                      </select>
                       <select
                         value={grantPermission}
                         onChange={(e) => setGrantPermission(e.target.value)}
@@ -742,6 +825,69 @@ function AgentDetail() {
                             >
                               <Trash2 className="size-3.5" />
                             </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
+                )}
+
+                {grantsVisible && (
+                <section>
+                  <div className="mb-2">
+                    <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <Users className="size-3.5" />
+                      用户组授权
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      对组内全部启用用户授予 use 或 edit；停用组或移出成员后权限立即失效。
+                    </p>
+                  </div>
+                  <Card className="overflow-hidden">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
+                      <Input
+                        value={grantGroupQuery}
+                        onChange={(e) => {
+                          setGrantGroupQuery(e.target.value);
+                          setGrantGroup("");
+                        }}
+                        placeholder="搜索用户组"
+                        className="h-8 max-w-[180px] text-xs"
+                      />
+                      <select
+                        value={grantGroup}
+                        onChange={(e) => setGrantGroup(e.target.value)}
+                        className="h-8 max-w-[220px] rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="">从搜索结果选择用户组</option>
+                        {grantableGroups.map((group) => (
+                          <option key={group.id} value={group.id} disabled={group.status !== "active"}>
+                            {group.name}{group.status !== "active" ? " · 已禁用" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={grantPermission}
+                        onChange={(e) => setGrantPermission(e.target.value)}
+                        className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="use">use（使用）</option>
+                        <option value="edit">edit（可修改）</option>
+                      </select>
+                      <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void addGroupGrant()} disabled={grantBusy || !grantGroup.trim()}>
+                        <Plus className="size-3.5" />
+                        授权用户组
+                      </Button>
+                    </div>
+                    {groupGrants.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-muted-foreground">尚未授权给任何用户组。</div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {groupGrants.map((grant) => (
+                          <div key={grant.id} className="flex items-center justify-between px-3 py-2">
+                            <div className="min-w-0"><span className="font-mono text-xs">{grant.group_id}</span><span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{grant.permission}</span></div>
+                            <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => void removeGroupGrant(grant.group_id)} disabled={grantBusy} aria-label={`撤销用户组 ${grant.group_id}`}><Trash2 className="size-3.5" /></Button>
                           </div>
                         ))}
                       </div>

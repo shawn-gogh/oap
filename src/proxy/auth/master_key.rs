@@ -81,17 +81,35 @@ pub async fn authenticate(
         let hash = crate::db::managed_agents::api_keys::repository::hash_key(key);
         if let Some(cached) = cache_get(&GATEWAY_KEY_CACHE, &hash) {
             if let Some(ctx) = cached {
-                return Ok(ctx);
+                if crate::db::managed_agents::users::repository::find(pool, &ctx.user_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|user| user.is_active())
+                {
+                    return Ok(ctx);
+                }
+                return Err(GatewayError::Unauthorized);
             }
         } else {
-            let found = crate::db::managed_agents::api_keys::repository::find_by_key(pool, key)
-                .await
-                .ok()
-                .flatten()
-                .map(|row| AuthContext {
-                    is_admin: row.is_admin(),
-                    user_id: row.user_id,
-                });
+            let found =
+                match crate::db::managed_agents::api_keys::repository::find_by_key(pool, key)
+                    .await
+                    .ok()
+                    .flatten()
+                {
+                    Some(row) => {
+                        crate::db::managed_agents::users::repository::ensure(pool, &row.user_id)
+                            .await
+                            .ok()
+                            .filter(|user| user.is_active())
+                            .map(|_| AuthContext {
+                                is_admin: row.is_admin(),
+                                user_id: row.user_id,
+                            })
+                    }
+                    None => None,
+                };
             cache_put(&GATEWAY_KEY_CACHE, hash, found.clone());
             if let Some(ctx) = found {
                 return Ok(ctx);
@@ -110,6 +128,13 @@ pub async fn authenticate(
     // Slow path: validate against litellm if configured. Never admin.
     if let Some(base_url) = state.config.general_settings.litellm_base_url.as_deref() {
         if let Some(ctx) = validate_with_litellm(key, base_url, &state.http).await {
+            if let Some(pool) = &state.db {
+                let user = crate::db::managed_agents::users::repository::ensure(pool, &ctx.user_id)
+                    .await?;
+                if !user.is_active() {
+                    return Err(GatewayError::Unauthorized);
+                }
+            }
             return Ok(ctx);
         }
     }

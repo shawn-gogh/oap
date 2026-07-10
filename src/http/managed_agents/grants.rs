@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -23,6 +23,23 @@ pub struct CreateGrantRequest {
     pub user_id: String,
     #[serde(default)]
     pub permission: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GrantableUsersQuery {
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateGroupGrantRequest {
+    pub group_id: String,
+    #[serde(default)]
+    pub permission: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GrantableGroupsQuery {
+    pub query: Option<String>,
 }
 
 async fn owned_agent(
@@ -58,7 +75,17 @@ pub async fn create(
     let (pool, granted_by) = owned_agent(&state, &headers, &agent_id).await?;
     let grantee = input.user_id.trim();
     if grantee.is_empty() {
-        return Err(GatewayError::InvalidConfig("user_id is required".to_owned()));
+        return Err(GatewayError::InvalidConfig(
+            "user_id is required".to_owned(),
+        ));
+    }
+    if !crate::db::managed_agents::users::repository::find(&pool, grantee)
+        .await?
+        .is_some_and(|user| user.is_active())
+    {
+        return Err(GatewayError::InvalidConfig(
+            "an active user is required".to_owned(),
+        ));
     }
     let grant = agent_grants::repository::upsert(
         &pool,
@@ -68,7 +95,93 @@ pub async fn create(
         &granted_by,
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(grant).unwrap_or_default())))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(grant).unwrap_or_default()),
+    ))
+}
+
+pub async fn grantable_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Query(query): Query<GrantableUsersQuery>,
+) -> Result<Json<Value>, GatewayError> {
+    let (pool, _) = owned_agent(&state, &headers, &agent_id).await?;
+    let query = query.query.as_deref().unwrap_or("").trim();
+    if query.chars().count() < 2 {
+        return Ok(Json(json!({ "users": [] })));
+    }
+    let users = crate::db::managed_agents::users::repository::list(&pool, Some(query)).await?;
+    Ok(Json(json!({ "users": users })))
+}
+
+pub async fn list_group_grants(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, GatewayError> {
+    let (pool, _) = owned_agent(&state, &headers, &agent_id).await?;
+    let grants =
+        crate::db::managed_agents::groups::agent_grants::list_for_agent(&pool, &agent_id).await?;
+    Ok(Json(json!({ "grants": grants })))
+}
+
+pub async fn create_group_grant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(input): Json<CreateGroupGrantRequest>,
+) -> Result<(StatusCode, Json<Value>), GatewayError> {
+    let (pool, granted_by) = owned_agent(&state, &headers, &agent_id).await?;
+    let group_id = input.group_id.trim();
+    if !crate::db::managed_agents::groups::repository::find(&pool, group_id)
+        .await?
+        .is_some_and(|group| group.is_active())
+    {
+        return Err(GatewayError::InvalidConfig(
+            "an active group is required".to_owned(),
+        ));
+    }
+    let grant = crate::db::managed_agents::groups::agent_grants::upsert(
+        &pool,
+        &agent_id,
+        group_id,
+        input.permission.as_deref().unwrap_or("use"),
+        &granted_by,
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(grant).unwrap_or_default()),
+    ))
+}
+
+pub async fn delete_group_grant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((agent_id, group_id)): Path<(String, String)>,
+) -> Result<Json<bool>, GatewayError> {
+    let (pool, _) = owned_agent(&state, &headers, &agent_id).await?;
+    Ok(Json(
+        crate::db::managed_agents::groups::agent_grants::delete(&pool, &agent_id, &group_id)
+            .await?,
+    ))
+}
+
+pub async fn grantable_groups(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Query(query): Query<GrantableGroupsQuery>,
+) -> Result<Json<Value>, GatewayError> {
+    let (pool, _) = owned_agent(&state, &headers, &agent_id).await?;
+    let query = query.query.as_deref().unwrap_or("").trim();
+    if query.chars().count() < 2 {
+        return Ok(Json(json!({ "groups": [] })));
+    }
+    let groups = crate::db::managed_agents::groups::repository::list(&pool, Some(query)).await?;
+    Ok(Json(json!({ "groups": groups })))
 }
 
 pub async fn delete(

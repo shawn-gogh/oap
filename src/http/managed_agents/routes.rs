@@ -62,8 +62,24 @@ fn agent_routes() -> Router<Arc<AppState>> {
             get(super::grants::list).post(super::grants::create),
         )
         .route(
+            "/api/agents/{agent_id}/grantable-users",
+            get(super::grants::grantable_users),
+        )
+        .route(
             "/api/agents/{agent_id}/grants/{grantee}",
             delete(super::grants::delete),
+        )
+        .route(
+            "/api/agents/{agent_id}/group-grants",
+            get(super::grants::list_group_grants).post(super::grants::create_group_grant),
+        )
+        .route(
+            "/api/agents/{agent_id}/group-grants/{group_id}",
+            delete(super::grants::delete_group_grant),
+        )
+        .route(
+            "/api/agents/{agent_id}/grantable-groups",
+            get(super::grants::grantable_groups),
         )
         .route(
             "/api/agents/{agent_id}/workspace/files",
