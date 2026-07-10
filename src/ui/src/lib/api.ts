@@ -1909,6 +1909,44 @@ export async function startEvalRun(agentId: string): Promise<EvalRun> {
   return jsonOrThrow<EvalRun>(res);
 }
 
+// ── Agent sharing grants ────────────────────────────────────────────────────
+
+export interface AgentGrant {
+  id: string;
+  agent_id: string;
+  grantee_user_id: string;
+  permission: "use" | "edit" | string;
+  granted_by?: string | null;
+  created_at: number;
+}
+
+export async function listAgentGrants(agentId: string): Promise<AgentGrant[]> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/grants`);
+  const data = await jsonOrThrow<{ grants: AgentGrant[] }>(res);
+  return data.grants ?? [];
+}
+
+export async function createAgentGrant(
+  agentId: string,
+  userId: string,
+  permission: string,
+): Promise<AgentGrant> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/grants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, permission }),
+  });
+  return jsonOrThrow<AgentGrant>(res);
+}
+
+export async function deleteAgentGrant(agentId: string, granteeUserId: string): Promise<void> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/grants/${encodeURIComponent(granteeUserId)}`,
+    { method: "DELETE" },
+  );
+  await jsonOrThrow<boolean>(res);
+}
+
 export async function createImprovementProposal(agentId: string): Promise<{ id: string }> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/improvement-proposals`, {
     method: "POST",

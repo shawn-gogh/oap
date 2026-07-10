@@ -58,6 +58,14 @@ fn agent_routes() -> Router<Arc<AppState>> {
         )
         .route("/api/evolution/sweep", post(super::evolution::sweep))
         .route(
+            "/api/agents/{agent_id}/grants",
+            get(super::grants::list).post(super::grants::create),
+        )
+        .route(
+            "/api/agents/{agent_id}/grants/{grantee}",
+            delete(super::grants::delete),
+        )
+        .route(
             "/api/agents/{agent_id}/workspace/files",
             get(super::workspace::list_files).delete(super::workspace::delete_file),
         )

@@ -60,6 +60,18 @@ pub async fn create(
 ) -> Result<Json<SessionResponse>, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     let pool = pool.clone();
+    // Using an agent requires use-level access (owner, admin, or a grant).
+    let requested_agent = input
+        .agent_id
+        .as_deref()
+        .or(input.agent.as_deref())
+        .filter(|id| id.starts_with("agent_"));
+    if let Some(agent_id) = requested_agent {
+        let agent = crate::db::managed_agents::registry::repository::get(&pool, agent_id)
+            .await?
+            .ok_or_else(|| GatewayError::UnknownAgent(agent_id.to_owned()))?;
+        crate::http::managed_agents::assert_agent_use(&auth, &agent, &pool).await?;
+    }
     if input.has_runtime() {
         return create_runtime_session(state, &pool, input, Some(&auth.user_id))
             .await

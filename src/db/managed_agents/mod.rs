@@ -1,3 +1,4 @@
+pub mod agent_grants;
 pub mod api_keys;
 pub mod eval_runs;
 pub mod files;

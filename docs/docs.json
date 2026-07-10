@@ -138,6 +138,7 @@
             "group": "Engineering",
             "pages": [
               "engineering/agent-production-line",
+              "engineering/permissions",
               "engineering/debugging",
               "engineering/contributing",
               "engineering/sdk-api-contract"

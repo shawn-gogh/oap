@@ -7,14 +7,23 @@ use axum::{
     response::Response,
 };
 
-use crate::{db::managed_agents::runs::repository, errors::GatewayError, proxy::state::AppState};
+use crate::{
+    db::managed_agents::runs::repository,
+    errors::GatewayError,
+    proxy::{auth::master_key::authenticate, state::AppState},
+};
 
 pub async fn logs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((agent_id, run_id)): Path<(String, String)>,
 ) -> Result<Response, GatewayError> {
+    let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?;
+    let agent = crate::db::managed_agents::registry::repository::get(pool, &agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+    super::super::assert_agent_use(&auth, &agent, pool).await?;
     let run = repository::get(pool, &agent_id, &run_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("run not found".to_owned()))?;

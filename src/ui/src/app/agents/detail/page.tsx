@@ -9,6 +9,7 @@ import {
   Clock,
   Download,
   FileText,
+  KeyRound,
   Pencil,
   Pin,
   PinOff,
@@ -31,7 +32,11 @@ import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
   DEFAULT_VAULT_USER,
   agentFileDownloadUrl,
+  createAgentGrant,
   createImprovementProposal,
+  deleteAgentGrant,
+  listAgentGrants,
+  type AgentGrant,
   listEvalRuns,
   startEvalRun,
   type EvalRun,
@@ -151,6 +156,12 @@ function AgentDetail() {
   const [evalError, setEvalError] = useState<string | null>(null);
   const [proposing, setProposing] = useState(false);
   const [proposalNotice, setProposalNotice] = useState<string | null>(null);
+  const [grants, setGrants] = useState<AgentGrant[]>([]);
+  const [grantUser, setGrantUser] = useState("");
+  const [grantPermission, setGrantPermission] = useState("use");
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [grantError, setGrantError] = useState<string | null>(null);
+  const [grantsVisible, setGrantsVisible] = useState(true);
   const [filesLoading, setFilesLoading] = useState(false);
   const [fileQuery, setFileQuery] = useState("");
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
@@ -212,6 +223,10 @@ function AgentDetail() {
         setFiles(fileRows);
         setStoredKeyEntries(keyRows);
         listEvalRuns(id).then(setEvalRuns).catch(() => {});
+        listAgentGrants(id)
+          .then(setGrants)
+          // 非 owner 看不到授权列表（404）——直接隐藏卡片。
+          .catch(() => setGrantsVisible(false));
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -355,6 +370,35 @@ function AgentDetail() {
       setAgent(updated);
     } catch (e) {
       setEvalError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const addGrant = async () => {
+    const user = grantUser.trim();
+    if (!user || grantBusy) return;
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await createAgentGrant(id, user, grantPermission);
+      setGrants(await listAgentGrants(id));
+      setGrantUser("");
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const removeGrant = async (granteeUserId: string) => {
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await deleteAgentGrant(id, granteeUserId);
+      setGrants(await listAgentGrants(id));
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
     }
   };
 
@@ -627,6 +671,84 @@ function AgentDetail() {
                   onVaultKeysChange={updateVaultKeys}
                   onStoredKeyEntriesChange={(updater) => setStoredKeyEntries(updater)}
                 />
+
+                {grantsVisible && (
+                <section>
+                  <div className="mb-2">
+                    <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <KeyRound className="size-3.5" />
+                      使用授权
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      把该智能体授权给其他用户：use 可见并可开会话；edit 还可修改配置与工作区。
+                    </p>
+                  </div>
+                  {grantError && (
+                    <p className="mb-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{grantError}</p>
+                  )}
+                  <Card className="overflow-hidden">
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+                      <Input
+                        value={grantUser}
+                        onChange={(e) => setGrantUser(e.target.value)}
+                        placeholder="用户 ID（user_id）"
+                        className="h-8 max-w-[240px] text-xs"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void addGrant();
+                        }}
+                      />
+                      <select
+                        value={grantPermission}
+                        onChange={(e) => setGrantPermission(e.target.value)}
+                        className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="use">use（使用）</option>
+                        <option value="edit">edit（可修改）</option>
+                      </select>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => void addGrant()}
+                        disabled={grantBusy || !grantUser.trim()}
+                      >
+                        <Plus className="size-3.5" />
+                        授权
+                      </Button>
+                    </div>
+                    {grants.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-muted-foreground">
+                        尚未授权给任何用户，仅 owner 与 admin 可见。
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {grants.map((grant) => (
+                          <div key={grant.id} className="flex items-center justify-between px-3 py-2">
+                            <div className="min-w-0">
+                              <span className="font-mono text-xs">{grant.grantee_user_id}</span>
+                              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                                {grant.permission}
+                              </span>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive"
+                              onClick={() => void removeGrant(grant.grantee_user_id)}
+                              disabled={grantBusy}
+                              aria-label={`撤销 ${grant.grantee_user_id}`}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
+                )}
 
                 <section>
                   <div className="mb-2 flex items-end justify-between">

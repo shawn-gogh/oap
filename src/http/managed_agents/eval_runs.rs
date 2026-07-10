@@ -227,7 +227,7 @@ pub async fn create(
     let agent = registry::repository::get(pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
-    super::assert_agent_access(&auth, &agent)?;
+    super::assert_agent_edit(&auth, &agent, pool).await?;
     let run = start_eval_run(state.clone(), pool, agent, &auth.user_id).await?;
     Ok((StatusCode::ACCEPTED, Json(serde_json::to_value(run).unwrap_or_default())))
 }
@@ -242,7 +242,7 @@ pub async fn list(
     let agent = registry::repository::get(pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
-    super::assert_agent_access(&auth, &agent)?;
+    super::assert_agent_edit(&auth, &agent, pool).await?;
     let rows = eval_runs::repository::list(pool, &agent_id, 50).await?;
     Ok(Json(json!({ "runs": rows })))
 }
