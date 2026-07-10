@@ -197,7 +197,6 @@ function SessionsStart() {
                 selectedAgent ??
                 (await createAgent({
                   name: title,
-                  owner_id: "default",
                   description: `Started from ${runtimeLabel(selectedRuntime ?? runtimeForSession)} landing prompt.`,
                   model,
                   runtime: runtimeForSession,

@@ -59,6 +59,13 @@ pub enum GatewayError {
     #[error("unauthorized")]
     Unauthorized,
 
+    /// Authenticated with a valid key, but that identity lacks the required
+    /// role/ownership. Distinct from `Unauthorized` (401, "we don't
+    /// recognize this key at all") so the frontend doesn't treat a
+    /// permission gap as a dead session and force a re-login.
+    #[error("forbidden")]
+    Forbidden,
+
     #[error("upstream request failed: {0}")]
     Upstream(reqwest::Error),
 
@@ -92,6 +99,7 @@ impl GatewayError {
             | Self::UnknownAgentRun(_)
             | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden => StatusCode::FORBIDDEN,
             Self::Upstream(_)
             | Self::Sandbox(_)
             | Self::SandboxError(_)

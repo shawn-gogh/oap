@@ -149,6 +149,16 @@ fn cache_put(
         .insert(key, (Instant::now(), ctx));
 }
 
+/// Evicts a DB-backed gateway key from the identity cache immediately, so a
+/// revoked/deleted key stops authenticating right away instead of staying
+/// valid for up to CACHE_TTL more seconds.
+pub fn evict_gateway_key_cache(key_hash: &str) {
+    let mut guard = GATEWAY_KEY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(map) = guard.as_mut() {
+        map.remove(key_hash);
+    }
+}
+
 /// Call litellm's /key/info to validate a foreign key and derive an identity
 /// (litellm's user_id when present, else a hash of the key).
 /// Results are cached for CACHE_TTL to reduce latency.

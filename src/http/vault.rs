@@ -11,7 +11,7 @@ use crate::{
     db::credentials,
     errors::GatewayError,
     proxy::{
-        auth::master_key::{require_any_gateway_key, require_master_key},
+        auth::master_key::{authenticate, require_any_gateway_key},
         credential_crypto,
         state::AppState,
     },
@@ -85,10 +85,7 @@ pub async fn save(
         ));
     }
     if scope == "global" {
-        require_master_key(
-            &headers,
-            state.config.general_settings.master_key.as_deref(),
-        )?;
+        require_admin(&state, &headers).await?;
     }
 
     let key_name = input.key.trim();
@@ -140,7 +137,7 @@ pub async fn list_global(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ListVaultKeysResponse>, GatewayError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let rows = sqlx::query_as::<_, credentials::VaultKeyRow>(
         r#"
@@ -176,7 +173,7 @@ pub async fn save_global(
     headers: HeaderMap,
     Json(input): Json<SaveVaultKeyRequest>,
 ) -> Result<Json<SaveVaultKeyResponse>, GatewayError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let key_name = input.key.trim();
     let value = input.value.trim();
     if key_name.is_empty() || value.is_empty() {
@@ -197,7 +194,7 @@ pub async fn delete_global(
     headers: HeaderMap,
     Path(key_name): Path<String>,
 ) -> Result<(StatusCode, Json<DeleteVaultKeyResponse>), GatewayError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let deleted = credentials::delete_vault_key(pool, &key_name, "global", None).await?;
     let status = if deleted {
@@ -208,6 +205,11 @@ pub async fn delete_global(
     Ok((status, Json(DeleteVaultKeyResponse { ok: deleted })))
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayError> {
-    require_master_key(headers, state.config.general_settings.master_key.as_deref())
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayError> {
+    let auth = authenticate(headers, state).await?;
+    if auth.is_admin {
+        Ok(())
+    } else {
+        Err(GatewayError::Forbidden)
+    }
 }

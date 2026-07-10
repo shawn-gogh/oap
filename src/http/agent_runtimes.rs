@@ -11,7 +11,7 @@ use crate::{
     db::credentials,
     errors::GatewayError,
     proxy::{
-        auth::master_key::require_master_key,
+        auth::master_key::{authenticate, require_any_gateway_key},
         credential_crypto,
         provider_credentials::{
             self, ProviderCredentialInput, ANTHROPIC_PROVIDER_ID, CURSOR_PROVIDER_ID,
@@ -66,7 +66,9 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<AgentRuntimesResponse>, GatewayError> {
-    require_admin(&state, &headers)?;
+    // Read-only, secret-free (masked_api_key only) — every authenticated
+    // user needs this to build/use agents, not just admins.
+    require_any_gateway_key(&headers, &state).await?;
     Ok(Json(AgentRuntimesResponse {
         runtimes: runtime_values(&state).await?,
     }))
@@ -78,7 +80,7 @@ pub async fn save(
     Path(runtime): Path<String>,
     Json(input): Json<SaveRuntimeCredentialRequest>,
 ) -> Result<Json<AgentRuntimesResponse>, GatewayError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let runtime = canonical_runtime(&runtime)?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let api_key = input.api_key.trim();
@@ -113,7 +115,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(runtime): Path<String>,
 ) -> Result<(StatusCode, Json<DeleteRuntimeCredentialResponse>), GatewayError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let runtime = canonical_runtime(&runtime)?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let provider_id = credential_provider_id(runtime)?;
@@ -158,8 +160,13 @@ pub async fn load_credential(
     Ok(RuntimeCredential { api_key, api_base })
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayError> {
-    require_master_key(headers, state.config.general_settings.master_key.as_deref())
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayError> {
+    let auth = authenticate(headers, state).await?;
+    if auth.is_admin {
+        Ok(())
+    } else {
+        Err(GatewayError::Forbidden)
+    }
 }
 
 async fn runtime_values(state: &AppState) -> Result<Vec<RuntimeResponse>, GatewayError> {

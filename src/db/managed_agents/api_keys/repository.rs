@@ -60,13 +60,17 @@ pub async fn list(pool: &PgPool) -> Result<Vec<GatewayApiKeyRow>, GatewayError> 
     .map_err(GatewayError::Database)
 }
 
-pub async fn delete(pool: &PgPool, id: &str) -> Result<bool, GatewayError> {
-    let result = sqlx::query(r#"DELETE FROM "LiteLLM_GatewayApiKeysTable" WHERE id = $1"#)
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(GatewayError::Database)?;
-    Ok(result.rows_affected() > 0)
+/// Returns the deleted row's key_hash so the caller can evict it from the
+/// in-process auth cache immediately (otherwise a revoked key can keep
+/// authenticating for up to CACHE_TTL more seconds).
+pub async fn delete(pool: &PgPool, id: &str) -> Result<Option<String>, GatewayError> {
+    sqlx::query_scalar::<_, String>(
+        r#"DELETE FROM "LiteLLM_GatewayApiKeysTable" WHERE id = $1 RETURNING key_hash"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 /// Looks a presented key up by hash and touches `last_used_at`.

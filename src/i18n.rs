@@ -38,6 +38,7 @@ pub fn localized_error_message(err: &GatewayError) -> String {
         // Carries a message built at the call site; pass it through unchanged.
         GatewayError::NotFound(s) => s.clone(),
         GatewayError::Unauthorized => "未授权。".to_owned(),
+        GatewayError::Forbidden => "权限不足，无法执行此操作。".to_owned(),
         GatewayError::Upstream(e) => format!("上游请求失败：{e}"),
         GatewayError::Sandbox(e) => format!("沙箱请求失败：{e}"),
         GatewayError::SandboxError(s) => format!("沙箱错误：{s}"),
