@@ -1,0 +1,11 @@
+{
+  "name": "external-adapter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
