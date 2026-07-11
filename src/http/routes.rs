@@ -82,6 +82,10 @@ fn api_routes() -> Router<Arc<AppState>> {
             get(crate::http::runtime_harnesses::list).post(crate::http::runtime_harnesses::create),
         )
         .route(
+            "/api/runtime-harnesses/test",
+            post(crate::http::runtime_harnesses::test_connection),
+        )
+        .route(
             "/api/runtime-harnesses/{alias}",
             put(crate::http::runtime_harnesses::update)
                 .delete(crate::http::runtime_harnesses::delete_harness),

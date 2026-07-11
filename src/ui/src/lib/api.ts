@@ -437,6 +437,19 @@ export async function updateRuntimeHarness(
   return data.harnesses;
 }
 
+export async function testRuntimeHarness(input: {
+  api_spec: string;
+  api_base: string;
+  api_key?: string;
+}): Promise<{ ok: boolean; detail: string; models?: string[] }> {
+  const res = await req("/api/runtime-harnesses/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<{ ok: boolean; detail: string; models?: string[] }>(res);
+}
+
 export async function deleteRuntimeHarness(alias: string): Promise<void> {
   await jsonOrThrow(
     await req(`/api/runtime-harnesses/${encodeURIComponent(alias)}`, {

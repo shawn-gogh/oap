@@ -44,6 +44,7 @@ import {
   deleteRuntimeHarness,
   listRuntimeHarnesses,
   saveAgentRuntimeCredential,
+  testRuntimeHarness,
   updateRuntimeHarness,
 } from "@/lib/api";
 import {
@@ -210,6 +211,25 @@ function AddHarnessModal({
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; detail: string; models?: string[] } | null>(null);
+
+  const handleTest = async () => {
+    if (testing) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await testRuntimeHarness({
+        api_spec: apiSpec,
+        api_base: apiBase.trim(),
+        api_key: apiKey.trim(),
+      }));
+    } catch (err) {
+      setTestResult({ ok: false, detail: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleRuntimeOptionChange = (value: string | null) => {
     const option = RUNTIME_OPTIONS.find((candidate) => candidate.value === value);
@@ -226,6 +246,7 @@ function AddHarnessModal({
     setApiSpec("claude_managed_agents");
     setApiBase(SPEC_DEFAULTS.claude_managed_agents);
     setError(null);
+    setTestResult(null);
   }, []);
 
   useEffect(() => {
@@ -361,7 +382,32 @@ function AddHarnessModal({
             </div>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {testResult && (
+            <div
+              className={`rounded-md px-3 py-2 text-xs ${
+                testResult.ok
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                  : "bg-destructive/10 text-destructive"
+              }`}
+            >
+              {testResult.ok ? "✓ " : "✗ "}
+              {testResult.detail}
+              {testResult.ok && (testResult.models?.length ?? 0) > 0 && (
+                <span className="ml-1 text-muted-foreground">
+                  可用模型：{testResult.models!.slice(0, 5).join(", ")}
+                  {testResult.models!.length > 5 ? ` 等 ${testResult.models!.length} 个` : ""}
+                </span>
+              )}
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-1">
+            <Button
+              variant="outline"
+              onClick={() => void handleTest()}
+              disabled={testing || !apiBase.trim()}
+            >
+              {testing ? "测试中..." : "测试连接"}
+            </Button>
             <Button variant="outline" onClick={onClose} disabled={saving}>
               Cancel
             </Button>
