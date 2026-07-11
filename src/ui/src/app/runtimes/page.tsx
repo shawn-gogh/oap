@@ -60,12 +60,14 @@ const SPEC_DEFAULTS: Record<string, string> = {
   claude_managed_agents: "https://api.anthropic.com",
   cursor: "https://api.cursor.com",
   gemini_antigravity: "https://generativelanguage.googleapis.com",
+  generic_chat: "",
 };
 
 const SPEC_LABELS: Record<string, string> = {
   claude_managed_agents: "Claude Managed Agents",
   cursor: "Cursor",
   gemini_antigravity: "Gemini Antigravity",
+  generic_chat: "外部 Chat 智能体（OpenAI 兼容）",
 };
 
 const RUNTIME_OPTIONS = [
@@ -86,6 +88,12 @@ const RUNTIME_OPTIONS = [
     label: "Gemini Antigravity",
     apiSpec: "gemini_antigravity",
     defaultApiBase: SPEC_DEFAULTS.gemini_antigravity,
+  },
+  {
+    value: "generic_chat",
+    label: "外部 Chat 智能体（OpenAI 兼容）",
+    apiSpec: "generic_chat",
+    defaultApiBase: "",
   },
 ];
 

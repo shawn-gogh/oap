@@ -49,6 +49,20 @@ pub async fn runtime_events(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
+    // generic_chat sessions have no provider stream: replay the local event
+    // store and end; the UI's poll loop picks up anything newer.
+    if super::generic_chat::is_generic_chat(pool, runtime).await? {
+        let stored = runtime_events::repository::list(pool, &row.id).await?;
+        let frames = stored
+            .into_iter()
+            .map(|event| provider_event_line(Ok::<_, crate::sdk::agents::AgentSdkError>(event)));
+        let body_stream = futures_util::stream::iter(frames);
+        return Response::builder()
+            .header("content-type", "text/event-stream")
+            .header("cache-control", "no-cache")
+            .body(Body::from_stream(body_stream))
+            .map_err(|error| GatewayError::SandboxError(error.to_string()));
+    }
     let resolved = crate::http::runtime_resolution::resolve_runtime(pool, &state, runtime).await?;
     let client = runtime_sdk_client(&resolved)?;
     register_runtime_session(&client, pool, &row, &resolved).await?;
@@ -150,6 +164,12 @@ pub async fn runtime_event_list(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
+    // generic_chat: the local store IS the source of truth.
+    if super::generic_chat::is_generic_chat(pool, runtime).await? {
+        let events = json!({ "data": stored });
+        reconcile_terminal_status_from_events(&state, pool, &row.id, &row.status, &events).await?;
+        return Ok(Json(events));
+    }
     let resolved = crate::http::runtime_resolution::resolve_runtime(pool, &state, runtime).await?;
     let client = runtime_sdk_client(&resolved)?;
     register_runtime_session(&client, pool, &row, &resolved).await?;

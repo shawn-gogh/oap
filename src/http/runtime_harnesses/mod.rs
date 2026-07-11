@@ -84,8 +84,9 @@ pub async fn create(
     // Validate alias
     validate_alias(&input.alias)?;
 
-    // Validate api_spec is a known runtime id
-    let valid_spec = {
+    // Validate api_spec is a known runtime id (or the built-in generic_chat
+    // spec, which is served by the gateway itself rather than an SDK adapter)
+    let valid_spec = input.api_spec == "generic_chat" || {
         let registry = crate::sdk::providers::runtime_registry();
         registry.validate_id(&input.api_spec)
     };

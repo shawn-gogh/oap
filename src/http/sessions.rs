@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod execution;
+mod generic_chat;
 mod runtime;
 mod runtime_events_api;
 mod runtime_events_reconcile;
