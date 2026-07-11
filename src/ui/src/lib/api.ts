@@ -525,6 +525,24 @@ export async function importProviderAgents(input: {
   return data.agents;
 }
 
+export async function importAgentBundle(input: {
+  filename: string;
+  contentBase64: string;
+  runtime?: string;
+}): Promise<Agent[]> {
+  const res = await req("/api/agents/import/bundle", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      filename: input.filename,
+      content_base64: input.contentBase64,
+      runtime: input.runtime,
+    }),
+  });
+  const data = await jsonOrThrow<{ agents: Agent[] }>(res);
+  return data.agents ?? [];
+}
+
 export async function importOpencodeAgentFiles(input: {
   runtime?: string;
   ownerId?: string;

@@ -154,6 +154,191 @@ async fn archive_source(
         .await
 }
 
+// ── Agent bundle import ─────────────────────────────────────────────────────
+// A bundle is a zip carrying one or more opencode agent .md files plus
+// arbitrary knowledge/eval files. Agents become managed agent rows; every
+// other file lands in the primary agent's workspace bucket, so it is seeded
+// into each new session automatically.
+
+const MAX_BUNDLE_ENTRIES: usize = 200;
+const MAX_BUNDLE_BYTES: u64 = 20 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+pub struct ImportBundleRequest {
+    filename: String,
+    content_base64: String,
+    runtime: Option<String>,
+    owner_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ImportBundleResponse {
+    agents: Vec<ManagedAgentRow>,
+    knowledge_files: Vec<String>,
+}
+
+pub async fn import_agent_bundle(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<ImportBundleRequest>,
+) -> Result<(StatusCode, Json<ImportBundleResponse>), GatewayError> {
+    use base64::Engine as _;
+
+    let auth = authenticate(&headers, &state).await?;
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    let owner_id = if auth.is_admin {
+        input
+            .owner_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&auth.user_id)
+            .to_owned()
+    } else {
+        auth.user_id.clone()
+    };
+    let runtime = input
+        .runtime
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local-opencode")
+        .to_owned();
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input.content_base64.trim())
+        .map_err(|error| {
+            GatewayError::InvalidJsonMessage(format!("content_base64 is not valid base64: {error}"))
+        })?;
+    let entries = unpack_bundle(&bytes)?;
+
+    let mut agent_files = Vec::new();
+    let mut knowledge = Vec::new();
+    for (path, data) in entries {
+        // Only frontmatter-bearing .md files are agent definitions; plain
+        // markdown is knowledge (the single-file importer's lenient fallback
+        // would otherwise swallow every doc in the bundle as an "agent").
+        if path.ends_with(".md") {
+            if let Ok(text) = String::from_utf8(data.clone()) {
+                if text.trim_start().starts_with("---") {
+                    if let Ok(parsed) = parse_opencode_agent_file(&path, &text) {
+                        agent_files.push((path, text, parsed));
+                        continue;
+                    }
+                }
+            }
+        }
+        knowledge.push((path, data));
+    }
+    if agent_files.is_empty() {
+        return Err(GatewayError::InvalidJsonMessage(
+            "bundle contains no importable agent .md file (frontmatter + prompt)".to_owned(),
+        ));
+    }
+
+    let mut rows = Vec::with_capacity(agent_files.len());
+    for (path, text, parsed) in agent_files {
+        let mut create = create_input(parsed, &runtime, &owner_id, &path);
+        if let Some(config) = create.config.as_mut().and_then(Value::as_object_mut) {
+            if let Some(source) = config.get_mut("source").and_then(Value::as_object_mut) {
+                source.insert("kind".to_owned(), json!("agent_bundle"));
+                source.insert("bundle".to_owned(), json!(input.filename));
+            }
+        }
+        let row = repository::create(pool, create).await?;
+        archive_source(&state, &row.id, &path, &text).await?;
+        let _ =
+            crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))
+                .await;
+        rows.push(row);
+    }
+
+    // Knowledge files seed the primary (first) agent's workspace.
+    let mut knowledge_files = Vec::new();
+    if !knowledge.is_empty() {
+        let Some(storage) = &state.object_storage else {
+            return Err(GatewayError::InvalidConfig(
+                "bundle carries knowledge files but object storage is not configured".to_owned(),
+            ));
+        };
+        let bucket = ObjectStorageClient::agent_bucket_name(&rows[0].id);
+        storage.ensure_bucket(&bucket).await?;
+        for (path, data) in knowledge {
+            storage.put_bytes(&bucket, &path, data).await?;
+            knowledge_files.push(path);
+        }
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ImportBundleResponse {
+            agents: rows,
+            knowledge_files,
+        }),
+    ))
+}
+
+/// Extracts a zip into (normalized relative path, bytes) pairs with basic
+/// zip-bomb/path-traversal guards. If every entry shares a single top-level
+/// directory (the common "zip of a folder" layout), that prefix is stripped.
+fn unpack_bundle(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, GatewayError> {
+    use std::io::Read as _;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|error| GatewayError::InvalidJsonMessage(format!("invalid zip: {error}")))?;
+    if archive.len() > MAX_BUNDLE_ENTRIES {
+        return Err(GatewayError::InvalidJsonMessage(format!(
+            "bundle has too many entries (max {MAX_BUNDLE_ENTRIES})"
+        )));
+    }
+    let mut total: u64 = 0;
+    let mut entries = Vec::new();
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| GatewayError::InvalidJsonMessage(format!("invalid zip: {error}")))?;
+        if file.is_dir() {
+            continue;
+        }
+        let Some(path) = file.enclosed_name() else {
+            return Err(GatewayError::InvalidJsonMessage(format!(
+                "unsafe path in bundle: {}",
+                file.name()
+            )));
+        };
+        let path = path.to_string_lossy().replace('\\', "/");
+        let basename = path.rsplit('/').next().unwrap_or_default().to_owned();
+        if path.starts_with("__MACOSX/") || basename == ".DS_Store" || basename.is_empty() {
+            continue;
+        }
+        total = total.saturating_add(file.size());
+        if total > MAX_BUNDLE_BYTES {
+            return Err(GatewayError::InvalidJsonMessage(format!(
+                "bundle too large (max {} MB uncompressed)",
+                MAX_BUNDLE_BYTES / 1024 / 1024
+            )));
+        }
+        let mut data = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut data)
+            .map_err(|error| GatewayError::InvalidJsonMessage(format!("invalid zip: {error}")))?;
+        entries.push((path, data));
+    }
+
+    // Strip a shared single top-level directory.
+    let prefix = entries
+        .first()
+        .and_then(|(path, _)| path.split_once('/').map(|(dir, _)| format!("{dir}/")));
+    if let Some(prefix) = prefix {
+        if entries.iter().all(|(path, _)| path.starts_with(&prefix)) {
+            for (path, _) in &mut entries {
+                *path = path[prefix.len()..].to_owned();
+            }
+            entries.retain(|(path, _)| !path.is_empty());
+        }
+    }
+    Ok(entries)
+}
+
 fn source_archive_path(filename: &str) -> String {
     format!("source/{}", safe_filename(filename))
 }

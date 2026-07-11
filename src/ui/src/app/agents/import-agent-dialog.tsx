@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { RuntimeProviderLogo } from "@/components/runtime-provider-logo";
 import {
   discoverProviderAgents,
+  importAgentBundle,
   importOpencodeAgentFiles,
   importProviderAgents,
   listRuntimeHarnesses,
@@ -31,7 +32,7 @@ interface ImportAgentDialogProps {
 }
 
 export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgentDialogProps) {
-  const [mode, setMode] = useState<"remote" | "files">("remote");
+  const [mode, setMode] = useState<"remote" | "files" | "bundle">("remote");
   const [providers, setProviders] = useState<RuntimeHarness[]>([]);
   const [providersLoading, setProvidersLoading] = useState(false);
   const [providerId, setProviderId] = useState("");
@@ -40,6 +41,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   const [credentialMode, setCredentialMode] = useState<"shared" | "byo">("shared");
   const [externalAgents, setExternalAgents] = useState<ExternalAgent[]>([]);
   const [agentFiles, setAgentFiles] = useState<Array<{ filename: string; content: string }>>([]);
+  const [bundle, setBundle] = useState<{ filename: string; base64: string } | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -79,6 +81,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     setCredentialMode("shared");
     setExternalAgents([]);
     setAgentFiles([]);
+    setBundle(null);
     setSelectedIds([]);
     setQuery("");
     setError(null);
@@ -104,6 +107,28 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   };
 
   const importSelected = async () => {
+    if (mode === "bundle") {
+      if (!bundle) {
+        setError("Select a .zip bundle first.");
+        return;
+      }
+      setSaving(true);
+      setError(null);
+      try {
+        const imported = await importAgentBundle({
+          filename: bundle.filename,
+          contentBase64: bundle.base64,
+          runtime: providerId || undefined,
+        });
+        onImported(imported);
+        close(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (mode === "files") {
       if (agentFiles.length === 0) {
         setError("Select at least one .md agent file.");
@@ -162,6 +187,20 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     );
   };
 
+  const loadBundle = (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setError(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const base64 = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
+      setBundle({ filename: file.name, base64 });
+    };
+    reader.onerror = () => setError("Failed to read the bundle file.");
+    reader.readAsDataURL(file);
+  };
+
   const loadAgentFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setError(null);
@@ -191,10 +230,11 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           <DialogTitle>Import agents</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-6 py-4 overflow-y-auto">
-          <div className="grid grid-cols-2 rounded-lg border border-border bg-muted/30 p-1">
+          <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
             {[
               { value: "remote" as const, label: "Remote runtime" },
               { value: "files" as const, label: "Markdown files" },
+              { value: "bundle" as const, label: "Agent Bundle (.zip)" },
             ].map((option) => (
               <button
                 key={option.value}
@@ -276,7 +316,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               </div>
               <div className="grid gap-1.5">
                 <Label>Credential policy</Label>
-                <div className="grid grid-cols-2 rounded-lg border border-border bg-muted/30 p-1">
+                <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
                   {[
                     { value: "shared" as const, label: "Shared key" },
                     { value: "byo" as const, label: "BYO key" },
@@ -313,6 +353,24 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                 )}
               </div>
             </>
+          ) : mode === "bundle" ? (
+            <div className="grid gap-2">
+              <Label htmlFor="agent-bundle-zip">Agent bundle (.zip)</Label>
+              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
+                <FileUp className="size-4" />
+                <span>{bundle ? bundle.filename : "Choose a .zip bundle"}</span>
+                <input
+                  id="agent-bundle-zip"
+                  type="file"
+                  accept=".zip,application/zip"
+                  className="sr-only"
+                  onChange={(event) => loadBundle(event.target.files)}
+                />
+              </label>
+              <p className="text-xs text-muted-foreground">
+                zip 内的 agent .md（frontmatter + prompt）导入为智能体；其余文件作为知识文件进入智能体工作区，自动种子到每个新会话。
+              </p>
+            </div>
           ) : (
             <div className="grid gap-2">
               <Label htmlFor="opencode-agent-files">OpenCode agent markdown</Label>
@@ -402,11 +460,11 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           </Button>
           <Button
             onClick={importSelected}
-            disabled={saving || (mode === "remote" ? selectedIds.length === 0 : agentFiles.length === 0)}
+            disabled={saving || (mode === "remote" ? selectedIds.length === 0 : mode === "bundle" ? !bundle : agentFiles.length === 0)}
           >
             {saving
               ? "Importing..."
-              : `Import ${mode === "remote" ? selectedIds.length || "" : agentFiles.length || ""}`.trim()}
+              : `Import ${mode === "remote" ? selectedIds.length || "" : mode === "bundle" ? "" : agentFiles.length || ""}`.trim()}
           </Button>
         </DialogFooter>
       </DialogContent>
