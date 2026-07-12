@@ -102,6 +102,27 @@ pub async fn get(
     Ok(Json(SessionResponse::from(row)))
 }
 
+/// Model the session's agent is configured for, if resolvable. Callers that
+/// enqueue prompts on behalf of a session (approval resume, platform MCP
+/// send) should prefer this over any hardcoded default.
+pub(crate) async fn agent_model_for_session(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Option<String> {
+    let session = sessions::repository::get(pool, session_id).await.ok()??;
+    let agent_id = session.agent_id.as_deref().or(
+        // Legacy rows store the agent reference in `harness`.
+        session
+            .harness
+            .starts_with("agent_")
+            .then_some(session.harness.as_str()),
+    )?;
+    let agent = crate::db::managed_agents::registry::repository::get(pool, agent_id)
+        .await
+        .ok()??;
+    (!agent.model.trim().is_empty()).then_some(agent.model)
+}
+
 #[derive(serde::Deserialize)]
 pub struct RenameSessionRequest {
     pub title: String,

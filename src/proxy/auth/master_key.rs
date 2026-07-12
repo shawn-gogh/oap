@@ -60,6 +60,24 @@ pub async fn authenticate(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<AuthContext, GatewayError> {
+    authenticate_key(presented_key(headers), state).await
+}
+
+/// Like `authenticate`, but falls back to an explicit key (e.g. an SSE
+/// `?key=` query parameter, since EventSource can't set headers) when the
+/// request carries no auth header.
+pub async fn authenticate_with_fallback_key(
+    headers: &HeaderMap,
+    fallback_key: Option<&str>,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
+    authenticate_key(presented_key(headers).or(fallback_key), state).await
+}
+
+async fn authenticate_key(
+    presented: Option<&str>,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
     let master_key = state.config.general_settings.master_key.as_deref();
 
     // No auth configured — open mode, everyone is the admin.
@@ -67,7 +85,7 @@ pub async fn authenticate(
         return Ok(AuthContext::admin());
     };
 
-    let Some(key) = presented_key(headers) else {
+    let Some(key) = presented else {
         return Err(GatewayError::Unauthorized);
     };
 
