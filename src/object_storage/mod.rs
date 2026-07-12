@@ -196,7 +196,7 @@ impl ObjectStorageClient {
         // copy_source is a URL path, so the key must be percent-encoded.
         let encoded_key: String = key
             .split('/')
-            .map(|seg| urlencoding_encode(seg))
+            .map(urlencoding_encode)
             .collect::<Vec<_>>()
             .join("/");
         self.internal

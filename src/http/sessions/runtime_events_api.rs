@@ -15,7 +15,7 @@ use crate::{
     callbacks::events::CallbackEventPayload,
     db::managed_agents::runtime_events,
     errors::GatewayError,
-    proxy::{auth::master_key::require_master_key, state::AppState},
+    proxy::state::AppState,
     sdk::agents::AgentEventStream,
 };
 
@@ -39,13 +39,9 @@ pub async fn runtime_events(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<Response, GatewayError> {
-    require_events_master_key(
-        &headers,
-        &query,
-        state.config.general_settings.master_key.as_deref(),
-    )?;
+    let auth = authenticate_events(&state, &headers, &query).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
-    let row = session(pool, &session_id).await?;
+    let row = super::storage::owned_session(pool, &auth, &session_id).await?;
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
@@ -209,13 +205,9 @@ pub async fn runtime_event_list(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<Json<Value>, GatewayError> {
-    require_events_master_key(
-        &headers,
-        &query,
-        state.config.general_settings.master_key.as_deref(),
-    )?;
+    let auth = authenticate_events(&state, &headers, &query).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
-    let row = session(pool, &session_id).await?;
+    let row = super::storage::owned_session(pool, &auth, &session_id).await?;
     let stored = runtime_events::repository::list(pool, &row.id).await?;
     // The provider's event store is the source of truth: it holds events that
     // never flow through the live stream (e.g. the user.message rows the
@@ -284,15 +276,21 @@ pub(crate) async fn runtime_event_stream_for_session(
         .map_err(agent_sdk_error)
 }
 
-fn require_events_master_key(
+/// Events endpoints authenticate like everything else, but additionally
+/// accept the key as a `?key=` query parameter because EventSource clients
+/// can't set headers. Any valid gateway key works; session ownership is
+/// enforced separately via owned_session.
+async fn authenticate_events(
+    state: &AppState,
     headers: &HeaderMap,
     query: &HashMap<String, String>,
-    configured: Option<&str>,
-) -> Result<(), GatewayError> {
-    if query.get("key").map(String::as_str) == configured {
-        return Ok(());
-    }
-    require_master_key(headers, configured)
+) -> Result<crate::proxy::auth::master_key::AuthContext, GatewayError> {
+    crate::proxy::auth::master_key::authenticate_with_fallback_key(
+        headers,
+        query.get("key").map(String::as_str),
+        state,
+    )
+    .await
 }
 
 async fn emit_runtime_event<T: serde::Serialize>(

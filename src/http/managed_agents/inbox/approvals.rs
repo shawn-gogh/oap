@@ -10,10 +10,7 @@ use axum::{
 use sqlx::PgPool;
 
 use crate::{
-    db::managed_agents::{
-        inbox::{repository, schema::InboxItemRow},
-        registry, sessions,
-    },
+    db::managed_agents::inbox::{repository, schema::InboxItemRow},
     errors::GatewayError,
     proxy::{auth::master_key::authenticate, state::AppState},
 };
@@ -130,24 +127,9 @@ async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str
 /// hardcoded model breaks deployments that don't route it. Falls back to the
 /// gateway default only when the agent lookup fails.
 async fn resume_model(pool: &PgPool, session_id: &str) -> String {
-    const FALLBACK: &str = "claude-sonnet-4-6";
-    let Ok(Some(session)) = sessions::repository::get(pool, session_id).await else {
-        return FALLBACK.to_owned();
-    };
-    let Some(agent_id) = session.agent_id.as_deref().or({
-        // Legacy rows store the agent reference in `harness`.
-        if session.harness.starts_with("agent_") {
-            Some(session.harness.as_str())
-        } else {
-            None
-        }
-    }) else {
-        return FALLBACK.to_owned();
-    };
-    match registry::repository::get(pool, agent_id).await {
-        Ok(Some(agent)) if !agent.model.trim().is_empty() => agent.model,
-        _ => FALLBACK.to_owned(),
-    }
+    crate::http::sessions::agent_model_for_session(pool, session_id)
+        .await
+        .unwrap_or_else(|| "claude-sonnet-4-6".to_owned())
 }
 
 fn resume_prompt(item: &InboxItemRow) -> String {
