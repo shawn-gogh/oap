@@ -933,6 +933,50 @@ export async function draftAgentConfigWithModel(
   return yaml;
 }
 
+export async function refineAgentConfigWithModel(
+  instruction: string,
+  currentConfig: string,
+  runtimes: AgentDraftRuntimeChoice[] = [],
+  requestedModel?: string,
+  context?: {
+    skills?: Skill[];
+  },
+): Promise<string> {
+  const models = await listModels();
+  const model = draftModelFrom(models, requestedModel);
+  const res = await req("/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2400,
+      system:
+        `You incrementally edit an existing managed agent config for LiteLLM Agent Platform.\n\n` +
+        `RULES:\n` +
+        `1. Apply ONLY the change the user asked for. Every other field — including name, description, model, runtime, system prompt wording, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, mcp_server_ids, and the whole design block — must be preserved exactly as-is unless the user's instruction requires touching it.\n` +
+        `2. Never regenerate or rephrase untouched text. Copy it through verbatim.\n` +
+        `3. If the instruction changes what the agent does, update the affected parts of the system prompt and design.evaluation minimally and consistently, but keep the untouched parts verbatim.\n` +
+        `4. If the instruction is ambiguous or cannot be applied to this config, make the smallest reasonable interpretation and note it briefly in the description only if essential — do not invent unrelated changes.\n\n` +
+        `OUTPUT: return only the complete updated YAML, no markdown fence, no prose. Keep the same key order as the input where possible. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Attach skill_ids only from Available skills.\n\n` +
+        runtimeToolCatalogPrompt(runtimes) +
+        `\n\nAvailable skills:\n${skillCatalogPrompt(context?.skills ?? [])}`,
+      messages: [
+        {
+          role: "user",
+          content:
+            `Current agent config.yaml:\n\n${currentConfig.trim()}\n\n` +
+            `Apply this change and return the full updated YAML:\n\n${instruction.trim()}`,
+        },
+      ],
+    }),
+  });
+  const payload = await jsonOrThrow<unknown>(res);
+  const text = messageText(payload);
+  const yaml = yamlFromMessage(text);
+  if (!yaml) throw new Error("Model returned an empty config.");
+  return yaml;
+}
+
 export interface AgentBuilderCopilotToolRecommendation {
   tool: string;
   action: "add" | "remove" | "keep";

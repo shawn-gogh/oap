@@ -62,11 +62,14 @@ import {
   sortIntegrations,
 } from "@/lib/integrations";
 import type { Integration } from "@/lib/integrations";
+import { diffAgentDrafts } from "@/lib/agent-draft-diff";
+import type { FieldChange } from "@/lib/agent-draft-diff";
 import {
   apiErrorMessage,
   askAgentBuilderCopilot,
   createAgent,
   draftAgentConfigWithModel,
+  refineAgentConfigWithModel,
   listAgentRuntimes,
   listRuntimeHarnesses,
   listAgents,
@@ -91,6 +94,47 @@ import { cn } from "@/lib/utils";
 
 type BuilderStep = "create" | "eval" | "config" | "review";
 type BuilderView = "edit" | "config" | "preview";
+
+type BuilderChatMessage =
+  | { id: number; role: "user"; text: string }
+  | { id: number; role: "assistant"; summary: string; changes: FieldChange[] };
+
+interface SavedBuilderDraft {
+  configText: string;
+  step: BuilderStep;
+  messages: BuilderChatMessage[];
+  savedAt: number;
+}
+
+const BUILDER_DRAFT_STORAGE_KEY = "agent-builder-draft";
+const BUILDER_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function loadSavedBuilderDraft(): SavedBuilderDraft | null {
+  try {
+    const raw = localStorage.getItem(BUILDER_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as Partial<SavedBuilderDraft>;
+    if (typeof saved.configText !== "string" || typeof saved.savedAt !== "number") return null;
+    if (Date.now() - saved.savedAt > BUILDER_DRAFT_MAX_AGE_MS) {
+      localStorage.removeItem(BUILDER_DRAFT_STORAGE_KEY);
+      return null;
+    }
+    return {
+      configText: saved.configText,
+      step: saved.step === "eval" || saved.step === "config" || saved.step === "review" ? saved.step : "config",
+      messages: Array.isArray(saved.messages) ? saved.messages : [],
+      savedAt: saved.savedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function savedDraftAgeLabel(savedAt: number): string {
+  const minutes = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
+  if (minutes < 60) return `${minutes} 分钟前`;
+  return `${Math.round(minutes / 60)} 小时前`;
+}
 
 const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   blank: Bot,
@@ -124,12 +168,13 @@ export default function NewAgentPage() {
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [view, setView] = useState<BuilderView>("edit");
   const [drafting, setDrafting] = useState(false);
-  const [lastRequest, setLastRequest] = useState("");
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [messages, setMessages] = useState<BuilderChatMessage[]>([]);
+  const [savedDraft, setSavedDraft] = useState<SavedBuilderDraft | null>(null);
 
   const parsed = useMemo(() => parseAgentDraftConfig(configText), [configText]);
   const draft = parsed.draft;
@@ -282,15 +327,63 @@ export default function NewAgentPage() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    setSavedDraft(loadSavedBuilderDraft());
+  }, []);
+
+  useEffect(() => {
+    // Nothing worth persisting until the user has left the landing step.
+    if (step === "create") return;
+    const timer = window.setTimeout(() => {
+      try {
+        const payload: SavedBuilderDraft = { configText, step, messages, savedAt: Date.now() };
+        localStorage.setItem(BUILDER_DRAFT_STORAGE_KEY, JSON.stringify(payload));
+      } catch {
+        // Storage full or unavailable; autosave is best-effort.
+      }
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [configText, step, messages]);
+
+  const restoreSavedDraft = () => {
+    if (!savedDraft) return;
+    setConfigText(savedDraft.configText);
+    setMessages(savedDraft.messages);
+    setStep(savedDraft.step);
+    setView("edit");
+    setError(null);
+    setDraftNotice(null);
+    setSavedDraft(null);
+  };
+
+  const discardSavedDraft = () => {
+    try {
+      localStorage.removeItem(BUILDER_DRAFT_STORAGE_KEY);
+    } catch {
+      // Best-effort cleanup.
+    }
+    setSavedDraft(null);
+  };
+
   const openConfig = (
     next: AgentDraft,
     templateId: string,
-    options?: { request?: string; notice?: string | null },
+    options?: { request?: string; notice?: string | null; summary?: string; changes?: FieldChange[] },
   ) => {
     setSelectedTemplateId(templateId);
     setConfigText(stringifyAgentDraft(next));
-    setLastRequest(options?.request ?? next.name);
     setDraftNotice(options?.notice ?? null);
+    const request = options?.request ?? next.name;
+    const now = Date.now();
+    setMessages([
+      { id: now, role: "user", text: request },
+      {
+        id: now + 1,
+        role: "assistant",
+        summary: options?.summary ?? "已生成配置草案，可继续对话调整，或直接在右侧编辑。",
+        changes: options?.changes ?? [],
+      },
+    ]);
     setView("edit");
     // Methodology gate: evaluation definition comes before design.
     setStep("eval");
@@ -305,7 +398,6 @@ export default function NewAgentPage() {
     setDrafting(true);
     setError(null);
     setDraftNotice(null);
-    setLastRequest(trimmed);
     try {
       const generated = await draftAgentConfigWithModel(
         trimmed,
@@ -315,11 +407,15 @@ export default function NewAgentPage() {
       );
       const generatedDraft = parseAgentDraftConfig(generated);
       if (generatedDraft.error) throw new Error(generatedDraft.error);
-      openConfig(
-        selectedModel ? { ...generatedDraft.draft, model: selectedModel } : generatedDraft.draft,
-        templateId,
-        { request: trimmed },
-      );
+      const nextDraft = selectedModel
+        ? { ...generatedDraft.draft, model: selectedModel }
+        : generatedDraft.draft;
+      openConfig(nextDraft, templateId, {
+        request: trimmed,
+        summary: "已根据描述生成初始配置：",
+        changes: diffAgentDrafts(withRuntimeDefaultTools(AGENT_TEMPLATES[0].draft, runtimes), nextDraft),
+      });
+      setPrompt("");
     } catch (err) {
       const isServiceError =
         err instanceof Error &&
@@ -332,6 +428,56 @@ export default function NewAgentPage() {
           ? `Model drafting failed: ${serviceError}. Using a local starter config instead.`
           : "Model couldn't generate a valid config for this request, so a local starter config was generated.",
       });
+    } finally {
+      setDrafting(false);
+    }
+  };
+
+  const refineFromPrompt = async () => {
+    const trimmed = prompt.trim();
+    if (!trimmed || drafting) return;
+    const before = parseAgentDraftConfig(configText).draft;
+    setDrafting(true);
+    setError(null);
+    setDraftNotice(null);
+    const userMessageId = Date.now();
+    setMessages((prev) => [...prev, { id: userMessageId, role: "user", text: trimmed }]);
+    try {
+      const updated = await refineAgentConfigWithModel(
+        trimmed,
+        configText,
+        runtimeChoicesForDrafting(harnesses, runtimes),
+        before.model.trim(),
+        { skills },
+      );
+      const parsedNext = parseAgentDraftConfig(updated);
+      if (parsedNext.error) throw new Error(parsedNext.error);
+      const changes = diffAgentDrafts(before, parsedNext.draft);
+      setConfigText(stringifyAgentDraft(parsedNext.draft));
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: userMessageId + 1,
+          role: "assistant",
+          summary:
+            changes.length === 0
+              ? "配置没有需要修改的地方。"
+              : `已应用 ${changes.length} 处修改：`,
+          changes,
+        },
+      ]);
+      setPrompt("");
+    } catch (err) {
+      const message = apiErrorMessage(err, "修改配置失败");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: userMessageId + 1,
+          role: "assistant",
+          summary: `修改失败：${message}。当前配置保持不变，可换个说法重试。`,
+          changes: [],
+        },
+      ]);
     } finally {
       setDrafting(false);
     }
@@ -355,6 +501,11 @@ export default function NewAgentPage() {
     setError(null);
     try {
       const agent = await createAgent(createInputFromDraft(current.draft, mcpIntegrations));
+      try {
+        localStorage.removeItem(BUILDER_DRAFT_STORAGE_KEY);
+      } catch {
+        // Best-effort cleanup.
+      }
       router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
@@ -442,6 +593,19 @@ export default function NewAgentPage() {
           <PlatformSteps
             activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
           />
+          {savedDraft && step === "create" && (
+            <div className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
+              <span className="min-w-0 flex-1">
+                检测到未完成的草稿（{savedDraftAgeLabel(savedDraft.savedAt)}保存），是否继续编辑？
+              </span>
+              <Button type="button" size="sm" onClick={restoreSavedDraft}>
+                恢复草稿
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={discardSavedDraft}>
+                丢弃
+              </Button>
+            </div>
+          )}
           {step === "eval" ? (
             <EvalStep
               draft={draft}
@@ -492,7 +656,7 @@ export default function NewAgentPage() {
               draftNotice={draftNotice}
               drafting={drafting}
               error={error}
-              lastRequest={lastRequest}
+              messages={messages}
               agents={agents}
               harnesses={harnesses}
               mcpError={mcpError}
@@ -516,7 +680,7 @@ export default function NewAgentPage() {
               onCreate={() => setStep("review")}
               onDraftChange={updateDraft}
               onPromptChange={setPrompt}
-              onRefine={draftFromPrompt}
+              onRefine={refineFromPrompt}
               onViewChange={setView}
             />
           )}
@@ -1085,7 +1249,7 @@ function ConfigStep({
   draftNotice,
   drafting,
   error,
-  lastRequest,
+  messages,
   agents,
   harnesses,
   mcpError,
@@ -1116,7 +1280,7 @@ function ConfigStep({
   draftNotice: string | null;
   drafting: boolean;
   error: string | null;
-  lastRequest: string;
+  messages: BuilderChatMessage[];
   agents: Agent[];
   harnesses: RuntimeHarness[];
   mcpError: string | null;
@@ -1143,10 +1307,27 @@ function ConfigStep({
   return (
     <div className="grid min-h-[calc(100vh-6.5rem)] gap-6 px-4 py-6 lg:grid-cols-[minmax(360px,0.82fr)_minmax(560px,1.18fr)]">
       <section className="flex min-h-[560px] flex-col">
-        <div className="flex flex-1 items-center justify-center">
+        <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto py-2">
           <div className="w-full max-w-2xl">
-            <div className="ml-auto max-w-full whitespace-pre-wrap break-words rounded-lg bg-foreground px-4 py-3 text-sm text-background">
-              {lastRequest || draft.name}
+            <div className="grid gap-3">
+              {messages.map((message) =>
+                message.role === "user" ? (
+                  <div
+                    key={message.id}
+                    className="ml-auto max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-foreground px-4 py-3 text-sm text-background"
+                  >
+                    {message.text}
+                  </div>
+                ) : (
+                  <AssistantChangeMessage key={message.id} message={message} />
+                ),
+              )}
+              {drafting && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                  正在修改配置...
+                </div>
+              )}
             </div>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button type="button" onClick={onCreate} disabled={!canCreate || drafting}>
@@ -1317,6 +1498,51 @@ function ConfigStep({
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function AssistantChangeMessage({
+  message,
+}: {
+  message: Extract<BuilderChatMessage, { role: "assistant" }>;
+}) {
+  return (
+    <div className="mr-auto max-w-[92%] rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
+      <p className="leading-6 text-foreground">{message.summary}</p>
+      {message.changes.length > 0 && (
+        <ul className="mt-2 grid gap-1.5">
+          {message.changes.map((change) => (
+            <li
+              key={`${change.field}-${change.kind}`}
+              className="rounded-md bg-muted/40 px-2.5 py-1.5 font-mono text-xs leading-5 text-muted-foreground"
+            >
+              <span className="font-semibold text-foreground">{change.field}</span>
+              {change.detail ? (
+                <span className="ml-2">{change.detail}</span>
+              ) : change.added || change.removed ? (
+                <span className="ml-2">
+                  {(change.added ?? []).map((item) => (
+                    <span key={`add-${item}`} className="mr-2 text-emerald-600 dark:text-emerald-400">
+                      +{item}
+                    </span>
+                  ))}
+                  {(change.removed ?? []).map((item) => (
+                    <span key={`rm-${item}`} className="mr-2 text-red-600 dark:text-red-400">
+                      -{item}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <span className="ml-2">
+                  {change.before ? `${change.before} → ` : ""}
+                  {change.after ?? ""}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
