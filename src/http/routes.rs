@@ -188,7 +188,9 @@ fn session_routes() -> Router<Arc<AppState>> {
         .route("/session", get(sessions::list).post(sessions::create))
         .route(
             "/session/{session_id}",
-            get(sessions::get).delete(sessions::delete),
+            get(sessions::get)
+                .patch(sessions::rename)
+                .delete(sessions::delete),
         )
         .route(
             "/session/{session_id}/message",

@@ -624,6 +624,16 @@ export async function deleteProvider(providerId: string): Promise<void> {
   await jsonOrThrow(res);
 }
 
+export async function renameSession(id: string, title: string): Promise<OpencodeSession> {
+  return jsonOrThrow<OpencodeSession>(
+    await reqHarness(`/session/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    }),
+  );
+}
+
 export async function deleteSession(id: string): Promise<void> {
   await jsonOrThrow<boolean>(
     await reqHarness(`/session/${encodeURIComponent(id)}`, { method: "DELETE" }),

@@ -38,7 +38,7 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
-import { getMessages, getSession, createSession, deleteSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses } from "@/lib/api";
+import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, apiErrorMessage } from "@/lib/api";
 import type { PendingApproval, RuntimeAgentEvent } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
 import type { Agent, AgentRuntimeId, HarnessMessage, RuntimeHarness } from "@/lib/types";
@@ -467,6 +467,10 @@ function ChatInner() {
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [savedAgents, setSavedAgents] = useState<Agent[]>([]);
   const [switchingAgent, setSwitchingAgent] = useState(false);
+  const [editingTitle, setEditingTitle] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  // null = follow the default (open until the conversation starts).
+  const [infoOpenManual, setInfoOpenManual] = useState<boolean | null>(null);
   const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
@@ -597,6 +601,8 @@ function ChatInner() {
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
     setSessionTitle("");
+    setEditingTitle(null);
+    setInfoOpenManual(null);
     setWorkspaceBucket(undefined);
     const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
@@ -637,7 +643,7 @@ function ChatInner() {
       const s = await createSession(undefined, next, options);
       router.replace(`/chat/?id=${encodeURIComponent(s.id)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to switch agent");
+      setError(apiErrorMessage(err, "切换智能体失败"));
       setSwitchingAgent(false);
     }
   }, [hasStarted, sid, sessionHarness, sessionRuntime, router]);
@@ -715,7 +721,7 @@ function ChatInner() {
   const sendOrQueueRuntimePrompt = useCallback(async (text: string) => {
     if (!sid) return;
     if (!model.trim()) {
-      setError("No runtime models are available for this session.");
+      setError("该会话没有可用的运行时模型。");
       return;
     }
     if (sessionStatus === "busy") {
@@ -742,7 +748,7 @@ function ChatInner() {
   const interruptAndSendQueuedPrompt = useCallback(async (id: string) => {
     if (!sid || !sessionRuntime || interruptingQueuedPromptId) return;
     if (!model.trim()) {
-      setError("No runtime models are available for this session.");
+      setError("该会话没有可用的运行时模型。");
       return;
     }
     const prompt = queuedPrompts.find((item) => item.id === id);
@@ -922,11 +928,31 @@ function ChatInner() {
     }
   }, []);
 
+  const commitRename = useCallback(async () => {
+    if (!sid || editingTitle === null || renamingTitle) return;
+    const next = editingTitle.trim();
+    if (!next || next === sessionTitle) {
+      setEditingTitle(null);
+      return;
+    }
+    setRenamingTitle(true);
+    try {
+      await renameSession(sid, next);
+      setSessionTitle(next);
+      setEditingTitle(null);
+    } catch (err) {
+      setError(apiErrorMessage(err, "重命名会话失败"));
+    } finally {
+      setRenamingTitle(false);
+    }
+  }, [editingTitle, renamingTitle, sessionTitle, sid]);
+
   if (!sid) {
     return <SessionsPage />;
   }
 
   const shortSid = sid.length > 12 ? sid.slice(0, 12) + "…" : sid;
+  const infoOpen = infoOpenManual ?? !hasStarted;
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -934,27 +960,52 @@ function ChatInner() {
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
-          <div className="flex items-center gap-2">
-            {sessionTitle && (
-              <span className="text-sm font-medium" title={sessionTitle}>{sessionTitle}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            {editingTitle !== null ? (
+              <input
+                autoFocus
+                value={editingTitle}
+                disabled={renamingTitle}
+                onChange={(event) => setEditingTitle(event.target.value)}
+                onBlur={() => void commitRename()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void commitRename();
+                  } else if (event.key === "Escape") {
+                    setEditingTitle(null);
+                  }
+                }}
+                aria-label="会话标题"
+                className="h-7 w-[240px] rounded-md border border-border bg-background px-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEditingTitle(sessionTitle || "")}
+                title="点击重命名会话"
+                className="max-w-[280px] truncate rounded-md px-1 py-0.5 text-left text-sm font-medium hover:bg-muted"
+              >
+                {sessionTitle || "未命名会话"}
+              </button>
             )}
             <span className="text-xs font-mono text-muted-foreground">{shortSid}</span>
             {sessionStatus === "busy" ? (
               <button
                 onClick={() => sid && abortSession(sid).catch(() => {})}
                 className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-mono hover:text-red-600 dark:hover:text-red-400 transition-colors group"
-                title="Abort agent"
+                title="中止智能体"
                 aria-label="Agent busy — click to abort"
               >
                 <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none group-hover:hidden" />
                 <Square className="w-3 h-3 hidden group-hover:block fill-current" />
-                <span className="group-hover:hidden">busy</span>
-                <span className="hidden group-hover:inline">abort</span>
+                <span className="group-hover:hidden">运行中</span>
+                <span className="hidden group-hover:inline">中止</span>
               </button>
             ) : (
               <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                idle
+                空闲
               </span>
             )}
           </div>
@@ -981,7 +1032,7 @@ function ChatInner() {
                     </>
                   )}
                   <div className="px-2 py-2 text-[10px] text-muted-foreground border-t mt-1">
-                    Switching agents opens a new session.
+                    切换智能体会打开一个新会话。
                   </div>
                 </SelectContent>
               </Select>
@@ -999,7 +1050,7 @@ function ChatInner() {
                 render={
                   <a href={providerLink} target="_blank" rel="noreferrer">
                     <ExternalLink className="size-3.5" />
-                    Open provider session
+                    打开提供方会话
                   </a>
                 }
               />
@@ -1012,7 +1063,7 @@ function ChatInner() {
                 className="h-8"
               >
                 <FolderOpen className="size-3.5" />
-                Workspace
+                工作区
               </Button>
             )}
             <Button
@@ -1022,7 +1073,7 @@ function ChatInner() {
               className="h-8"
             >
               <Activity className="size-3.5" />
-              Inspect
+              检查器
             </Button>
             <ThemeToggle />
           </div>
@@ -1040,6 +1091,39 @@ function ChatInner() {
                 <p className="text-sm text-destructive">{error}</p>
               </Card>
             )}
+            <button
+              type="button"
+              onClick={() => setInfoOpenManual(!infoOpen)}
+              aria-expanded={infoOpen}
+              className="flex w-full items-center gap-2.5 rounded-lg border border-border/80 bg-card/80 px-3 py-2 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+                <Bot className="size-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-semibold">{activeAgentName}</span>
+                  <span className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+                    {baseRuntime}
+                  </span>
+                  {activePrompt ? (
+                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                      <CheckCircle2 className="size-3" />
+                      prompt 已加载
+                    </span>
+                  ) : (
+                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="size-3" />
+                      无保存的 prompt
+                    </span>
+                  )}
+                </span>
+              </span>
+              <ChevronDown
+                className={`size-4 shrink-0 text-muted-foreground transition-transform ${infoOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+            {infoOpen && (
             <Card className="gap-0 overflow-hidden rounded-lg border border-border/80 bg-card/80 py-0 ring-0">
               <div className="grid gap-0 md:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
                 <section className="min-w-0 border-b border-border/70 p-4 md:border-b-0 md:border-r">
@@ -1053,12 +1137,12 @@ function ChatInner() {
                         {activePrompt ? (
                           <span className="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
                             <CheckCircle2 className="size-3" />
-                            prompt active
+                            prompt 已加载
                           </span>
                         ) : (
                           <span className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
                             <AlertTriangle className="size-3" />
-                            no saved prompt
+                            无保存的 prompt
                           </span>
                         )}
                       </div>
@@ -1068,7 +1152,7 @@ function ChatInner() {
                         </p>
                       ) : (
                         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                          Session instructions and runtime context are shown before the transcript.
+                          会话指令与运行时上下文会展示在对话记录之前。
                         </p>
                       )}
                       <div className="mt-3 grid gap-1.5 text-[11px] sm:grid-cols-2">
@@ -1128,7 +1212,7 @@ function ChatInner() {
                     <div className="min-w-0">
                       <h3 className="text-[13.5px] font-semibold tracking-tight">System prompt</h3>
                       <div className="text-[11px] text-muted-foreground">
-                        {activePrompt ? "Visible before the first turn runs." : "No reusable agent prompt is attached."}
+                        {activePrompt ? "首轮运行前可在此查看。" : "未挂载可复用的智能体 prompt。"}
                       </div>
                     </div>
                     <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1138,8 +1222,8 @@ function ChatInner() {
                         size="icon-sm"
                         disabled={!activePrompt}
                         onClick={onCopyPrompt}
-                        aria-label="Copy system prompt"
-                        title="Copy system prompt"
+                        aria-label="复制 system prompt"
+                        title="复制 system prompt"
                       >
                         {promptCopied ? <ClipboardCheck className="size-3.5" /> : <Clipboard className="size-3.5" />}
                       </Button>
@@ -1150,9 +1234,9 @@ function ChatInner() {
                         className="h-7"
                         onClick={() => setPromptOpen((v) => !v)}
                         disabled={!activePrompt}
-                        title={promptOpen ? "Collapse system prompt" : "Expand system prompt"}
+                        title={promptOpen ? "收起 system prompt" : "展开 system prompt"}
                       >
-                        <span>{promptOpen ? "Full" : "Preview"}</span>
+                        <span>{promptOpen ? "收起" : "展开"}</span>
                         <ChevronDown className={`size-3.5 transition-transform ${promptOpen ? "rotate-180" : ""}`} />
                       </Button>
                     </div>
@@ -1173,24 +1257,25 @@ function ChatInner() {
                     ) : (
                       <div className="rounded-md border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
                         {activeAgent
-                          ? "This saved agent will run without a stored system prompt until one is added on the Agents page."
-                          : "This is a built-in runtime session, so there is no saved agent prompt to review."}
+                          ? "该智能体尚未保存 system prompt，可到 Agents 页面补充后再运行。"
+                          : "这是内置运行时会话，没有可查看的智能体 prompt。"}
                       </div>
                     )}
                   </div>
                   {promptCopied && (
                     <div className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400">
-                      Copied system prompt.
+                      已复制 system prompt。
                     </div>
                   )}
                 </section>
               </div>
             </Card>
+            )}
             {displayMessages && displayMessages.length === 0 && (
               <div className="flex flex-col items-center gap-3 py-16 text-center">
                 <Bot className="size-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">No messages yet.</p>
-                <p className="text-xs text-muted-foreground">Type a message below to start the conversation.</p>
+                <p className="text-sm text-muted-foreground">还没有消息。</p>
+                <p className="text-xs text-muted-foreground">在下方输入消息开始对话。</p>
               </div>
             )}
             {displayMessages?.map((m, i) => (
@@ -1224,7 +1309,7 @@ function ChatInner() {
           onAbort={sessionRuntime ? () => abortSession(sid).catch(() => {}) : undefined}
           busy={Boolean(sessionRuntime && sessionStatus === "busy")}
           disabled={sessionContentLoading || Boolean(sessionRuntime && !model.trim())}
-          disabledHint={sessionContentLoading ? "Loading conversation…" : undefined}
+          disabledHint={sessionContentLoading ? "正在加载对话..." : undefined}
         />
       </div>
 
