@@ -48,6 +48,9 @@ type NavItem = {
   icon: LucideIcon;
   active: (pathname: string) => boolean;
   badge?: number;
+  /** Sub-group header; a heading renders whenever it changes from the
+   *  previous item's group. */
+  group?: string;
 };
 
 type NavSection = {
@@ -150,47 +153,55 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           href: "/keys/",
           icon: KeyRound,
           active: (path) => path.startsWith("/keys"),
+          group: "访问控制",
         },
         ...(currentUser?.is_admin ? [{
           label: "用户管理",
           href: "/users/",
           icon: Users,
           active: (path: string) => path.startsWith("/users"),
+          group: "访问控制",
         }, {
           label: "用户组",
           href: "/groups/",
           icon: Users,
           active: (path: string) => path.startsWith("/groups"),
+          group: "访问控制",
         }] : []),
         {
           label: "Teams",
           href: "/teams/",
           icon: Users,
           active: (path) => path.startsWith("/teams"),
-        },
-        {
-          label: "Logs",
-          href: "/observability/logs/",
-          icon: Activity,
-          active: (path) => path.startsWith("/observability"),
+          group: "访问控制",
         },
         {
           label: "LLM Providers",
           href: "/providers/",
           icon: ServerCog,
           active: (path) => path.startsWith("/providers"),
+          group: "基础设施",
         },
         {
           label: "Agent Runtimes",
           href: "/runtimes/",
           icon: ServerCog,
           active: (path) => path.startsWith("/runtimes"),
+          group: "基础设施",
         },
         {
           label: "MCP Servers",
           href: "/mcp-servers/",
           icon: Server,
           active: (path) => path.startsWith("/mcp-servers"),
+          group: "基础设施",
+        },
+        {
+          label: "Logs",
+          href: "/observability/logs/",
+          icon: Activity,
+          active: (path) => path.startsWith("/observability"),
+          group: "观测",
         },
       ],
     },
@@ -205,18 +216,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           href: "/chat/",
           icon: MessageCircle,
           active: (path) => path === "/" || path.startsWith("/chat") || path.startsWith("/sessions"),
-        },
-        {
-          label: "Agents",
-          href: "/agents/",
-          icon: Bot,
-          active: (path) => path.startsWith("/agents"),
-        },
-        {
-          label: "Routines",
-          href: "/routines/",
-          icon: Zap,
-          active: (path) => path.startsWith("/routines"),
+          group: "工作台",
         },
         {
           label: "Inbox",
@@ -224,30 +224,49 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           icon: Inbox,
           active: (path) => path.startsWith("/inbox"),
           badge: inboxCount,
+          group: "工作台",
         },
         {
-          label: "Integrations",
-          href: "/integrations/",
-          icon: Puzzle,
-          active: (path) => path.startsWith("/integrations"),
+          label: "Routines",
+          href: "/routines/",
+          icon: Zap,
+          active: (path) => path.startsWith("/routines"),
+          group: "工作台",
+        },
+        {
+          label: "Agents",
+          href: "/agents/",
+          icon: Bot,
+          active: (path) => path.startsWith("/agents"),
+          group: "构建",
         },
         {
           label: "Skills",
           href: "/skills/",
           icon: FileText,
           active: (path) => path.startsWith("/skills"),
+          group: "构建",
         },
         {
           label: "Rules",
           href: "/rules/",
           icon: ScrollText,
           active: (path) => path.startsWith("/rules"),
+          group: "构建",
+        },
+        {
+          label: "Integrations",
+          href: "/integrations/",
+          icon: Puzzle,
+          active: (path) => path.startsWith("/integrations"),
+          group: "构建",
         },
         {
           label: "Vault",
           href: "/vault/",
           icon: KeyRound,
           active: (path) => path.startsWith("/vault"),
+          group: "构建",
         },
       ],
     },
@@ -280,15 +299,25 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           </Button>
         )}
         <div className="space-y-1">
-          {currentSection.items.map((item) => {
+          {currentSection.items.map((item, index) => {
             const Icon = item.icon;
             const badge = item.badge ?? 0;
+            const previousGroup = currentSection.items[index - 1]?.group;
+            const showGroupHeader = Boolean(item.group) && item.group !== previousGroup;
+            const active = item.active(currentPath);
             return (
+              <div key={item.href}>
+              {showGroupHeader && (
+                <div className="hidden px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:block">
+                  {item.group}
+                </div>
+              )}
               <Button
-                key={item.href}
                 onClick={() => router.push(item.href)}
-                variant={item.active(currentPath) ? "secondary" : "ghost"}
-                className="relative w-full justify-center sm:justify-start"
+                variant="ghost"
+                className={`relative w-full justify-center sm:justify-start ${
+                  active ? "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary" : ""
+                }`}
                 size="sm"
                 aria-label={item.label}
                 title={item.label}
@@ -301,6 +330,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                   </span>
                 )}
               </Button>
+              </div>
             );
           })}
         </div>

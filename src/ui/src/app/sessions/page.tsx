@@ -288,7 +288,7 @@ function SessionsStart() {
           className="absolute inset-0 opacity-80"
           style={{
             backgroundImage:
-              "radial-gradient(circle at center, rgba(59, 130, 246, 0.18) 1px, transparent 1.4px)",
+              "radial-gradient(circle at center, color-mix(in oklab, var(--primary) 18%, transparent) 1px, transparent 1.4px)",
             backgroundSize: "10px 10px",
           }}
         />
@@ -297,7 +297,7 @@ function SessionsStart() {
           className="absolute inset-x-0 bottom-0 h-[48%] opacity-70"
           style={{
             background:
-              "radial-gradient(ellipse at 52% 15%, rgba(59,130,246,0.26), rgba(59,130,246,0.08) 42%, transparent 72%)",
+              "radial-gradient(ellipse at 52% 15%, color-mix(in oklab, var(--primary) 26%, transparent), color-mix(in oklab, var(--primary) 8%, transparent) 42%, transparent 72%)",
           }}
         />
 

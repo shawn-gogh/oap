@@ -75,7 +75,9 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.145 0 0);
+  /* Brand accent: the platform blue, promoted from the sessions landing
+     background to the system primary. */
+  --primary: oklch(0.546 0.245 262.881);
   --primary-foreground: #ffffff;
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -86,7 +88,7 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.205 0 0);
+  --ring: oklch(0.623 0.214 259.815);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -112,8 +114,8 @@
   --popover-foreground: #ededed;
   /* Primary stays neutral (white-on-black). Green is reserved for status
      indicators (ready dots, success-only accents) — not for chrome. */
-  --primary: #ededed;
-  --primary-foreground: #0a0a0a;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
   --secondary: #1a1a1a;
   --secondary-foreground: #ededed;
   --muted: #161616;
@@ -124,7 +126,7 @@
   --destructive-foreground: #ffffff;
   --border: #1f1f1f;
   --input: #1f1f1f;
-  --ring: #2a2a2a;
+  --ring: #3b82f6;
   --chart-1: #ededed;
   --chart-2: #2563eb;
   --chart-3: #f59e0b;
