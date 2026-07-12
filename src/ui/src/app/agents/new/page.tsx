@@ -70,6 +70,7 @@ import {
   createAgent,
   draftAgentConfigWithModel,
   refineAgentConfigWithModel,
+  testRunAgentCase,
   listAgentRuntimes,
   listRuntimeHarnesses,
   listAgents,
@@ -80,7 +81,7 @@ import {
   listRules,
   listSkills,
 } from "@/lib/api";
-import type { AgentBuilderCopilotResponse } from "@/lib/api";
+import type { AgentBuilderCopilotResponse, AgentCaseTestResult } from "@/lib/api";
 import {
   defaultModelForRuntime,
   modelOptions,
@@ -1096,7 +1097,150 @@ function ReviewStep({
           <ConfigPreview draft={draft} mcpIntegrations={mcpIntegrations} />
         </section>
       </div>
+      <PreCreateTestRun draft={draft} />
     </div>
+  );
+}
+
+interface TestRunCase {
+  key: string;
+  category: string;
+  categoryLabel: string;
+  input: string;
+}
+
+type TestRunOutcome =
+  | { state: "running" }
+  | { state: "done"; result: AgentCaseTestResult }
+  | { state: "error"; message: string };
+
+const TEST_CASE_CATEGORIES: Array<{
+  key: "normal_cases" | "edge_cases" | "recovery_cases" | "safety_cases";
+  category: string;
+  label: string;
+}> = [
+  { key: "normal_cases", category: "normal", label: "正常" },
+  { key: "edge_cases", category: "edge", label: "边界" },
+  { key: "recovery_cases", category: "recovery", label: "恢复" },
+  { key: "safety_cases", category: "safety", label: "安全" },
+];
+
+function PreCreateTestRun({ draft }: { draft: AgentDraft }) {
+  const [outcomes, setOutcomes] = useState<Record<string, TestRunOutcome>>({});
+  const evaluation = draft.design?.evaluation;
+  const successCriteria = evaluation?.success_criteria?.trim() ?? "";
+
+  const cases: TestRunCase[] = evaluation
+    ? TEST_CASE_CATEGORIES.flatMap(({ key, category, label }) =>
+        (evaluation[key] ?? []).map((input, index) => ({
+          key: `${category}-${index}`,
+          category,
+          categoryLabel: label,
+          input,
+        })),
+      )
+    : [];
+  const anyRunning = Object.values(outcomes).some((outcome) => outcome.state === "running");
+
+  const runCase = async (testCase: TestRunCase) => {
+    setOutcomes((prev) => ({ ...prev, [testCase.key]: { state: "running" } }));
+    try {
+      const result = await testRunAgentCase({
+        system: draft.system,
+        model: draft.model.trim() || undefined,
+        category: testCase.category,
+        caseInput: testCase.input,
+        successCriteria,
+      });
+      setOutcomes((prev) => ({ ...prev, [testCase.key]: { state: "done", result } }));
+    } catch (err) {
+      setOutcomes((prev) => ({
+        ...prev,
+        [testCase.key]: { state: "error", message: apiErrorMessage(err, "试跑失败") },
+      }));
+    }
+  };
+
+  return (
+    <section className="mt-6 rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">创建前试跑</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            用评估用例直接对话草案中的 system prompt 和模型，并按成功标准自动判定。试跑为纯模型对话，不挂载工具、MCP 和凭证。
+          </p>
+        </div>
+      </div>
+      {!successCriteria || cases.length === 0 ? (
+        <p className="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          缺少成功标准或评估用例，返回“评估 Eval”步骤补充后即可试跑。
+        </p>
+      ) : (
+        <ul className="mt-3 grid gap-2">
+          {cases.map((testCase) => {
+            const outcome = outcomes[testCase.key];
+            return (
+              <li key={testCase.key} className="rounded-md border border-border p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Badge variant="outline" className="h-5 rounded-md text-[10px]">
+                      {testCase.categoryLabel}
+                    </Badge>
+                    <p className="mt-1.5 text-sm leading-6">{testCase.input}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={anyRunning}
+                    onClick={() => void runCase(testCase)}
+                  >
+                    {outcome?.state === "running" ? (
+                      <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+                    ) : (
+                      <Sparkles className="size-3.5" />
+                    )}
+                    {outcome?.state === "done" || outcome?.state === "error" ? "重跑" : "试跑"}
+                  </Button>
+                </div>
+                {outcome?.state === "error" && (
+                  <p className="mt-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {outcome.message}
+                  </p>
+                )}
+                {outcome?.state === "done" && (
+                  <div className="mt-2 grid gap-2">
+                    <div
+                      className={cn(
+                        "flex items-start gap-2 rounded-md px-3 py-2 text-xs",
+                        outcome.result.pass
+                          ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
+                          : "bg-destructive/10 text-destructive",
+                      )}
+                    >
+                      {outcome.result.pass ? (
+                        <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
+                      ) : (
+                        <XCircle className="mt-0.5 size-3.5 shrink-0" />
+                      )}
+                      <span className="leading-5">{outcome.result.verdict}</span>
+                    </div>
+                    <details className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        查看回答
+                      </summary>
+                      <pre className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-5">
+                        {outcome.result.answer}
+                      </pre>
+                    </details>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 
