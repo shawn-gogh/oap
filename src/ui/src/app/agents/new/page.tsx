@@ -592,7 +592,7 @@ export default function NewAgentPage() {
               Agents
             </Button>
             <span className="text-muted-foreground">/</span>
-            <span className="truncate text-sm font-semibold">Create agent</span>
+            <span className="truncate text-sm font-semibold">创建智能体</span>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -602,7 +602,7 @@ export default function NewAgentPage() {
               className="hidden sm:inline-flex"
             >
               <ExternalLink className="size-3.5" />
-              Import agent
+              导入智能体
             </Button>
             {step === "config" && (
               <Button size="sm" onClick={() => setStep("review")} disabled={Boolean(parsed.error)}>
@@ -622,7 +622,7 @@ export default function NewAgentPage() {
               onClick={() => router.push("/agents/")}
               className="hidden sm:inline-flex"
             >
-              Cancel
+              取消
             </Button>
             <ThemeToggle />
           </div>
@@ -1437,7 +1437,7 @@ function CreateStep({
                 onGenerate();
               }
             }}
-            placeholder="Describe your agent..."
+            placeholder="描述你想要的智能体..."
             className="min-h-24 resize-none border-0 bg-transparent px-4 py-4 text-[15px] text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-3 py-3">
@@ -1454,7 +1454,7 @@ function CreateStep({
               className="gap-1.5"
             >
               <Bot className="size-3.5" />
-              Use UI editor
+              使用 UI 编辑器
             </Button>
             <div className="ml-auto" />
             <Button
@@ -1463,7 +1463,7 @@ function CreateStep({
               onClick={onGenerate}
               disabled={!prompt.trim() || drafting}
               className="size-9 rounded-full"
-              aria-label="Draft config"
+              aria-label="生成配置"
             >
               {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
             </Button>
@@ -1610,7 +1610,7 @@ function ConfigStep({
                 variant="secondary"
                 onClick={() => document.getElementById("agent-config-refine")?.focus()}
               >
-                Keep refining
+                继续调整
               </Button>
             </div>
             {draftNotice && (
@@ -1645,7 +1645,7 @@ function ConfigStep({
                 onRefine();
               }
             }}
-            placeholder="Reply..."
+            placeholder="继续描述要修改的内容..."
             className="min-h-20 resize-none border-0 bg-transparent px-4 py-4 text-[15px] text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <div className="flex items-center border-t border-border bg-muted/30 px-3 py-3">
@@ -1656,7 +1656,7 @@ function ConfigStep({
               onClick={onRefine}
               disabled={!prompt.trim() || drafting}
               className="size-9 rounded-full"
-              aria-label="Refine config"
+              aria-label="调整配置"
             >
               {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
             </Button>
@@ -1712,12 +1712,12 @@ function ConfigStep({
               {parsedError ? (
                 <span className="flex items-center gap-1 text-xs text-red-300">
                   <XCircle className="size-3.5" />
-                  Invalid
+                  配置无效
                 </span>
               ) : (
                 <span className="flex items-center gap-1 text-xs text-emerald-300">
                   <CheckCircle2 className="size-3.5" />
-                  Ready
+                  就绪
                 </span>
               )}
               <Button
@@ -1726,8 +1726,8 @@ function ConfigStep({
                 variant="ghost"
                 onClick={onCopy}
                 className="text-[#c9c0b1] hover:bg-white/10 hover:text-white"
-                aria-label="Copy config"
-                title="Copy config"
+                aria-label="复制配置"
+                title="复制配置"
               >
                 <Clipboard className="size-4" />
               </Button>
@@ -1765,8 +1765,8 @@ function ConfigStep({
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 px-4 py-3 text-xs text-[#c9c0b1]">
             <span className="font-mono">{scheduleLabel(draft.cron, draft.timezone)}</span>
             <span className="hidden text-white/20 sm:inline">/</span>
-            <span className="font-mono">{draft.max_runtime_minutes} min max</span>
-            {copied && <span className="ml-auto text-emerald-300">Copied</span>}
+            <span className="font-mono">{draft.max_runtime_minutes} 分钟上限</span>
+            {copied && <span className="ml-auto text-emerald-300">已复制</span>}
           </div>
         </div>
       </section>
@@ -2020,13 +2020,13 @@ function TemplateBrowser({
   return (
     <div className="flex h-full min-h-[560px] flex-col rounded-lg border border-border bg-card p-5 shadow-sm">
       <div className="mb-4">
-        <h2 className="text-lg font-semibold text-foreground">Browse templates</h2>
+        <h2 className="text-lg font-semibold text-foreground">浏览模板</h2>
         <div className="relative mt-4">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search templates"
+            placeholder="搜索模板"
             className="h-10 pl-9"
           />
         </div>
@@ -2180,7 +2180,7 @@ function AgentDraftControls({
             id="draft-description"
             value={draft.description}
             onChange={(event) => update({ description: event.target.value })}
-            placeholder="What this agent does"
+            placeholder="这个智能体做什么"
             className="border-white/10 bg-[#242321] text-[#f7f2e8] placeholder:text-[#9d9384]"
           />
         </div>
@@ -2195,7 +2195,7 @@ function AgentDraftControls({
             />
           </div>
           {modelsLoading && (
-            <p className="text-xs text-[#9d9384]">Loading runtime models...</p>
+            <p className="text-xs text-[#9d9384]">正在加载可用模型...</p>
           )}
           {modelsError && (
             <p className="text-xs text-red-300">{modelsError}</p>
@@ -2294,11 +2294,11 @@ function AgentDraftControls({
             <div className="grid gap-1">
               <Label className="text-sm font-medium">Vault Credentials</Label>
               <p className="max-w-xl text-xs leading-5 text-muted-foreground">
-                Attach secret names now, then save their values from the agent detail page.
+                先登记密钥名称，创建后在智能体详情页填写密钥值。
               </p>
             </div>
             <span className="shrink-0 font-mono text-xs text-muted-foreground">
-              {draft.vault_keys.length} attached
+              {draft.vault_keys.length} 已挂载
             </span>
           </div>
           <div className="flex gap-2">
@@ -2327,12 +2327,12 @@ function AgentDraftControls({
               className="border-white/10 bg-white/5 hover:bg-white/10"
             >
               <Plus className="size-3.5" />
-              Add Key
+              添加密钥
             </Button>
           </div>
           {vaultKeyError && <p className="text-xs text-red-300">{vaultKeyError}</p>}
           {draft.vault_keys.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No vault credentials attached.</p>
+            <p className="text-xs text-muted-foreground">尚未挂载保险库凭证。</p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {draft.vault_keys.map((key) => (
@@ -2362,7 +2362,7 @@ function AgentDraftControls({
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Tools</Label>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.tools.length} selected
+              {draft.tools.length} 已选
             </span>
           </div>
           <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
@@ -2387,11 +2387,11 @@ function AgentDraftControls({
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Skills</Label>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.skill_ids.length} attached
+              {draft.skill_ids.length} 已挂载
             </span>
           </div>
           {skills.length === 0 ? (
-            <p className="text-xs text-[#9d9384]">No skills available.</p>
+            <p className="text-xs text-[#9d9384]">暂无可用技能。</p>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
               {skills.map((skill) => {
@@ -2413,7 +2413,7 @@ function AgentDraftControls({
                         <span className="truncate font-mono text-[#9d9384]">{skill.id}</span>
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
-                        {skill.description || "No description."}
+                        {skill.description || "暂无描述。"}
                       </div>
                     </div>
                   </label>
@@ -2428,11 +2428,11 @@ function AgentDraftControls({
             <div className="grid gap-1">
               <Label className="text-sm font-medium">MCP integrations</Label>
               <p className="max-w-xl text-xs leading-5 text-muted-foreground">
-                Attach managed MCP servers from the registry. Toolsets are rebuilt from these IDs when the agent is created.
+                从注册表挂载托管 MCP 服务器。创建智能体时会根据这些 ID 重建工具集。
               </p>
             </div>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.mcp_server_ids.length} attached
+              {draft.mcp_server_ids.length} 已挂载
             </span>
           </div>
           {mcpError && (
@@ -2455,9 +2455,9 @@ function AgentDraftControls({
           ) : mcpIntegrations.length === 0 ? (
             <div className="rounded-md border border-white/10 bg-white/5 px-3 py-4 text-center">
               <Plug className="mx-auto size-6 text-muted-foreground" />
-              <p className="mt-2 text-xs font-medium">No MCP servers available</p>
+              <p className="mt-2 text-xs font-medium">暂无可用的 MCP 服务器</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Add a server in the MCP registry, then return here to attach it.
+                先到 MCP 注册表添加服务器，再回到这里挂载。
               </p>
             </div>
           ) : (
@@ -2489,17 +2489,17 @@ function AgentDraftControls({
                         <span className="font-medium">{integration.name}</span>
                         <span className="truncate font-mono text-muted-foreground">{integration.id}</span>
                         <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[10px] text-[#c9c0b1]">
-                          {integration.source === "registry" ? "Registry" : "Catalog"}
+                          {integration.source === "registry" ? "注册表" : "目录"}
                         </Badge>
                         {integration.connected ? (
                           <Badge variant="secondary" className="h-5 rounded-md text-[10px]">
                             <KeyRound className="size-3" />
-                            Connected
+                            已连接
                           </Badge>
                         ) : (
                           <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[10px] text-[#c9c0b1]">
                             <KeyRound className="size-3" />
-                            Needs Credentials
+                            待配置凭证
                           </Badge>
                         )}
                       </div>
@@ -2514,8 +2514,8 @@ function AgentDraftControls({
                         <span className="inline-flex items-center gap-1">
                           <Wrench className="size-3" />
                           {availableTools.length > 0
-                            ? `${availableTools.length} tools available`
-                            : "Tools not discovered yet"}
+                            ? `${availableTools.length} 个可用工具`
+                            : "尚未发现工具"}
                         </span>
                       </div>
                       {(enabled || availableTools.length > 0) && (
@@ -2537,7 +2537,7 @@ function AgentDraftControls({
                       )}
                       {!canAttach && (
                         <p className="mt-2 text-xs text-destructive">
-                          This server is missing a URL, so it cannot be attached to a managed agent yet.
+                          该服务器缺少 URL，暂时无法挂载到托管智能体。
                         </p>
                       )}
                     </div>
@@ -2556,7 +2556,7 @@ function AgentDraftControls({
             className="justify-self-start border-white/10 bg-white/5 text-[#f7f2e8] hover:bg-white/10 hover:text-white"
           >
             <ExternalLink className="size-3.5" />
-            Manage MCP Servers
+            管理 MCP 服务器
           </Button>
         </div>
 
@@ -2565,15 +2565,15 @@ function AgentDraftControls({
             <div className="grid gap-1">
               <Label className="text-sm font-medium">Rules</Label>
               <p className="max-w-xl text-xs leading-5 text-[#9d9384]">
-                Rules are persistent prompt-level instructions. When attached, their Markdown is added to the agent context before the model runs.
+                规则是持久的 prompt 级指令。挂载后其 Markdown 内容会在模型运行前注入智能体上下文。
               </p>
             </div>
             <span className="shrink-0 font-mono text-xs text-[#9d9384]">
-              {draft.rule_ids.length} attached
+              {draft.rule_ids.length} 已挂载
             </span>
           </div>
           {rules.length === 0 ? (
-            <p className="text-xs text-[#9d9384]">No rules available.</p>
+            <p className="text-xs text-[#9d9384]">暂无可用规则。</p>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
               {rules.map((rule) => {
@@ -2595,7 +2595,7 @@ function AgentDraftControls({
                         <span className="truncate font-mono text-[#9d9384]">{rule.id}</span>
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
-                        {rule.description || "No description."}
+                        {rule.description || "暂无描述。"}
                       </div>
                     </div>
                   </label>
@@ -2609,12 +2609,12 @@ function AgentDraftControls({
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Sub-agents</Label>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.sub_agents.length} attached
+              {draft.sub_agents.length} 已挂载
             </span>
           </div>
           {agents.length === 0 ? (
             <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-[#9d9384]">
-              Create helper agents first, then attach them here.
+              请先创建辅助智能体，再回到这里挂载。
             </div>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
@@ -2643,7 +2643,7 @@ function AgentDraftControls({
                         <span className="truncate font-mono text-[#9d9384]">{agent.id}</span>
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
-                        {agent.description || agent.model || "Saved LAP agent"}
+                        {agent.description || agent.model || "已保存的 LAP 智能体"}
                       </div>
                     </div>
                   </label>
@@ -2777,7 +2777,7 @@ function ConfigPreview({
         <div>
           <div className="text-xs uppercase text-[#9d9384]">System prompt</div>
           <pre className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/15 p-3 font-mono text-[12px] leading-6 text-[#f0d3bd]">
-            {draft.system || "No system prompt set."}
+            {draft.system || "未设置 system prompt。"}
           </pre>
         </div>
 
@@ -2824,7 +2824,7 @@ function PreviewItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-white/10 bg-black/10 p-3">
       <div className="text-xs uppercase text-[#9d9384]">{label}</div>
-      <div className="mt-1 break-words font-mono text-xs text-[#f7f2e8]">{value || "Not set"}</div>
+      <div className="mt-1 break-words font-mono text-xs text-[#f7f2e8]">{value || "未设置"}</div>
     </div>
   );
 }
