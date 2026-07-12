@@ -892,14 +892,13 @@ export async function draftAgentConfigWithModel(
   requestedModel?: string,
   context?: {
     skills?: Skill[];
+    onProgress?: (textSoFar: string) => void;
   },
 ): Promise<string> {
   const models = await listModels();
   const model = draftModelFrom(models, requestedModel);
-  const res = await req("/v1/messages", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const text = await streamMessagesText(
+    {
       model,
       max_tokens: 2400,
       system:
@@ -924,13 +923,75 @@ export async function draftAgentConfigWithModel(
           content: `Create an editable config.yaml for this agent request:\n\n${desire.trim()}`,
         },
       ],
-    }),
-  });
-  const payload = await jsonOrThrow<unknown>(res);
-  const text = messageText(payload);
+    },
+    context?.onProgress,
+  );
   const yaml = yamlFromMessage(text);
   if (!yaml) throw new Error("Model returned an empty config.");
   return yaml;
+}
+
+/** POST /v1/messages with stream: true and accumulate the text deltas,
+ *  invoking onDelta with the full text so far after each chunk. Falls back
+ *  to a one-shot JSON parse when the gateway doesn't stream. */
+async function streamMessagesText(
+  body: Record<string, unknown>,
+  onDelta?: (textSoFar: string) => void,
+): Promise<string> {
+  const res = await req("/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({ ...body, stream: true }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text);
+  }
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream") || !res.body) {
+    return messageText(await res.json());
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+
+  const consumeFrame = (frame: string) => {
+    for (const line of frame.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        const event = JSON.parse(data) as {
+          type?: string;
+          delta?: { type?: string; text?: string };
+        };
+        if (event.type === "content_block_delta" && typeof event.delta?.text === "string") {
+          text += event.delta.text;
+          onDelta?.(text);
+        }
+      } catch {
+        // Ignore non-JSON keep-alive frames.
+      }
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.search(/\r?\n\r?\n/);
+    while (boundary !== -1) {
+      const match = buffer.match(/\r?\n\r?\n/);
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + (match?.[0].length ?? 2));
+      consumeFrame(frame);
+      boundary = buffer.search(/\r?\n\r?\n/);
+    }
+  }
+  if (buffer.trim()) consumeFrame(buffer);
+  return text;
 }
 
 export interface AgentCaseTestResult {
@@ -1003,14 +1064,13 @@ export async function refineAgentConfigWithModel(
   requestedModel?: string,
   context?: {
     skills?: Skill[];
+    onProgress?: (textSoFar: string) => void;
   },
 ): Promise<string> {
   const models = await listModels();
   const model = draftModelFrom(models, requestedModel);
-  const res = await req("/v1/messages", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const text = await streamMessagesText(
+    {
       model,
       max_tokens: 2400,
       system:
@@ -1031,10 +1091,9 @@ export async function refineAgentConfigWithModel(
             `Apply this change and return the full updated YAML:\n\n${instruction.trim()}`,
         },
       ],
-    }),
-  });
-  const payload = await jsonOrThrow<unknown>(res);
-  const text = messageText(payload);
+    },
+    context?.onProgress,
+  );
   const yaml = yamlFromMessage(text);
   if (!yaml) throw new Error("Model returned an empty config.");
   return yaml;

@@ -190,6 +190,7 @@ export default function NewAgentPage() {
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [messages, setMessages] = useState<BuilderChatMessage[]>([]);
+  const [draftProgress, setDraftProgress] = useState<string | null>(null);
   const [savedDraft, setSavedDraft] = useState<SavedBuilderDraft | null>(null);
 
   const parsed = useMemo(() => parseAgentDraftConfig(configText), [configText]);
@@ -414,12 +415,13 @@ export default function NewAgentPage() {
     setDrafting(true);
     setError(null);
     setDraftNotice(null);
+    setDraftProgress(null);
     try {
       const generated = await draftAgentConfigWithModel(
         trimmed,
         runtimeChoicesForDrafting(harnesses, runtimes),
         selectedModel,
-        { skills },
+        { skills, onProgress: setDraftProgress },
       );
       const generatedDraft = parseAgentDraftConfig(generated);
       if (generatedDraft.error) throw new Error(generatedDraft.error);
@@ -446,6 +448,7 @@ export default function NewAgentPage() {
       });
     } finally {
       setDrafting(false);
+      setDraftProgress(null);
     }
   };
 
@@ -456,6 +459,7 @@ export default function NewAgentPage() {
     setDrafting(true);
     setError(null);
     setDraftNotice(null);
+    setDraftProgress(null);
     const userMessageId = Date.now();
     setMessages((prev) => [...prev, { id: userMessageId, role: "user", text: trimmed }]);
     try {
@@ -464,7 +468,7 @@ export default function NewAgentPage() {
         configText,
         runtimeChoicesForDrafting(harnesses, runtimes),
         before.model.trim(),
-        { skills },
+        { skills, onProgress: setDraftProgress },
       );
       const parsedNext = parseAgentDraftConfig(updated);
       if (parsedNext.error) throw new Error(parsedNext.error);
@@ -496,6 +500,7 @@ export default function NewAgentPage() {
       ]);
     } finally {
       setDrafting(false);
+      setDraftProgress(null);
     }
   };
 
@@ -613,6 +618,9 @@ export default function NewAgentPage() {
         <main className="min-h-0 flex-1 overflow-y-auto bg-[#fbfbfa] text-[#20201f] dark:bg-background dark:text-foreground">
           <PlatformSteps
             activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
+            canEnterConfig={evalGatePassed(draft.design)}
+            canEnterReview={!parsed.error && draft.name.trim().length > 0}
+            onNavigate={setStep}
           />
           {savedDraft && step === "create" && (
             <div className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
@@ -649,6 +657,7 @@ export default function NewAgentPage() {
             <CreateStep
               draft={draft}
               drafting={drafting}
+              draftProgress={draftProgress}
               modelsError={modelsError}
               modelsLoading={modelsLoading}
               prompt={prompt}
@@ -676,6 +685,7 @@ export default function NewAgentPage() {
               draft={draft}
               draftNotice={draftNotice}
               drafting={drafting}
+              draftProgress={draftProgress}
               error={error}
               messages={messages}
               agents={agents}
@@ -712,17 +722,50 @@ export default function NewAgentPage() {
   );
 }
 
-function PlatformSteps({ activeStep }: { activeStep: 1 | 2 | 3 | 4 }) {
+const BUILDER_STEPS: Array<{ index: 1 | 2 | 3 | 4; step: BuilderStep; label: string; suffix?: string }> = [
+  { index: 1, step: "create", label: "定位 Fit" },
+  { index: 2, step: "eval", label: "评估 Eval" },
+  { index: 3, step: "config", label: "设计 Design" },
+  { index: 4, step: "review", label: "复核 Review", suffix: "POST /v1/agents" },
+];
+
+function PlatformSteps({
+  activeStep,
+  canEnterConfig,
+  canEnterReview,
+  onNavigate,
+}: {
+  activeStep: 1 | 2 | 3 | 4;
+  canEnterConfig: boolean;
+  canEnterReview: boolean;
+  onNavigate: (step: BuilderStep) => void;
+}) {
+  const stepEnabled = (index: 1 | 2 | 3 | 4): boolean => {
+    // Backward navigation is always allowed; forward jumps must pass the
+    // same gates as the in-page buttons (eval gate, then a valid config).
+    if (index <= activeStep) return true;
+    if (index === 2) return activeStep >= 1;
+    if (index === 3) return canEnterConfig;
+    return canEnterConfig && canEnterReview;
+  };
   return (
     <div className="border-b border-border bg-background/80 px-4 py-3 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-3">
-        <StepMarker active={activeStep === 1} index={1} label="定位 Fit" />
-        <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 2} index={2} label="评估 Eval" />
-        <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 3} index={3} label="设计 Design" />
-        <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 4} index={4} label="复核 Review" suffix="POST /v1/agents" />
+        {BUILDER_STEPS.map((entry, position) => (
+          <div key={entry.step} className="flex min-w-0 items-center gap-3">
+            {position > 0 && <div className="h-px w-10 bg-border" />}
+            <StepMarker
+              active={activeStep === entry.index}
+              clickable={stepEnabled(entry.index)}
+              index={entry.index}
+              label={entry.label}
+              suffix={entry.suffix}
+              onClick={() => {
+                if (entry.index !== activeStep && stepEnabled(entry.index)) onNavigate(entry.step);
+              }}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -730,17 +773,31 @@ function PlatformSteps({ activeStep }: { activeStep: 1 | 2 | 3 | 4 }) {
 
 function StepMarker({
   active,
+  clickable,
   index,
   label,
   suffix,
+  onClick,
 }: {
   active: boolean;
+  clickable: boolean;
   index: number;
   label: string;
   suffix?: string;
+  onClick: () => void;
 }) {
   return (
-    <div className={cn("flex min-w-0 items-center gap-2", active ? "text-foreground" : "text-muted-foreground")}>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!clickable}
+      className={cn(
+        "flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5",
+        active ? "text-foreground" : "text-muted-foreground",
+        clickable && !active && "cursor-pointer hover:text-foreground",
+        !clickable && "cursor-default opacity-60",
+      )}
+    >
       <span
         className={cn(
           "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
@@ -751,7 +808,7 @@ function StepMarker({
       </span>
       <span className="truncate text-sm font-semibold">{label}</span>
       {suffix && <span className="hidden font-mono text-xs text-muted-foreground sm:inline">{suffix}</span>}
-    </div>
+    </button>
   );
 }
 
@@ -1280,6 +1337,7 @@ function PreCreateTestRun({ draft }: { draft: AgentDraft }) {
 function CreateStep({
   draft,
   drafting,
+  draftProgress,
   modelsError,
   modelsLoading,
   prompt,
@@ -1295,6 +1353,7 @@ function CreateStep({
 }: {
   draft: AgentDraft;
   drafting: boolean;
+  draftProgress: string | null;
   modelsError: string | null;
   modelsLoading: boolean;
   prompt: string;
@@ -1322,8 +1381,9 @@ function CreateStep({
               </div>
               <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                 <Loader2 className="size-4 animate-spin text-foreground motion-reduce:animate-none" />
-                Drafting config.yaml
+                {draftProgress ? "正在生成 config.yaml" : "正在分析需求..."}
               </div>
+              {draftProgress && <StreamingPreview text={draftProgress} />}
             </div>
           ) : (
             <div>
@@ -1408,6 +1468,23 @@ function CreateStep({
   );
 }
 
+function StreamingPreview({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const tail = lines.slice(-10).join("\n");
+  return (
+    <div className="w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-[#2b2a28] px-4 py-3 text-left">
+      <div className="flex items-center justify-between text-[11px] text-[#9d9384]">
+        <span className="font-mono">config.yaml</span>
+        <span className="font-mono">{lines.length} lines</span>
+      </div>
+      <pre className="mt-2 max-h-48 overflow-hidden whitespace-pre-wrap font-mono text-[12px] leading-5 text-[#e8b28c]">
+        {tail}
+        <span className="animate-pulse motion-reduce:animate-none">▌</span>
+      </pre>
+    </div>
+  );
+}
+
 function ConversationHint({ title, value, detail }: { title: string; value: string; detail: string }) {
   return (
     <div className="rounded-lg border border-border bg-card/70 px-3 py-2">
@@ -1425,6 +1502,7 @@ function ConfigStep({
   draft,
   draftNotice,
   drafting,
+  draftProgress,
   error,
   messages,
   agents,
@@ -1456,6 +1534,7 @@ function ConfigStep({
   draft: AgentDraft;
   draftNotice: string | null;
   drafting: boolean;
+  draftProgress: string | null;
   error: string | null;
   messages: BuilderChatMessage[];
   agents: Agent[];
@@ -1500,9 +1579,12 @@ function ConfigStep({
                 ),
               )}
               {drafting && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-                  正在修改配置...
+                <div className="grid gap-2">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                    {draftProgress ? "正在修改配置" : "正在分析修改需求..."}
+                  </div>
+                  {draftProgress && <StreamingPreview text={draftProgress} />}
                 </div>
               )}
             </div>
