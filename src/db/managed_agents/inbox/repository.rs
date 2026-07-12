@@ -7,47 +7,39 @@ use crate::{
 
 use super::schema::InboxItemRow;
 
-pub async fn list(pool: &PgPool, filter: &str) -> Result<Vec<InboxItemRow>, GatewayError> {
-    let rows = match filter {
-        "attention" => {
-            sqlx::query_as::<_, InboxItemRow>(
-                r#"
-                SELECT *
-                FROM "LiteLLM_ManagedAgentInboxItemsTable"
-                WHERE status IN ('pending', 'open')
-                ORDER BY created_at DESC
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-        "completed" => {
-            sqlx::query_as::<_, InboxItemRow>(
-                r#"
-                SELECT *
-                FROM "LiteLLM_ManagedAgentInboxItemsTable"
-                WHERE status IN ('accepted', 'rejected', 'resolved')
-                ORDER BY created_at DESC
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-        _ => {
-            sqlx::query_as::<_, InboxItemRow>(
-                r#"
-                SELECT *
-                FROM "LiteLLM_ManagedAgentInboxItemsTable"
-                ORDER BY created_at DESC
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-    }
-    .map_err(GatewayError::Database)?;
-
-    Ok(rows)
+/// `owner`: None lists everything (admin); Some(user) restricts to items
+/// whose linked session or agent belongs to that user.
+pub async fn list(
+    pool: &PgPool,
+    filter: &str,
+    owner: Option<&str>,
+) -> Result<Vec<InboxItemRow>, GatewayError> {
+    sqlx::query_as::<_, InboxItemRow>(
+        r#"
+        SELECT i.*
+        FROM "LiteLLM_ManagedAgentInboxItemsTable" i
+        WHERE CASE $1
+                WHEN 'attention' THEN i.status IN ('pending', 'open')
+                WHEN 'completed' THEN i.status IN ('accepted', 'rejected', 'resolved')
+                ELSE TRUE
+              END
+          AND ($2::TEXT IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
+                    WHERE s.id = i.session_id AND s.owner_id = $2
+               )
+               OR EXISTS (
+                    SELECT 1 FROM "LiteLLM_ManagedAgentsTable" a
+                    WHERE (a.id = i.agent OR a.name = i.agent) AND a.owner_id = $2
+               ))
+        ORDER BY i.created_at DESC
+        "#,
+    )
+    .bind(filter)
+    .bind(owner)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 /// Pending approvals, optionally scoped to one session and/or one owner.
