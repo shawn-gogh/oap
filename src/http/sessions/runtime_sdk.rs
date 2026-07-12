@@ -111,10 +111,6 @@ pub(super) fn provider_event_line<T: Serialize>(
     Ok(Bytes::from(line))
 }
 
-pub(super) fn provider_error_event_line(message: String) -> Result<Bytes, Infallible> {
-    Ok(Bytes::from(error_event_line(message)))
-}
-
 pub(super) fn agent_sdk_error(error: AgentSdkError) -> GatewayError {
     provider_errors::agent_sdk_error(error)
 }

@@ -27,7 +27,7 @@ use super::{
         event_error_message, mark_session_status, persist_runtime_event, terminal_event_status,
     },
     runtime_sdk::{
-        agent_sdk_error, agent_sdk_error_message, provider_error_event_line, provider_event_line,
+        agent_sdk_error, agent_sdk_error_message, provider_event_line,
         register_runtime_session, runtime_sdk_client,
     },
     storage::session,
@@ -80,9 +80,50 @@ pub async fn runtime_events(
             .body(Body::from_stream(body_stream))
             .map_err(|error| GatewayError::SandboxError(error.to_string()));
     }
-    let resolved = crate::http::runtime_resolution::resolve_runtime(pool, &state, runtime).await?;
+    // Subscribe first so no event published during consumer startup is lost.
+    let local_rx = state.local_session_events.subscribe(&row.id);
+    ensure_provider_consumer(&state, pool, &row, runtime).await?;
+    Response::builder()
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .body(Body::from_stream(local_event_body_stream(local_rx)))
+        .map_err(|error| GatewayError::SandboxError(error.to_string()))
+}
+
+/// Serves a subscriber from the session's local event channel. The channel
+/// carries provider events (republished by the consumer task) and
+/// gateway-local events (approvals, generic_chat turns) alike, so this is the
+/// single SSE body shape for every session kind.
+fn local_event_body_stream(
+    mut local_rx: tokio::sync::broadcast::Receiver<Value>,
+) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
+    async_stream::stream! {
+        loop {
+            match local_rx.recv().await {
+                Ok(value) => {
+                    yield provider_event_line(Ok::<_, crate::sdk::agents::AgentSdkError>(value));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
+/// Spawns the session's provider stream consumer unless one is already
+/// running, so N concurrent SSE subscribers share one provider connection.
+async fn ensure_provider_consumer(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    row: &crate::db::managed_agents::sessions::schema::SessionRow,
+    runtime: &str,
+) -> Result<(), GatewayError> {
+    if state.provider_consumers.is_running(&row.id) {
+        return Ok(());
+    }
+    let resolved = crate::http::runtime_resolution::resolve_runtime(pool, state, runtime).await?;
     let client = runtime_sdk_client(&resolved)?;
-    register_runtime_session(&client, pool, &row, &resolved).await?;
+    register_runtime_session(&client, pool, row, &resolved).await?;
     let provider_stream = client
         .beta()
         .sessions()
@@ -92,95 +133,74 @@ pub async fn runtime_events(
         .map_err(agent_sdk_error)?;
     let empty_stream_status =
         (row.provider_run_id.is_none() && row.status == "idle").then_some("idle");
-    let stream_pool = pool.clone();
-    let stream_session_id = row.id.clone();
-    let body_stream = provider_body_stream(
-        provider_stream,
-        stream_pool,
-        stream_session_id,
-        state.clone(),
-        empty_stream_status,
-    );
-    Response::builder()
-        .header("content-type", "text/event-stream")
-        .header("cache-control", "no-cache")
-        .body(Body::from_stream(body_stream))
-        .map_err(|error| GatewayError::SandboxError(error.to_string()))
+    let task_pool = pool.clone();
+    let task_state = state.clone();
+    let task_session_id = row.id.clone();
+    // If we lost the race to another request, the extra provider stream is
+    // dropped unconsumed — install() rejects the second task.
+    state.provider_consumers.install(&row.id, move || {
+        tokio::spawn(consume_provider_stream(
+            provider_stream,
+            task_pool,
+            task_session_id,
+            task_state,
+            empty_stream_status,
+        ))
+    });
+    Ok(())
 }
 
-fn provider_body_stream(
+/// Owns the provider event stream for one session: persists each event,
+/// emits callbacks, republishes onto the session's local channel for SSE
+/// subscribers, and marks the terminal session status when the stream ends.
+/// The task exits when the provider closes the stream (turn finished); the
+/// next SSE subscribe or prompt spawns a fresh one.
+async fn consume_provider_stream(
     provider_stream: AgentEventStream,
-    stream_pool: PgPool,
-    stream_session_id: String,
-    stream_state: Arc<AppState>,
+    pool: PgPool,
+    session_id: String,
+    state: Arc<AppState>,
     empty_stream_status: Option<&'static str>,
-) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
-    let callbacks = stream_state.callbacks.clone();
-    // Gateway-local events (approvals) are merged into the provider stream so
-    // the browser gets them pushed instead of polling. They are not persisted
-    // as runtime events — the inbox table already stores them.
-    let mut local_rx = stream_state
-        .local_session_events
-        .subscribe(&stream_session_id);
-    async_stream::stream! {
-        futures_util::pin_mut!(provider_stream);
-        let mut saw_event = false;
-        let mut terminal_status = None;
-        let mut terminal_error = None;
-        let mut local_open = true;
-        loop {
-            tokio::select! {
-                event = provider_stream.next() => {
-                    let Some(event) = event else { break };
-                    match event {
-                        Ok(event) => {
-                            saw_event = true;
-                            if let Some(status) = terminal_event_status(&event) {
-                                terminal_status = Some(status);
-                                if status == "error" {
-                                    terminal_error = Some(event_error_message(&event));
-                                }
-                            }
-                            let _ = persist_runtime_event(&stream_pool, &stream_session_id, &event).await;
-                            emit_runtime_event(&callbacks, &stream_session_id, &event).await;
-                            yield provider_event_line(Ok(event));
-                        }
-                        Err(error) => {
-                            terminal_status = Some("error");
-                            let message = agent_sdk_error_message(error);
-                            terminal_error = Some(message.clone());
-                            yield provider_error_event_line(message);
-                        }
+) {
+    let callbacks = state.callbacks.clone();
+    futures_util::pin_mut!(provider_stream);
+    let mut saw_event = false;
+    let mut terminal_status = None;
+    let mut terminal_error = None;
+    while let Some(event) = provider_stream.next().await {
+        match event {
+            Ok(event) => {
+                saw_event = true;
+                if let Some(status) = terminal_event_status(&event) {
+                    terminal_status = Some(status);
+                    if status == "error" {
+                        terminal_error = Some(event_error_message(&event));
                     }
                 }
-                local = local_rx.recv(), if local_open => {
-                    match local {
-                        Ok(value) => {
-                            yield provider_event_line(
-                                Ok::<_, crate::sdk::agents::AgentSdkError>(value),
-                            );
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            local_open = false;
-                        }
-                    }
+                let _ = persist_runtime_event(&pool, &session_id, &event).await;
+                emit_runtime_event(&callbacks, &session_id, &event).await;
+                if let Ok(value) = serde_json::to_value(&event) {
+                    state.local_session_events.publish(&session_id, value);
                 }
             }
-        }
-        if !saw_event && terminal_status.is_none() {
-            terminal_status = empty_stream_status;
-        }
-        if let Some(status) = terminal_status {
-            let _ = mark_session_status(
-                &stream_state,
-                &stream_pool,
-                &stream_session_id,
-                status,
-                terminal_error,
-            ).await;
+            Err(error) => {
+                terminal_status = Some("error");
+                let message = agent_sdk_error_message(error);
+                terminal_error = Some(message.clone());
+                state.local_session_events.publish(
+                    &session_id,
+                    json!({ "type": "session.error", "error": { "message": message } }),
+                );
+            }
         }
     }
+    if !saw_event && terminal_status.is_none() {
+        terminal_status = empty_stream_status;
+    }
+    if let Some(status) = terminal_status {
+        let _ = mark_session_status(&state, &pool, &session_id, status, terminal_error).await;
+    }
+    state.provider_consumers.remove(&session_id);
 }
 
 pub async fn runtime_event_list(
