@@ -131,6 +131,21 @@ function loadSavedBuilderDraft(): SavedBuilderDraft | null {
   }
 }
 
+/** Client-side checks before POST, mapped to the field the user must fix —
+ *  the backend only returns opaque config errors. */
+function validateDraftForCreate(draft: AgentDraft): string[] {
+  const problems: string[] = [];
+  if (!draft.name.trim()) problems.push("名称（Name）不能为空");
+  if (!draft.model.trim()) problems.push("未选择模型（Model）");
+  if (!draft.runtime.trim()) problems.push("未选择运行时（Runtime）");
+  if (!draft.system.trim()) problems.push("System prompt 为空");
+  const badVaultKeys = draft.vault_keys.filter((key) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+  if (badVaultKeys.length > 0) {
+    problems.push(`保险库密钥名不合法：${badVaultKeys.join(", ")}（只能包含字母、数字、下划线且不能以数字开头）`);
+  }
+  return problems;
+}
+
 function savedDraftAgeLabel(savedAt: number): string {
   const minutes = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
   if (minutes < 60) return `${minutes} 分钟前`;
@@ -498,6 +513,11 @@ export default function NewAgentPage() {
       setError(current.error);
       return;
     }
+    const problems = validateDraftForCreate(current.draft);
+    if (problems.length > 0) {
+      setError(`创建前请先修正：${problems.join("；")}`);
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -509,7 +529,7 @@ export default function NewAgentPage() {
       }
       router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(apiErrorMessage(err, "创建智能体失败"));
     } finally {
       setSaving(false);
     }
@@ -985,6 +1005,9 @@ function ReviewStep({
 }) {
   const design: AgentDesign = draft.design ?? blankDesign();
   const governance = design.governance ?? blankDesign().governance!;
+  const attachedMcpMissingCredentials = draft.mcp_server_ids
+    .map((id) => mcpIntegrations.find((integration) => integration.id === id))
+    .filter((integration): integration is Integration => Boolean(integration && !integration.connected));
 
   const setGovernance = (patch: Partial<typeof governance>) => {
     const nextGovernance = { ...governance, ...patch };
@@ -1025,6 +1048,16 @@ function ReviewStep({
       ok: governance.timeout_minutes > 0,
       label: "运行超时上限",
       detail: `单次运行上限 ${governance.timeout_minutes} 分钟。`,
+    },
+    {
+      ok: attachedMcpMissingCredentials.length === 0,
+      label: "MCP 凭证",
+      detail:
+        draft.mcp_server_ids.length === 0
+          ? "未挂载 MCP 服务器。"
+          : attachedMcpMissingCredentials.length === 0
+            ? `已挂载 ${draft.mcp_server_ids.length} 个 MCP 服务器，凭证均已连接。`
+            : `${attachedMcpMissingCredentials.map((item) => item.name).join("、")} 尚未配置凭证，运行时调用会失败。可先创建，再到 MCP 注册表补齐。`,
     },
     {
       ok: evalGatePassed(design),
@@ -1988,6 +2021,7 @@ function AgentDraftControls({
   const selectedTools = new Set(draft.tools.map((tool) => tool.type).filter(Boolean));
   const selectedSubAgents = new Set(draft.sub_agents.map((agent) => agent.agent_id));
   const [vaultKeyInput, setVaultKeyInput] = useState("");
+  const [vaultKeyError, setVaultKeyError] = useState<string | null>(null);
   const setTool = (toolId: string, enabled: boolean) => {
     const next = new Set(selectedTools);
     if (enabled) next.add(toolId);
@@ -2017,7 +2051,12 @@ function AgentDraftControls({
   };
   const addVaultKey = () => {
     const key = vaultKeyInput.trim();
-    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return;
+    if (!key) return;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      setVaultKeyError("密钥名只能包含字母、数字和下划线，且不能以数字开头，例如 BROWSER_USE_API_KEY。");
+      return;
+    }
+    setVaultKeyError(null);
     update({ vault_keys: Array.from(new Set([...draft.vault_keys, key])) });
     setVaultKeyInput("");
   };
@@ -2068,6 +2107,26 @@ function AgentDraftControls({
           )}
         </div>
 
+        {harnesses.length === 0 && (
+          <div className="grid gap-1.5">
+            <Label className="text-[#c9c0b1]">Runtime</Label>
+            <div className="rounded-md border border-white/10 bg-white/5 px-3 py-3 text-xs text-[#9d9384]">
+              <p>没有已连接的运行时 harness，当前使用默认运行时 {runtimeLabel(draft.runtime)}。</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  window.location.href = "/runtimes/";
+                }}
+                className="mt-2 border-white/10 bg-white/5 text-[#f7f2e8] hover:bg-white/10 hover:text-white"
+              >
+                <ExternalLink className="size-3.5" />
+                去连接运行时
+              </Button>
+            </div>
+          </div>
+        )}
         {harnesses.length >= 1 && (
           <div className="grid gap-1.5">
             <Label className="text-[#c9c0b1]">Runtime</Label>
@@ -2108,6 +2167,9 @@ function AgentDraftControls({
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-[#9d9384]">
+              切换运行时会把已选工具重置为该运行时的默认工具集，并重新加载可用模型。
+            </p>
           </div>
         )}
 
@@ -2147,7 +2209,10 @@ function AgentDraftControls({
           <div className="flex gap-2">
             <Input
               value={vaultKeyInput}
-              onChange={(event) => setVaultKeyInput(event.target.value)}
+              onChange={(event) => {
+                setVaultKeyInput(event.target.value);
+                setVaultKeyError(null);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -2170,6 +2235,7 @@ function AgentDraftControls({
               Add Key
             </Button>
           </div>
+          {vaultKeyError && <p className="text-xs text-red-300">{vaultKeyError}</p>}
           {draft.vault_keys.length === 0 ? (
             <p className="text-xs text-muted-foreground">No vault credentials attached.</p>
           ) : (
