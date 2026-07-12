@@ -689,6 +689,39 @@ function ChatInner() {
     ];
 
     const type = normalizedRuntimeEventType(ev);
+
+    // Gateway-local approval events pushed through the SSE stream: update the
+    // dock immediately and skip the message-stream merge (approvals are not
+    // transcript content).
+    if (type === "approval.asked" || type === "approval.replied") {
+      const raw = ev.approval as
+        | { id?: string; title?: string; status?: string; args_json?: string | null; created_at?: number; session_id?: string | null }
+        | undefined;
+      if (!raw?.id) return;
+      if (type === "approval.replied") {
+        decidedApprovalsRef.current.set(raw.id, Date.now());
+        setApprovals((prev) => prev.filter((approval) => approval.id !== raw.id));
+        return;
+      }
+      if (decidedApprovalsRef.current.has(raw.id)) return;
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        parsedArgs = raw.args_json ? (JSON.parse(raw.args_json) as Record<string, unknown>) : {};
+      } catch {
+        parsedArgs = {};
+      }
+      const next: PendingApproval = {
+        id: raw.id,
+        tool: raw.title ?? "approval",
+        arguments: parsedArgs,
+        createdAt: raw.created_at ?? Date.now(),
+        sessionId: raw.session_id ?? null,
+      };
+      setApprovals((prev) =>
+        prev.some((approval) => approval.id === next.id) ? prev : [...prev, next],
+      );
+      return;
+    }
     if (isRuntimeTurnStartEvent(type)) {
       setSessionStatus("busy");
     } else if (type === "session.status_idle") {

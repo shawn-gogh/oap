@@ -1,7 +1,11 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use reqwest::Client;
 use sqlx::PgPool;
+use tokio::sync::broadcast;
 
 use crate::{
     agents::{locks::KeyedLockStore, runs::AgentRunStore},
@@ -27,7 +31,40 @@ pub struct AppState {
     pub api_keys: GatewayApiKeyStore,
     pub callbacks: CallbackManager,
     pub object_storage: Option<ObjectStorageClient>,
+    pub local_session_events: LocalSessionEvents,
     mcp_proxy_base_url: RwLock<Option<String>>,
+}
+
+/// Per-session broadcast channels for gateway-local events (approvals, …)
+/// that don't originate from the runtime provider stream. SSE handlers merge
+/// a receiver into the provider stream so local events reach the browser
+/// without polling.
+#[derive(Debug, Default)]
+pub struct LocalSessionEvents {
+    channels: Mutex<HashMap<String, broadcast::Sender<serde_json::Value>>>,
+}
+
+impl LocalSessionEvents {
+    const CAPACITY: usize = 64;
+
+    pub fn subscribe(&self, session_id: &str) -> broadcast::Receiver<serde_json::Value> {
+        let mut channels = self.channels.lock().expect("local session events lock");
+        channels
+            .entry(session_id.to_owned())
+            .or_insert_with(|| broadcast::channel(Self::CAPACITY).0)
+            .subscribe()
+    }
+
+    /// Best-effort publish; drops the event when nobody is subscribed and
+    /// garbage-collects idle channels so the map doesn't grow unbounded.
+    pub fn publish(&self, session_id: &str, event: serde_json::Value) {
+        let mut channels = self.channels.lock().expect("local session events lock");
+        if let Some(sender) = channels.get(session_id) {
+            if sender.send(event).is_err() {
+                channels.remove(session_id);
+            }
+        }
+    }
 }
 
 impl AppState {
@@ -61,6 +98,7 @@ impl AppState {
             api_keys: GatewayApiKeyStore::default(),
             callbacks,
             object_storage,
+            local_session_events: LocalSessionEvents::default(),
             mcp_proxy_base_url: RwLock::new(None),
         })
     }

@@ -72,6 +72,15 @@ async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str
     let Some(session_id) = item.session_id.as_deref() else {
         return;
     };
+    // Push the decision to any live SSE subscriber so every open tab clears
+    // the approval immediately instead of waiting for the next poll.
+    state.local_session_events.publish(
+        session_id,
+        serde_json::json!({
+            "type": "approval.replied",
+            "approval": { "id": item.id, "status": item.status }
+        }),
+    );
     if let Err(error) = crate::http::sessions::enqueue_prompt_text(
         state,
         pool,

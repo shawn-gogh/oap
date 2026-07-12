@@ -200,7 +200,8 @@ async fn call_tool(
             tools::run_sub_agent(state.clone(), pool.clone(), agent_id, arguments).await?
         }
         REQUEST_HUMAN_APPROVAL_MCP_ID => {
-            approval::request_human_approval(pool, agent_id, session_id, arguments).await?
+            approval::request_human_approval(state.as_ref(), pool, agent_id, session_id, arguments)
+                .await?
         }
         CHECK_HUMAN_APPROVAL_MCP_ID => approval::check_human_approval(pool, arguments).await?,
         _ => {
