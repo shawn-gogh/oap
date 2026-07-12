@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+import { useConfirm } from "@/components/confirm-dialog";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -152,6 +154,7 @@ type MemoryFilter = "all" | "always" | "standard";
 
 function AgentDetail() {
   const router = useRouter();
+  const confirmAction = useConfirm();
   const searchParams = useSearchParams();
   const id = decodeURIComponent(searchParams.get("id") ?? "");
 
@@ -303,12 +306,17 @@ function AgentDetail() {
 
   const handleDelete = async () => {
     if (!agent) return;
-    if (!confirm(`Delete agent "${agent.name}"?`)) return;
+    const ok = await confirmAction({
+      title: `删除智能体「${agent.name}」？`,
+      description: "其配置、评估历史和工作区文件将一并删除，且无法恢复。",
+    });
+    if (!ok) return;
     try {
       await deleteAgent(id);
+      toast.success(`已删除智能体「${agent.name}」`);
       router.push("/agents/");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -355,7 +363,11 @@ function AgentDetail() {
   };
 
   const handleDeleteFile = async (file: WorkspaceFile) => {
-    if (!confirm(`Delete "${file.path}" from the agent workspace?`)) return;
+    const ok = await confirmAction({
+      title: `删除文件 "${file.path}"？`,
+      description: "该文件将从智能体工作区中永久删除。",
+    });
+    if (!ok) return;
     setDownloadingPath(file.path);
     try {
       await deleteAgentFile(id, file.path);
@@ -585,7 +597,10 @@ function AgentDetail() {
   const bulkDelete = async () => {
     const keys = [...selectedKeys];
     if (keys.length === 0) return;
-    if (!confirm(`Delete ${keys.length} selected memor${keys.length === 1 ? "y" : "ies"}?`)) return;
+    const ok = await confirmAction({
+      title: `删除选中的 ${keys.length} 条记忆？`,
+    });
+    if (!ok) return;
     setMemories((prev) => prev.filter((memory) => !selectedKeys.has(memory.key)));
     setSelectedKeys(new Set());
     try {

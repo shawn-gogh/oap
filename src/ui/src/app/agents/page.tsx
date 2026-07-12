@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+import { useConfirm } from "@/components/confirm-dialog";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Bot, Plus, X, Brain, Plug, Upload } from "lucide-react";
@@ -98,6 +100,7 @@ const EMPTY: FormState = {
 
 export default function AgentsPage() {
   const router = useRouter();
+  const confirmAction = useConfirm();
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -310,12 +313,17 @@ export default function AgentsPage() {
   };
 
   const remove = async (ag: Agent) => {
-    if (!confirm(`Delete agent "${String(ag.name)}"?`)) return;
+    const ok = await confirmAction({
+      title: `删除智能体「${String(ag.name)}」？`,
+      description: "其配置、评估历史和工作区文件将一并删除，且无法恢复。",
+    });
+    if (!ok) return;
     setAgents((prev) => prev?.filter((x) => x.id !== ag.id) ?? null);
     try {
       await deleteAgent(ag.id);
+      toast.success(`已删除智能体「${String(ag.name)}」`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
       load();
     }
   };

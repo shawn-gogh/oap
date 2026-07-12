@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import {
   Activity,
   Bot,
@@ -120,24 +121,45 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
     getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
   }, []);
 
+  // Undo-window delete: the session leaves the list immediately, but the
+  // backend delete only fires after the toast expires. 撤销 cancels it.
+  const pendingDeleteTimers = useRef(new Map<string, number>());
+
   if (embedded) return null;
 
   const onNew = async () => {
     router.push("/chat/");
   };
 
-  const onDelete = async (e: React.MouseEvent, id: string) => {
+  const onDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    const previousSessions = sessions;
+    const removed = sessions?.find((s) => s.id === id);
     setSessions((prev) => prev?.filter((s) => s.id !== id) ?? null);
-    try {
-      await deleteSession(id);
-      setError(null);
-      if (id === activeId) router.push("/chat/");
-    } catch (err) {
-      setSessions(previousSessions);
-      setError(apiErrorMessage(err, "Failed to delete session"));
-    }
+    if (id === activeId) router.push("/chat/");
+
+    const timer = window.setTimeout(() => {
+      pendingDeleteTimers.current.delete(id);
+      deleteSession(id).catch((err) => {
+        setSessions((prev) => (removed && prev ? [removed, ...prev] : prev));
+        toast.error(apiErrorMessage(err, "删除会话失败"));
+      });
+    }, 5000);
+    pendingDeleteTimers.current.set(id, timer);
+
+    toast(`已删除会话「${removed?.title?.trim() || id.slice(0, 12)}」`, {
+      duration: 5000,
+      action: {
+        label: "撤销",
+        onClick: () => {
+          const pending = pendingDeleteTimers.current.get(id);
+          if (pending !== undefined) {
+            window.clearTimeout(pending);
+            pendingDeleteTimers.current.delete(id);
+          }
+          setSessions((prev) => (removed && prev ? [removed, ...prev] : prev));
+        },
+      },
+    });
   };
 
   const currentPath = pathname ?? "";

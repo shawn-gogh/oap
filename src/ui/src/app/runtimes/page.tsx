@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+import { useConfirm } from "@/components/confirm-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -581,6 +583,7 @@ function RuntimeDetails({
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirmAction = useConfirm();
 
   useEffect(() => {
     setKey("");
@@ -630,22 +633,32 @@ function RuntimeDetails({
   };
 
   const handleRemove = async () => {
-    const message = harness.is_default
-      ? `Remove saved credentials for "${harness.display_name}"?`
-      : `Delete runtime "${harness.alias}"? This cannot be undone.`;
-    if (!confirm(message)) return;
+    const ok = await confirmAction(
+      harness.is_default
+        ? {
+            title: `移除「${harness.display_name}」已保存的凭证？`,
+            confirmLabel: "移除凭证",
+          }
+        : {
+            title: `删除运行时「${harness.alias}」？`,
+            description: "此操作无法撤销。",
+          },
+    );
+    if (!ok) return;
     setRemoving(true);
     setError(null);
     try {
       if (harness.is_default) {
         await deleteAgentRuntimeCredential(harness.alias);
+        toast.success(`已移除「${harness.display_name}」的凭证`);
       } else {
         await deleteRuntimeHarness(harness.alias);
+        toast.success(`已删除运行时「${harness.alias}」`);
       }
       const next = await listRuntimeHarnesses();
       onUpdated(next ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove runtime.");
+      toast.error(err instanceof Error ? err.message : "移除运行时失败");
     } finally {
       setRemoving(false);
     }
