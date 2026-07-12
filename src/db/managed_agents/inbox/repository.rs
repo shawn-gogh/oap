@@ -7,66 +7,127 @@ use crate::{
 
 use super::schema::InboxItemRow;
 
-pub async fn list(pool: &PgPool, filter: &str) -> Result<Vec<InboxItemRow>, GatewayError> {
-    let rows = match filter {
-        "attention" => {
-            sqlx::query_as::<_, InboxItemRow>(
-                r#"
-                SELECT *
-                FROM "LiteLLM_ManagedAgentInboxItemsTable"
-                WHERE status IN ('pending', 'open')
-                ORDER BY created_at DESC
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-        "completed" => {
-            sqlx::query_as::<_, InboxItemRow>(
-                r#"
-                SELECT *
-                FROM "LiteLLM_ManagedAgentInboxItemsTable"
-                WHERE status IN ('accepted', 'rejected', 'resolved')
-                ORDER BY created_at DESC
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-        _ => {
-            sqlx::query_as::<_, InboxItemRow>(
-                r#"
-                SELECT *
-                FROM "LiteLLM_ManagedAgentInboxItemsTable"
-                ORDER BY created_at DESC
-                "#,
-            )
-            .fetch_all(pool)
-            .await
-        }
-    }
-    .map_err(GatewayError::Database)?;
-
-    Ok(rows)
-}
-
-pub async fn pending_approvals(
+/// `owner`: None lists everything (admin); Some(user) restricts to items
+/// whose linked session or agent belongs to that user.
+pub async fn list(
     pool: &PgPool,
-    session_id: Option<&str>,
+    filter: &str,
+    owner: Option<&str>,
 ) -> Result<Vec<InboxItemRow>, GatewayError> {
     sqlx::query_as::<_, InboxItemRow>(
         r#"
-        SELECT *
-        FROM "LiteLLM_ManagedAgentInboxItemsTable"
-        WHERE kind = 'approval' AND status = 'pending'
-          AND ($1::TEXT IS NULL OR session_id = $1)
-        ORDER BY created_at ASC
+        SELECT i.*
+        FROM "LiteLLM_ManagedAgentInboxItemsTable" i
+        WHERE CASE $1
+                WHEN 'attention' THEN i.status IN ('pending', 'open')
+                WHEN 'completed' THEN i.status IN ('accepted', 'rejected', 'resolved')
+                ELSE TRUE
+              END
+          AND ($2::TEXT IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
+                    WHERE s.id = i.session_id AND s.owner_id = $2
+               )
+               OR EXISTS (
+                    SELECT 1 FROM "LiteLLM_ManagedAgentsTable" a
+                    WHERE (a.id = i.agent OR a.name = i.agent) AND a.owner_id = $2
+               ))
+        ORDER BY i.created_at DESC
         "#,
     )
-    .bind(session_id)
+    .bind(filter)
+    .bind(owner)
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)
+}
+
+/// Pending approvals, optionally scoped to one session and/or one owner.
+/// `owner`: None returns everything (admin); Some(user) restricts to
+/// approvals whose linked session or agent belongs to that user.
+/// Approvals pointing at a deleted session are excluded — they can never be
+/// meaningfully resumed.
+pub async fn pending_approvals(
+    pool: &PgPool,
+    session_id: Option<&str>,
+    owner: Option<&str>,
+) -> Result<Vec<InboxItemRow>, GatewayError> {
+    sqlx::query_as::<_, InboxItemRow>(
+        r#"
+        SELECT i.*
+        FROM "LiteLLM_ManagedAgentInboxItemsTable" i
+        WHERE i.kind = 'approval' AND i.status = 'pending'
+          AND ($1::TEXT IS NULL OR i.session_id = $1)
+          AND (i.session_id IS NULL OR EXISTS (
+                SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
+                WHERE s.id = i.session_id
+          ))
+          AND ($2::TEXT IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
+                    WHERE s.id = i.session_id AND s.owner_id = $2
+               )
+               OR EXISTS (
+                    SELECT 1 FROM "LiteLLM_ManagedAgentsTable" a
+                    WHERE (a.id = i.agent OR a.name = i.agent) AND a.owner_id = $2
+               ))
+        ORDER BY i.created_at ASC
+        "#,
+    )
+    .bind(session_id)
+    .bind(owner)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+/// Marks every pending approval linked to a session as expired. Called when
+/// the session is deleted so the inbox doesn't accumulate approvals that can
+/// never be decided into a live session.
+pub async fn expire_pending_for_session(
+    pool: &PgPool,
+    session_id: &str,
+) -> Result<u64, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
+        SET status = 'expired', resolved_at = $2
+        WHERE kind = 'approval' AND status = 'pending' AND session_id = $1
+        "#,
+    )
+    .bind(session_id)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected())
+}
+
+/// True when the approval's linked session or agent belongs to `user`.
+/// Approvals with neither linkage are admin-only and return false here.
+pub async fn approval_scope_owned_by(
+    pool: &PgPool,
+    item: &InboxItemRow,
+    user: &str,
+) -> Result<bool, GatewayError> {
+    let owned: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
+            WHERE s.id = $1 AND s.owner_id = $3
+        ) OR EXISTS (
+            SELECT 1 FROM "LiteLLM_ManagedAgentsTable" a
+            WHERE (a.id = $2 OR a.name = $2) AND a.owner_id = $3
+        )
+        "#,
+    )
+    .bind(item.session_id.as_deref())
+    .bind(item.agent.as_deref())
+    .bind(user)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(owned)
 }
 
 pub async fn get(pool: &PgPool, item_id: &str) -> Result<Option<InboxItemRow>, GatewayError> {

@@ -139,6 +139,13 @@ pub async fn delete(
             let _ = storage.delete_bucket_recursive(bucket).await;
         }
     }
+    // Pending approvals for a deleted session can never be decided into a
+    // live turn; expire them so the inbox doesn't accumulate zombies.
+    let _ = crate::db::managed_agents::inbox::repository::expire_pending_for_session(
+        pool,
+        &session_id,
+    )
+    .await;
     Ok(Json(sessions::repository::delete(pool, &session_id).await?))
 }
 

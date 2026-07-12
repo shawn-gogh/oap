@@ -32,6 +32,13 @@ pub(super) async fn is_generic_chat(pool: &PgPool, alias: &str) -> Result<bool, 
 /// Runs one prompt round trip against the external chat endpoint and records
 /// everything locally (messages + provider-format runtime events), so the
 /// existing chat UI replay/poll path works unchanged.
+/// Persists a runtime event and pushes it to any live SSE subscriber, so
+/// generic_chat sessions stream in real time instead of relying on polling.
+async fn append_event(state: &AppState, pool: &PgPool, session_id: &str, event: Value) {
+    let _ = runtime_events::repository::append(pool, session_id, event.clone()).await;
+    state.local_session_events.publish(session_id, event);
+}
+
 pub(super) async fn execute_prompt(
     state: Arc<AppState>,
     pool: &PgPool,
@@ -40,7 +47,8 @@ pub(super) async fn execute_prompt(
 ) -> Result<(), GatewayError> {
     let alias = row.runtime.as_deref().unwrap_or_default().to_owned();
     sessions::repository::set_status(pool, &row.id, "running").await?;
-    let _ = runtime_events::repository::append(
+    append_event(
+        &state,
         pool,
         &row.id,
         json!({
@@ -54,7 +62,8 @@ pub(super) async fn execute_prompt(
     match result {
         Ok(reply) => {
             persist_message(pool, &row.id, "assistant", &reply, Some("stop")).await?;
-            let _ = runtime_events::repository::append(
+            append_event(
+                &state,
                 pool,
                 &row.id,
                 json!({
@@ -63,7 +72,8 @@ pub(super) async fn execute_prompt(
                 }),
             )
             .await;
-            let _ = runtime_events::repository::append(
+            append_event(
+                &state,
                 pool,
                 &row.id,
                 json!({
@@ -77,7 +87,8 @@ pub(super) async fn execute_prompt(
         }
         Err(error) => {
             let message = error.to_string();
-            let _ = runtime_events::repository::append(
+            append_event(
+                &state,
                 pool,
                 &row.id,
                 json!({

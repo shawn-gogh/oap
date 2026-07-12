@@ -32,7 +32,57 @@ pub struct AppState {
     pub callbacks: CallbackManager,
     pub object_storage: Option<ObjectStorageClient>,
     pub local_session_events: LocalSessionEvents,
+    pub provider_consumers: ProviderConsumers,
     mcp_proxy_base_url: RwLock<Option<String>>,
+}
+
+/// Registry of per-session provider stream consumer tasks. Exactly one task
+/// per session consumes the runtime provider's event stream (persisting and
+/// publishing to LocalSessionEvents); any number of SSE subscribers share it
+/// instead of each opening their own provider connection.
+#[derive(Debug, Default)]
+pub struct ProviderConsumers {
+    tasks: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+}
+
+impl ProviderConsumers {
+    /// True when a live consumer task exists; prunes finished entries.
+    pub fn is_running(&self, session_id: &str) -> bool {
+        let mut tasks = self.tasks.lock().expect("provider consumers lock");
+        match tasks.get(session_id) {
+            Some(handle) if !handle.is_finished() => true,
+            Some(_) => {
+                tasks.remove(session_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Registers a consumer spawned by `spawn` unless a live one already
+    /// exists (lost race). Returns whether the new task was installed.
+    pub fn install(
+        &self,
+        session_id: &str,
+        spawn: impl FnOnce() -> tokio::task::JoinHandle<()>,
+    ) -> bool {
+        let mut tasks = self.tasks.lock().expect("provider consumers lock");
+        if let Some(handle) = tasks.get(session_id) {
+            if !handle.is_finished() {
+                return false;
+            }
+        }
+        tasks.insert(session_id.to_owned(), spawn());
+        true
+    }
+
+    pub fn remove(&self, session_id: &str) {
+        let _ = self
+            .tasks
+            .lock()
+            .expect("provider consumers lock")
+            .remove(session_id);
+    }
 }
 
 /// Per-session broadcast channels for gateway-local events (approvals, …)
@@ -99,6 +149,7 @@ impl AppState {
             callbacks,
             object_storage,
             local_session_events: LocalSessionEvents::default(),
+            provider_consumers: ProviderConsumers::default(),
             mcp_proxy_base_url: RwLock::new(None),
         })
     }
