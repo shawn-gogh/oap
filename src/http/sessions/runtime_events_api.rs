@@ -99,30 +99,55 @@ fn provider_body_stream(
     empty_stream_status: Option<&'static str>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
     let callbacks = stream_state.callbacks.clone();
+    // Gateway-local events (approvals) are merged into the provider stream so
+    // the browser gets them pushed instead of polling. They are not persisted
+    // as runtime events — the inbox table already stores them.
+    let mut local_rx = stream_state
+        .local_session_events
+        .subscribe(&stream_session_id);
     async_stream::stream! {
         futures_util::pin_mut!(provider_stream);
         let mut saw_event = false;
         let mut terminal_status = None;
         let mut terminal_error = None;
-        while let Some(event) = provider_stream.next().await {
-            match event {
-                Ok(event) => {
-                    saw_event = true;
-                    if let Some(status) = terminal_event_status(&event) {
-                        terminal_status = Some(status);
-                        if status == "error" {
-                            terminal_error = Some(event_error_message(&event));
+        let mut local_open = true;
+        loop {
+            tokio::select! {
+                event = provider_stream.next() => {
+                    let Some(event) = event else { break };
+                    match event {
+                        Ok(event) => {
+                            saw_event = true;
+                            if let Some(status) = terminal_event_status(&event) {
+                                terminal_status = Some(status);
+                                if status == "error" {
+                                    terminal_error = Some(event_error_message(&event));
+                                }
+                            }
+                            let _ = persist_runtime_event(&stream_pool, &stream_session_id, &event).await;
+                            emit_runtime_event(&callbacks, &stream_session_id, &event).await;
+                            yield provider_event_line(Ok(event));
+                        }
+                        Err(error) => {
+                            terminal_status = Some("error");
+                            let message = agent_sdk_error_message(error);
+                            terminal_error = Some(message.clone());
+                            yield provider_error_event_line(message);
                         }
                     }
-                    let _ = persist_runtime_event(&stream_pool, &stream_session_id, &event).await;
-                    emit_runtime_event(&callbacks, &stream_session_id, &event).await;
-                    yield provider_event_line(Ok(event));
                 }
-                Err(error) => {
-                    terminal_status = Some("error");
-                    let message = agent_sdk_error_message(error);
-                    terminal_error = Some(message.clone());
-                    yield provider_error_event_line(message);
+                local = local_rx.recv(), if local_open => {
+                    match local {
+                        Ok(value) => {
+                            yield provider_event_line(
+                                Ok::<_, crate::sdk::agents::AgentSdkError>(value),
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            local_open = false;
+                        }
+                    }
                 }
             }
         }

@@ -624,6 +624,16 @@ export async function deleteProvider(providerId: string): Promise<void> {
   await jsonOrThrow(res);
 }
 
+export async function renameSession(id: string, title: string): Promise<OpencodeSession> {
+  return jsonOrThrow<OpencodeSession>(
+    await reqHarness(`/session/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    }),
+  );
+}
+
 export async function deleteSession(id: string): Promise<void> {
   await jsonOrThrow<boolean>(
     await reqHarness(`/session/${encodeURIComponent(id)}`, { method: "DELETE" }),
@@ -1229,8 +1239,9 @@ interface RawPendingApproval {
   sessionId?: string | null;
 }
 
-export async function listApprovals(): Promise<PendingApproval[]> {
-  const res = await req("/api/approvals");
+export async function listApprovals(sessionId?: string): Promise<PendingApproval[]> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const res = await req(`/api/approvals${qs}`);
   const data = await jsonOrThrow<{ approvals: RawPendingApproval[] }>(res);
   return (data.approvals ?? []).map((approval) => ({
     id: approval.id,

@@ -25,7 +25,7 @@ export function ApprovalDock({ approvals, onAccept, onReject, busy }: ApprovalDo
         {rest.length > 0 && (
           <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
             <span className="size-1.5 rounded-full bg-amber-500" />
-            {rest.length} more pending
+            还有 {rest.length} 条待审批
           </div>
         )}
         <ToolApprovalPanel key={current.id} approval={current} onAccept={onAccept} onReject={onReject} busy={busy} />

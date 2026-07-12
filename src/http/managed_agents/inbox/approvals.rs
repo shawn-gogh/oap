@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     Json,
 };
@@ -17,11 +19,16 @@ use super::types::{AcceptRequest, ApprovalsResponse, DecisionResponse, RejectReq
 
 pub async fn list_pending(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Json<ApprovalsResponse>, GatewayError> {
     let pool = super::super::db(&state, &headers).await?;
+    let session_id = query
+        .get("session_id")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty());
     Ok(Json(ApprovalsResponse {
-        approvals: repository::pending_approvals(pool).await?,
+        approvals: repository::pending_approvals(pool, session_id).await?,
     }))
 }
 
@@ -65,6 +72,15 @@ async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str
     let Some(session_id) = item.session_id.as_deref() else {
         return;
     };
+    // Push the decision to any live SSE subscriber so every open tab clears
+    // the approval immediately instead of waiting for the next poll.
+    state.local_session_events.publish(
+        session_id,
+        serde_json::json!({
+            "type": "approval.replied",
+            "approval": { "id": item.id, "status": item.status }
+        }),
+    );
     if let Err(error) = crate::http::sessions::enqueue_prompt_text(
         state,
         pool,

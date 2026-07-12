@@ -7,11 +7,13 @@ use crate::{
         registry,
     },
     errors::GatewayError,
+    proxy::state::AppState,
 };
 
 use super::required_str;
 
 pub async fn request_human_approval(
+    state: &AppState,
     pool: &PgPool,
     agent_id: &str,
     session_id: Option<&str>,
@@ -44,6 +46,21 @@ pub async fn request_human_approval(
         Some(approval_args),
     )
     .await?;
+    if let Some(session_id) = item.session_id.as_deref() {
+        state.local_session_events.publish(
+            session_id,
+            json!({
+                "type": "approval.asked",
+                "approval": {
+                    "id": item.id,
+                    "title": item.title,
+                    "session_id": item.session_id,
+                    "args_json": item.args_json,
+                    "created_at": item.created_at,
+                }
+            }),
+        );
+    }
     Ok(approval_payload(item))
 }
 

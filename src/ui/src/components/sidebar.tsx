@@ -109,7 +109,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         .then((items) => setInboxCount(items.length))
         .catch(() => {});
     loadCount();
-    const t = setInterval(loadCount, 5000);
+    const t = setInterval(loadCount, 15000);
     return () => clearInterval(t);
   }, [pathname]);
 

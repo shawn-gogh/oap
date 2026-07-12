@@ -102,6 +102,30 @@ pub async fn get(
     Ok(Json(SessionResponse::from(row)))
 }
 
+#[derive(serde::Deserialize)]
+pub struct RenameSessionRequest {
+    pub title: String,
+}
+
+pub async fn rename(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(input): Json<RenameSessionRequest>,
+) -> Result<Json<SessionResponse>, GatewayError> {
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    owned_session(pool, &auth, &session_id).await?;
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err(GatewayError::InvalidConfig("title must not be empty".to_owned()));
+    }
+    sessions::repository::set_title(pool, &session_id, title).await?;
+    let row = sessions::repository::get(pool, &session_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("session not found".to_owned()))?;
+    Ok(Json(SessionResponse::from(row)))
+}
+
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
