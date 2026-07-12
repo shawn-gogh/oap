@@ -59,7 +59,7 @@ pub async fn sweep_once(state: Arc<AppState>) -> Result<usize, crate::errors::Ga
     };
     let mut actions = 0;
     let agents = registry::repository::list(&pool, None).await?;
-    let pending = inbox::repository::pending_approvals(&pool, None).await?;
+    let pending = inbox::repository::pending_approvals(&pool, None, None).await?;
     let now = now_ms();
 
     for agent in agents {
