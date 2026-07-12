@@ -50,15 +50,20 @@ pub async fn list(pool: &PgPool, filter: &str) -> Result<Vec<InboxItemRow>, Gate
     Ok(rows)
 }
 
-pub async fn pending_approvals(pool: &PgPool) -> Result<Vec<InboxItemRow>, GatewayError> {
+pub async fn pending_approvals(
+    pool: &PgPool,
+    session_id: Option<&str>,
+) -> Result<Vec<InboxItemRow>, GatewayError> {
     sqlx::query_as::<_, InboxItemRow>(
         r#"
         SELECT *
         FROM "LiteLLM_ManagedAgentInboxItemsTable"
         WHERE kind = 'approval' AND status = 'pending'
+          AND ($1::TEXT IS NULL OR session_id = $1)
         ORDER BY created_at ASC
         "#,
     )
+    .bind(session_id)
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)

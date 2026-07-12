@@ -1239,8 +1239,9 @@ interface RawPendingApproval {
   sessionId?: string | null;
 }
 
-export async function listApprovals(): Promise<PendingApproval[]> {
-  const res = await req("/api/approvals");
+export async function listApprovals(sessionId?: string): Promise<PendingApproval[]> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const res = await req(`/api/approvals${qs}`);
   const data = await jsonOrThrow<{ approvals: RawPendingApproval[] }>(res);
   return (data.approvals ?? []).map((approval) => ({
     id: approval.id,

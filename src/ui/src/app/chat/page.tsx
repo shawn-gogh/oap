@@ -474,6 +474,30 @@ function ChatInner() {
   const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
+  // Tombstones for approvals the user already decided: the DB write can lag
+  // the next poll, and without this the dock flashes the stale approval back.
+  const decidedApprovalsRef = useRef<Map<string, number>>(new Map());
+  const approvalsRef = useRef<PendingApproval[]>([]);
+
+  const applyApprovals = useCallback((items: PendingApproval[], sessionId: string) => {
+    const now = Date.now();
+    for (const [id, decidedAt] of decidedApprovalsRef.current) {
+      if (now - decidedAt > 60_000) decidedApprovalsRef.current.delete(id);
+    }
+    const next = items.filter(
+      (approval) =>
+        approval.sessionId === sessionId && !decidedApprovalsRef.current.has(approval.id),
+    );
+    setApprovals((prev) => {
+      const unchanged =
+        prev.length === next.length && prev.every((approval, i) => approval.id === next[i].id);
+      return unchanged ? prev : next;
+    });
+  }, []);
+
+  useEffect(() => {
+    approvalsRef.current = approvals;
+  }, [approvals]);
 
   const refetch = useCallback(async () => {
     if (!sid) return;
@@ -603,6 +627,7 @@ function ChatInner() {
     setSessionTitle("");
     setEditingTitle(null);
     setInfoOpenManual(null);
+    decidedApprovalsRef.current.clear();
     setWorkspaceBucket(undefined);
     const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
@@ -849,21 +874,22 @@ function ChatInner() {
           setSessionStatus("idle");
         });
     }
-    listApprovals()
+    listApprovals(sid)
       .then((items) => {
         if (activeSessionRef.current !== sid) return;
-        setApprovals(items.filter((approval) => approval.sessionId === sid));
+        applyApprovals(items, sid);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
       unsub?.();
     };
-  }, [sid, sessionLoaded, refetch, appendRuntimeEvent, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
+  }, [sid, sessionLoaded, refetch, appendRuntimeEvent, applyApprovals, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
 
   useEffect(() => {
     if (!sid || !sessionRuntime) return;
     let active = true;
+    let timer: number | undefined;
     const replay = () => {
       // Re-fetching events replays (and re-persists) the session's full
       // history on the backend, which is only worth paying for while a turn
@@ -884,31 +910,43 @@ function ChatInner() {
           });
       }
 
-      listApprovals()
+      listApprovals(sid)
         .then((items) => {
           if (!active) return;
           if (activeSessionRef.current !== sid) return;
-          setApprovals(items.filter((approval) => approval.sessionId === sid));
+          applyApprovals(items, sid);
         })
         .catch(() => {});
     };
+    const schedule = () => {
+      // Poll fast only while something can actually change quickly: a busy
+      // turn or a visible approval awaiting a decision. Otherwise back off,
+      // so an idle chat tab isn't hammering the gateway every 2s.
+      const delay =
+        sessionStatus === "busy" || approvalsRef.current.length > 0 ? 2000 : 15000;
+      timer = window.setTimeout(() => {
+        replay();
+        if (active) schedule();
+      }, delay);
+    };
     replay();
-    const timer = window.setInterval(replay, 2000);
+    schedule();
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [mergeRuntimeEventsAndStatus, sessionStatus, sid, sessionRuntime]);
+  }, [applyApprovals, mergeRuntimeEventsAndStatus, sessionStatus, sid, sessionRuntime]);
 
   const onApprovalAccept = useCallback(async (id: string, args: Record<string, unknown>) => {
     setApprovalBusy(true);
     try {
       await acceptApproval(id, args);
+      decidedApprovalsRef.current.set(id, Date.now());
       setApprovals((prev) => prev.filter((a) => a.id !== id));
       setSessionStatus("busy");
       setRuntimeStreamVersion((version) => version + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(apiErrorMessage(e, "审批操作失败"));
     } finally {
       setApprovalBusy(false);
     }
@@ -918,11 +956,12 @@ function ChatInner() {
     setApprovalBusy(true);
     try {
       await rejectApproval(id, feedback);
+      decidedApprovalsRef.current.set(id, Date.now());
       setApprovals((prev) => prev.filter((a) => a.id !== id));
       setSessionStatus("busy");
       setRuntimeStreamVersion((version) => version + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(apiErrorMessage(e, "审批操作失败"));
     } finally {
       setApprovalBusy(false);
     }
