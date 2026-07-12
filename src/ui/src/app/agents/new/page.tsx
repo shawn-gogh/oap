@@ -62,14 +62,19 @@ import {
   sortIntegrations,
 } from "@/lib/integrations";
 import type { Integration } from "@/lib/integrations";
+import { diffAgentDrafts } from "@/lib/agent-draft-diff";
+import type { FieldChange } from "@/lib/agent-draft-diff";
 import {
   apiErrorMessage,
   askAgentBuilderCopilot,
   createAgent,
   draftAgentConfigWithModel,
+  refineAgentConfigWithModel,
+  testRunAgentCase,
   listAgentRuntimes,
   listRuntimeHarnesses,
   listAgents,
+  listAllMcpServerTools,
   listMcpServerTools,
   listMcpUserCredentials,
   listModels,
@@ -77,7 +82,7 @@ import {
   listRules,
   listSkills,
 } from "@/lib/api";
-import type { AgentBuilderCopilotResponse } from "@/lib/api";
+import type { AgentBuilderCopilotResponse, AgentCaseTestResult } from "@/lib/api";
 import {
   defaultModelForRuntime,
   modelOptions,
@@ -91,6 +96,62 @@ import { cn } from "@/lib/utils";
 
 type BuilderStep = "create" | "eval" | "config" | "review";
 type BuilderView = "edit" | "config" | "preview";
+
+type BuilderChatMessage =
+  | { id: number; role: "user"; text: string }
+  | { id: number; role: "assistant"; summary: string; changes: FieldChange[] };
+
+interface SavedBuilderDraft {
+  configText: string;
+  step: BuilderStep;
+  messages: BuilderChatMessage[];
+  savedAt: number;
+}
+
+const BUILDER_DRAFT_STORAGE_KEY = "agent-builder-draft";
+const BUILDER_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function loadSavedBuilderDraft(): SavedBuilderDraft | null {
+  try {
+    const raw = localStorage.getItem(BUILDER_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as Partial<SavedBuilderDraft>;
+    if (typeof saved.configText !== "string" || typeof saved.savedAt !== "number") return null;
+    if (Date.now() - saved.savedAt > BUILDER_DRAFT_MAX_AGE_MS) {
+      localStorage.removeItem(BUILDER_DRAFT_STORAGE_KEY);
+      return null;
+    }
+    return {
+      configText: saved.configText,
+      step: saved.step === "eval" || saved.step === "config" || saved.step === "review" ? saved.step : "config",
+      messages: Array.isArray(saved.messages) ? saved.messages : [],
+      savedAt: saved.savedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Client-side checks before POST, mapped to the field the user must fix —
+ *  the backend only returns opaque config errors. */
+function validateDraftForCreate(draft: AgentDraft): string[] {
+  const problems: string[] = [];
+  if (!draft.name.trim()) problems.push("名称（Name）不能为空");
+  if (!draft.model.trim()) problems.push("未选择模型（Model）");
+  if (!draft.runtime.trim()) problems.push("未选择运行时（Runtime）");
+  if (!draft.system.trim()) problems.push("System prompt 为空");
+  const badVaultKeys = draft.vault_keys.filter((key) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+  if (badVaultKeys.length > 0) {
+    problems.push(`保险库密钥名不合法：${badVaultKeys.join(", ")}（只能包含字母、数字、下划线且不能以数字开头）`);
+  }
+  return problems;
+}
+
+function savedDraftAgeLabel(savedAt: number): string {
+  const minutes = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
+  if (minutes < 60) return `${minutes} 分钟前`;
+  return `${Math.round(minutes / 60)} 小时前`;
+}
 
 const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   blank: Bot,
@@ -124,12 +185,14 @@ export default function NewAgentPage() {
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [view, setView] = useState<BuilderView>("edit");
   const [drafting, setDrafting] = useState(false);
-  const [lastRequest, setLastRequest] = useState("");
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [messages, setMessages] = useState<BuilderChatMessage[]>([]);
+  const [draftProgress, setDraftProgress] = useState<string | null>(null);
+  const [savedDraft, setSavedDraft] = useState<SavedBuilderDraft | null>(null);
 
   const parsed = useMemo(() => parseAgentDraftConfig(configText), [configText]);
   const draft = parsed.draft;
@@ -168,18 +231,30 @@ export default function NewAgentPage() {
           listMcpUserCredentials().catch(() => [] as { server_id: string }[]),
         ]);
         const connectedIds = new Set(credentials.map((credential) => credential.server_id));
-        const toolEntries = await Promise.all(
-          servers.map(async (server) => {
-            try {
-              const tools = await listMcpServerTools(server.server_id);
-              return [server.server_id, tools.map((tool) => tool.name).filter(Boolean)] as const;
-            } catch {
-              return [server.server_id, [] as string[]] as const;
-            }
-          }),
-        );
+        let toolsByServer: Map<string, string[]>;
+        try {
+          const batch = await listAllMcpServerTools();
+          toolsByServer = new Map(
+            Array.from(batch, ([serverId, tools]) => [
+              serverId,
+              tools.map((tool) => tool.name).filter(Boolean),
+            ]),
+          );
+        } catch {
+          // Older backends without the batch route: fall back to per-server calls.
+          const toolEntries = await Promise.all(
+            servers.map(async (server) => {
+              try {
+                const tools = await listMcpServerTools(server.server_id);
+                return [server.server_id, tools.map((tool) => tool.name).filter(Boolean)] as const;
+              } catch {
+                return [server.server_id, [] as string[]] as const;
+              }
+            }),
+          );
+          toolsByServer = new Map(toolEntries);
+        }
         if (cancelled) return;
-        const toolsByServer = new Map(toolEntries);
         const registryIntegrations = servers.map((server) =>
           integrationFromMcpServer(server, {
             connected: connectedIds.has(server.server_id),
@@ -282,15 +357,63 @@ export default function NewAgentPage() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    setSavedDraft(loadSavedBuilderDraft());
+  }, []);
+
+  useEffect(() => {
+    // Nothing worth persisting until the user has left the landing step.
+    if (step === "create") return;
+    const timer = window.setTimeout(() => {
+      try {
+        const payload: SavedBuilderDraft = { configText, step, messages, savedAt: Date.now() };
+        localStorage.setItem(BUILDER_DRAFT_STORAGE_KEY, JSON.stringify(payload));
+      } catch {
+        // Storage full or unavailable; autosave is best-effort.
+      }
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [configText, step, messages]);
+
+  const restoreSavedDraft = () => {
+    if (!savedDraft) return;
+    setConfigText(savedDraft.configText);
+    setMessages(savedDraft.messages);
+    setStep(savedDraft.step);
+    setView("edit");
+    setError(null);
+    setDraftNotice(null);
+    setSavedDraft(null);
+  };
+
+  const discardSavedDraft = () => {
+    try {
+      localStorage.removeItem(BUILDER_DRAFT_STORAGE_KEY);
+    } catch {
+      // Best-effort cleanup.
+    }
+    setSavedDraft(null);
+  };
+
   const openConfig = (
     next: AgentDraft,
     templateId: string,
-    options?: { request?: string; notice?: string | null },
+    options?: { request?: string; notice?: string | null; summary?: string; changes?: FieldChange[] },
   ) => {
     setSelectedTemplateId(templateId);
     setConfigText(stringifyAgentDraft(next));
-    setLastRequest(options?.request ?? next.name);
     setDraftNotice(options?.notice ?? null);
+    const request = options?.request ?? next.name;
+    const now = Date.now();
+    setMessages([
+      { id: now, role: "user", text: request },
+      {
+        id: now + 1,
+        role: "assistant",
+        summary: options?.summary ?? "已生成配置草案，可继续对话调整，或直接在右侧编辑。",
+        changes: options?.changes ?? [],
+      },
+    ]);
     setView("edit");
     // Methodology gate: evaluation definition comes before design.
     setStep("eval");
@@ -305,21 +428,25 @@ export default function NewAgentPage() {
     setDrafting(true);
     setError(null);
     setDraftNotice(null);
-    setLastRequest(trimmed);
+    setDraftProgress(null);
     try {
       const generated = await draftAgentConfigWithModel(
         trimmed,
         runtimeChoicesForDrafting(harnesses, runtimes),
         selectedModel,
-        { skills },
+        { skills, onProgress: setDraftProgress },
       );
       const generatedDraft = parseAgentDraftConfig(generated);
       if (generatedDraft.error) throw new Error(generatedDraft.error);
-      openConfig(
-        selectedModel ? { ...generatedDraft.draft, model: selectedModel } : generatedDraft.draft,
-        templateId,
-        { request: trimmed },
-      );
+      const nextDraft = selectedModel
+        ? { ...generatedDraft.draft, model: selectedModel }
+        : generatedDraft.draft;
+      openConfig(nextDraft, templateId, {
+        request: trimmed,
+        summary: "已根据描述生成初始配置：",
+        changes: diffAgentDrafts(withRuntimeDefaultTools(AGENT_TEMPLATES[0].draft, runtimes), nextDraft),
+      });
+      setPrompt("");
     } catch (err) {
       const isServiceError =
         err instanceof Error &&
@@ -334,6 +461,59 @@ export default function NewAgentPage() {
       });
     } finally {
       setDrafting(false);
+      setDraftProgress(null);
+    }
+  };
+
+  const refineFromPrompt = async () => {
+    const trimmed = prompt.trim();
+    if (!trimmed || drafting) return;
+    const before = parseAgentDraftConfig(configText).draft;
+    setDrafting(true);
+    setError(null);
+    setDraftNotice(null);
+    setDraftProgress(null);
+    const userMessageId = Date.now();
+    setMessages((prev) => [...prev, { id: userMessageId, role: "user", text: trimmed }]);
+    try {
+      const updated = await refineAgentConfigWithModel(
+        trimmed,
+        configText,
+        runtimeChoicesForDrafting(harnesses, runtimes),
+        before.model.trim(),
+        { skills, onProgress: setDraftProgress },
+      );
+      const parsedNext = parseAgentDraftConfig(updated);
+      if (parsedNext.error) throw new Error(parsedNext.error);
+      const changes = diffAgentDrafts(before, parsedNext.draft);
+      setConfigText(stringifyAgentDraft(parsedNext.draft));
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: userMessageId + 1,
+          role: "assistant",
+          summary:
+            changes.length === 0
+              ? "配置没有需要修改的地方。"
+              : `已应用 ${changes.length} 处修改：`,
+          changes,
+        },
+      ]);
+      setPrompt("");
+    } catch (err) {
+      const message = apiErrorMessage(err, "修改配置失败");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: userMessageId + 1,
+          role: "assistant",
+          summary: `修改失败：${message}。当前配置保持不变，可换个说法重试。`,
+          changes: [],
+        },
+      ]);
+    } finally {
+      setDrafting(false);
+      setDraftProgress(null);
     }
   };
 
@@ -351,13 +531,23 @@ export default function NewAgentPage() {
       setError(current.error);
       return;
     }
+    const problems = validateDraftForCreate(current.draft);
+    if (problems.length > 0) {
+      setError(`创建前请先修正：${problems.join("；")}`);
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       const agent = await createAgent(createInputFromDraft(current.draft, mcpIntegrations));
+      try {
+        localStorage.removeItem(BUILDER_DRAFT_STORAGE_KEY);
+      } catch {
+        // Best-effort cleanup.
+      }
       router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(apiErrorMessage(err, "创建智能体失败"));
     } finally {
       setSaving(false);
     }
@@ -402,7 +592,7 @@ export default function NewAgentPage() {
               Agents
             </Button>
             <span className="text-muted-foreground">/</span>
-            <span className="truncate text-sm font-semibold">Create agent</span>
+            <span className="truncate text-sm font-semibold">创建智能体</span>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -412,7 +602,7 @@ export default function NewAgentPage() {
               className="hidden sm:inline-flex"
             >
               <ExternalLink className="size-3.5" />
-              Import agent
+              导入智能体
             </Button>
             {step === "config" && (
               <Button size="sm" onClick={() => setStep("review")} disabled={Boolean(parsed.error)}>
@@ -432,7 +622,7 @@ export default function NewAgentPage() {
               onClick={() => router.push("/agents/")}
               className="hidden sm:inline-flex"
             >
-              Cancel
+              取消
             </Button>
             <ThemeToggle />
           </div>
@@ -441,7 +631,23 @@ export default function NewAgentPage() {
         <main className="min-h-0 flex-1 overflow-y-auto bg-[#fbfbfa] text-[#20201f] dark:bg-background dark:text-foreground">
           <PlatformSteps
             activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
+            canEnterConfig={evalGatePassed(draft.design)}
+            canEnterReview={!parsed.error && draft.name.trim().length > 0}
+            onNavigate={setStep}
           />
+          {savedDraft && step === "create" && (
+            <div className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
+              <span className="min-w-0 flex-1">
+                检测到未完成的草稿（{savedDraftAgeLabel(savedDraft.savedAt)}保存），是否继续编辑？
+              </span>
+              <Button type="button" size="sm" onClick={restoreSavedDraft}>
+                恢复草稿
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={discardSavedDraft}>
+                丢弃
+              </Button>
+            </div>
+          )}
           {step === "eval" ? (
             <EvalStep
               draft={draft}
@@ -464,6 +670,7 @@ export default function NewAgentPage() {
             <CreateStep
               draft={draft}
               drafting={drafting}
+              draftProgress={draftProgress}
               modelsError={modelsError}
               modelsLoading={modelsLoading}
               prompt={prompt}
@@ -491,8 +698,9 @@ export default function NewAgentPage() {
               draft={draft}
               draftNotice={draftNotice}
               drafting={drafting}
+              draftProgress={draftProgress}
               error={error}
-              lastRequest={lastRequest}
+              messages={messages}
               agents={agents}
               harnesses={harnesses}
               mcpError={mcpError}
@@ -516,7 +724,7 @@ export default function NewAgentPage() {
               onCreate={() => setStep("review")}
               onDraftChange={updateDraft}
               onPromptChange={setPrompt}
-              onRefine={draftFromPrompt}
+              onRefine={refineFromPrompt}
               onViewChange={setView}
             />
           )}
@@ -527,17 +735,50 @@ export default function NewAgentPage() {
   );
 }
 
-function PlatformSteps({ activeStep }: { activeStep: 1 | 2 | 3 | 4 }) {
+const BUILDER_STEPS: Array<{ index: 1 | 2 | 3 | 4; step: BuilderStep; label: string; suffix?: string }> = [
+  { index: 1, step: "create", label: "定位 Fit" },
+  { index: 2, step: "eval", label: "评估 Eval" },
+  { index: 3, step: "config", label: "设计 Design" },
+  { index: 4, step: "review", label: "复核 Review", suffix: "POST /v1/agents" },
+];
+
+function PlatformSteps({
+  activeStep,
+  canEnterConfig,
+  canEnterReview,
+  onNavigate,
+}: {
+  activeStep: 1 | 2 | 3 | 4;
+  canEnterConfig: boolean;
+  canEnterReview: boolean;
+  onNavigate: (step: BuilderStep) => void;
+}) {
+  const stepEnabled = (index: 1 | 2 | 3 | 4): boolean => {
+    // Backward navigation is always allowed; forward jumps must pass the
+    // same gates as the in-page buttons (eval gate, then a valid config).
+    if (index <= activeStep) return true;
+    if (index === 2) return activeStep >= 1;
+    if (index === 3) return canEnterConfig;
+    return canEnterConfig && canEnterReview;
+  };
   return (
     <div className="border-b border-border bg-background/80 px-4 py-3 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-3">
-        <StepMarker active={activeStep === 1} index={1} label="定位 Fit" />
-        <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 2} index={2} label="评估 Eval" />
-        <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 3} index={3} label="设计 Design" />
-        <div className="h-px w-10 bg-border" />
-        <StepMarker active={activeStep === 4} index={4} label="复核 Review" suffix="POST /v1/agents" />
+        {BUILDER_STEPS.map((entry, position) => (
+          <div key={entry.step} className="flex min-w-0 items-center gap-3">
+            {position > 0 && <div className="h-px w-10 bg-border" />}
+            <StepMarker
+              active={activeStep === entry.index}
+              clickable={stepEnabled(entry.index)}
+              index={entry.index}
+              label={entry.label}
+              suffix={entry.suffix}
+              onClick={() => {
+                if (entry.index !== activeStep && stepEnabled(entry.index)) onNavigate(entry.step);
+              }}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -545,17 +786,31 @@ function PlatformSteps({ activeStep }: { activeStep: 1 | 2 | 3 | 4 }) {
 
 function StepMarker({
   active,
+  clickable,
   index,
   label,
   suffix,
+  onClick,
 }: {
   active: boolean;
+  clickable: boolean;
   index: number;
   label: string;
   suffix?: string;
+  onClick: () => void;
 }) {
   return (
-    <div className={cn("flex min-w-0 items-center gap-2", active ? "text-foreground" : "text-muted-foreground")}>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!clickable}
+      className={cn(
+        "flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5",
+        active ? "text-foreground" : "text-muted-foreground",
+        clickable && !active && "cursor-pointer hover:text-foreground",
+        !clickable && "cursor-default opacity-60",
+      )}
+    >
       <span
         className={cn(
           "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
@@ -566,7 +821,7 @@ function StepMarker({
       </span>
       <span className="truncate text-sm font-semibold">{label}</span>
       {suffix && <span className="hidden font-mono text-xs text-muted-foreground sm:inline">{suffix}</span>}
-    </div>
+    </button>
   );
 }
 
@@ -820,6 +1075,9 @@ function ReviewStep({
 }) {
   const design: AgentDesign = draft.design ?? blankDesign();
   const governance = design.governance ?? blankDesign().governance!;
+  const attachedMcpMissingCredentials = draft.mcp_server_ids
+    .map((id) => mcpIntegrations.find((integration) => integration.id === id))
+    .filter((integration): integration is Integration => Boolean(integration && !integration.connected));
 
   const setGovernance = (patch: Partial<typeof governance>) => {
     const nextGovernance = { ...governance, ...patch };
@@ -860,6 +1118,16 @@ function ReviewStep({
       ok: governance.timeout_minutes > 0,
       label: "运行超时上限",
       detail: `单次运行上限 ${governance.timeout_minutes} 分钟。`,
+    },
+    {
+      ok: attachedMcpMissingCredentials.length === 0,
+      label: "MCP 凭证",
+      detail:
+        draft.mcp_server_ids.length === 0
+          ? "未挂载 MCP 服务器。"
+          : attachedMcpMissingCredentials.length === 0
+            ? `已挂载 ${draft.mcp_server_ids.length} 个 MCP 服务器，凭证均已连接。`
+            : `${attachedMcpMissingCredentials.map((item) => item.name).join("、")} 尚未配置凭证，运行时调用会失败。可先创建，再到 MCP 注册表补齐。`,
     },
     {
       ok: evalGatePassed(design),
@@ -932,13 +1200,157 @@ function ReviewStep({
           <ConfigPreview draft={draft} mcpIntegrations={mcpIntegrations} />
         </section>
       </div>
+      <PreCreateTestRun draft={draft} />
     </div>
+  );
+}
+
+interface TestRunCase {
+  key: string;
+  category: string;
+  categoryLabel: string;
+  input: string;
+}
+
+type TestRunOutcome =
+  | { state: "running" }
+  | { state: "done"; result: AgentCaseTestResult }
+  | { state: "error"; message: string };
+
+const TEST_CASE_CATEGORIES: Array<{
+  key: "normal_cases" | "edge_cases" | "recovery_cases" | "safety_cases";
+  category: string;
+  label: string;
+}> = [
+  { key: "normal_cases", category: "normal", label: "正常" },
+  { key: "edge_cases", category: "edge", label: "边界" },
+  { key: "recovery_cases", category: "recovery", label: "恢复" },
+  { key: "safety_cases", category: "safety", label: "安全" },
+];
+
+function PreCreateTestRun({ draft }: { draft: AgentDraft }) {
+  const [outcomes, setOutcomes] = useState<Record<string, TestRunOutcome>>({});
+  const evaluation = draft.design?.evaluation;
+  const successCriteria = evaluation?.success_criteria?.trim() ?? "";
+
+  const cases: TestRunCase[] = evaluation
+    ? TEST_CASE_CATEGORIES.flatMap(({ key, category, label }) =>
+        (evaluation[key] ?? []).map((input, index) => ({
+          key: `${category}-${index}`,
+          category,
+          categoryLabel: label,
+          input,
+        })),
+      )
+    : [];
+  const anyRunning = Object.values(outcomes).some((outcome) => outcome.state === "running");
+
+  const runCase = async (testCase: TestRunCase) => {
+    setOutcomes((prev) => ({ ...prev, [testCase.key]: { state: "running" } }));
+    try {
+      const result = await testRunAgentCase({
+        system: draft.system,
+        model: draft.model.trim() || undefined,
+        category: testCase.category,
+        caseInput: testCase.input,
+        successCriteria,
+      });
+      setOutcomes((prev) => ({ ...prev, [testCase.key]: { state: "done", result } }));
+    } catch (err) {
+      setOutcomes((prev) => ({
+        ...prev,
+        [testCase.key]: { state: "error", message: apiErrorMessage(err, "试跑失败") },
+      }));
+    }
+  };
+
+  return (
+    <section className="mt-6 rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">创建前试跑</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            用评估用例直接对话草案中的 system prompt 和模型，并按成功标准自动判定。试跑为纯模型对话，不挂载工具、MCP 和凭证。
+          </p>
+        </div>
+      </div>
+      {!successCriteria || cases.length === 0 ? (
+        <p className="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          缺少成功标准或评估用例，返回“评估 Eval”步骤补充后即可试跑。
+        </p>
+      ) : (
+        <ul className="mt-3 grid gap-2">
+          {cases.map((testCase) => {
+            const outcome = outcomes[testCase.key];
+            return (
+              <li key={testCase.key} className="rounded-md border border-border p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Badge variant="outline" className="h-5 rounded-md text-[10px]">
+                      {testCase.categoryLabel}
+                    </Badge>
+                    <p className="mt-1.5 text-sm leading-6">{testCase.input}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={anyRunning}
+                    onClick={() => void runCase(testCase)}
+                  >
+                    {outcome?.state === "running" ? (
+                      <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+                    ) : (
+                      <Sparkles className="size-3.5" />
+                    )}
+                    {outcome?.state === "done" || outcome?.state === "error" ? "重跑" : "试跑"}
+                  </Button>
+                </div>
+                {outcome?.state === "error" && (
+                  <p className="mt-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {outcome.message}
+                  </p>
+                )}
+                {outcome?.state === "done" && (
+                  <div className="mt-2 grid gap-2">
+                    <div
+                      className={cn(
+                        "flex items-start gap-2 rounded-md px-3 py-2 text-xs",
+                        outcome.result.pass
+                          ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
+                          : "bg-destructive/10 text-destructive",
+                      )}
+                    >
+                      {outcome.result.pass ? (
+                        <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
+                      ) : (
+                        <XCircle className="mt-0.5 size-3.5 shrink-0" />
+                      )}
+                      <span className="leading-5">{outcome.result.verdict}</span>
+                    </div>
+                    <details className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        查看回答
+                      </summary>
+                      <pre className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-5">
+                        {outcome.result.answer}
+                      </pre>
+                    </details>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 
 function CreateStep({
   draft,
   drafting,
+  draftProgress,
   modelsError,
   modelsLoading,
   prompt,
@@ -954,6 +1366,7 @@ function CreateStep({
 }: {
   draft: AgentDraft;
   drafting: boolean;
+  draftProgress: string | null;
   modelsError: string | null;
   modelsLoading: boolean;
   prompt: string;
@@ -981,8 +1394,9 @@ function CreateStep({
               </div>
               <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                 <Loader2 className="size-4 animate-spin text-foreground motion-reduce:animate-none" />
-                Drafting config.yaml
+                {draftProgress ? "正在生成 config.yaml" : "正在分析需求..."}
               </div>
+              {draftProgress && <StreamingPreview text={draftProgress} />}
             </div>
           ) : (
             <div>
@@ -1023,7 +1437,7 @@ function CreateStep({
                 onGenerate();
               }
             }}
-            placeholder="Describe your agent..."
+            placeholder="描述你想要的智能体..."
             className="min-h-24 resize-none border-0 bg-transparent px-4 py-4 text-[15px] text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-3 py-3">
@@ -1040,7 +1454,7 @@ function CreateStep({
               className="gap-1.5"
             >
               <Bot className="size-3.5" />
-              Use UI editor
+              使用 UI 编辑器
             </Button>
             <div className="ml-auto" />
             <Button
@@ -1049,7 +1463,7 @@ function CreateStep({
               onClick={onGenerate}
               disabled={!prompt.trim() || drafting}
               className="size-9 rounded-full"
-              aria-label="Draft config"
+              aria-label="生成配置"
             >
               {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
             </Button>
@@ -1063,6 +1477,23 @@ function CreateStep({
           onSelect={onTemplateSelect}
         />
       </section>
+    </div>
+  );
+}
+
+function StreamingPreview({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const tail = lines.slice(-10).join("\n");
+  return (
+    <div className="w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-[#2b2a28] px-4 py-3 text-left">
+      <div className="flex items-center justify-between text-[11px] text-[#9d9384]">
+        <span className="font-mono">config.yaml</span>
+        <span className="font-mono">{lines.length} lines</span>
+      </div>
+      <pre className="mt-2 max-h-48 overflow-hidden whitespace-pre-wrap font-mono text-[12px] leading-5 text-[#e8b28c]">
+        {tail}
+        <span className="animate-pulse motion-reduce:animate-none">▌</span>
+      </pre>
     </div>
   );
 }
@@ -1084,8 +1515,9 @@ function ConfigStep({
   draft,
   draftNotice,
   drafting,
+  draftProgress,
   error,
-  lastRequest,
+  messages,
   agents,
   harnesses,
   mcpError,
@@ -1115,8 +1547,9 @@ function ConfigStep({
   draft: AgentDraft;
   draftNotice: string | null;
   drafting: boolean;
+  draftProgress: string | null;
   error: string | null;
-  lastRequest: string;
+  messages: BuilderChatMessage[];
   agents: Agent[];
   harnesses: RuntimeHarness[];
   mcpError: string | null;
@@ -1143,10 +1576,30 @@ function ConfigStep({
   return (
     <div className="grid min-h-[calc(100vh-6.5rem)] gap-6 px-4 py-6 lg:grid-cols-[minmax(360px,0.82fr)_minmax(560px,1.18fr)]">
       <section className="flex min-h-[560px] flex-col">
-        <div className="flex flex-1 items-center justify-center">
+        <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto py-2">
           <div className="w-full max-w-2xl">
-            <div className="ml-auto max-w-full whitespace-pre-wrap break-words rounded-lg bg-foreground px-4 py-3 text-sm text-background">
-              {lastRequest || draft.name}
+            <div className="grid gap-3">
+              {messages.map((message) =>
+                message.role === "user" ? (
+                  <div
+                    key={message.id}
+                    className="ml-auto max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-foreground px-4 py-3 text-sm text-background"
+                  >
+                    {message.text}
+                  </div>
+                ) : (
+                  <AssistantChangeMessage key={message.id} message={message} />
+                ),
+              )}
+              {drafting && (
+                <div className="grid gap-2">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                    {draftProgress ? "正在修改配置" : "正在分析修改需求..."}
+                  </div>
+                  {draftProgress && <StreamingPreview text={draftProgress} />}
+                </div>
+              )}
             </div>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button type="button" onClick={onCreate} disabled={!canCreate || drafting}>
@@ -1157,7 +1610,7 @@ function ConfigStep({
                 variant="secondary"
                 onClick={() => document.getElementById("agent-config-refine")?.focus()}
               >
-                Keep refining
+                继续调整
               </Button>
             </div>
             {draftNotice && (
@@ -1192,7 +1645,7 @@ function ConfigStep({
                 onRefine();
               }
             }}
-            placeholder="Reply..."
+            placeholder="继续描述要修改的内容..."
             className="min-h-20 resize-none border-0 bg-transparent px-4 py-4 text-[15px] text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <div className="flex items-center border-t border-border bg-muted/30 px-3 py-3">
@@ -1203,7 +1656,7 @@ function ConfigStep({
               onClick={onRefine}
               disabled={!prompt.trim() || drafting}
               className="size-9 rounded-full"
-              aria-label="Refine config"
+              aria-label="调整配置"
             >
               {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
             </Button>
@@ -1259,12 +1712,12 @@ function ConfigStep({
               {parsedError ? (
                 <span className="flex items-center gap-1 text-xs text-red-300">
                   <XCircle className="size-3.5" />
-                  Invalid
+                  配置无效
                 </span>
               ) : (
                 <span className="flex items-center gap-1 text-xs text-emerald-300">
                   <CheckCircle2 className="size-3.5" />
-                  Ready
+                  就绪
                 </span>
               )}
               <Button
@@ -1273,8 +1726,8 @@ function ConfigStep({
                 variant="ghost"
                 onClick={onCopy}
                 className="text-[#c9c0b1] hover:bg-white/10 hover:text-white"
-                aria-label="Copy config"
-                title="Copy config"
+                aria-label="复制配置"
+                title="复制配置"
               >
                 <Clipboard className="size-4" />
               </Button>
@@ -1312,11 +1765,56 @@ function ConfigStep({
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 px-4 py-3 text-xs text-[#c9c0b1]">
             <span className="font-mono">{scheduleLabel(draft.cron, draft.timezone)}</span>
             <span className="hidden text-white/20 sm:inline">/</span>
-            <span className="font-mono">{draft.max_runtime_minutes} min max</span>
-            {copied && <span className="ml-auto text-emerald-300">Copied</span>}
+            <span className="font-mono">{draft.max_runtime_minutes} 分钟上限</span>
+            {copied && <span className="ml-auto text-emerald-300">已复制</span>}
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function AssistantChangeMessage({
+  message,
+}: {
+  message: Extract<BuilderChatMessage, { role: "assistant" }>;
+}) {
+  return (
+    <div className="mr-auto max-w-[92%] rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
+      <p className="leading-6 text-foreground">{message.summary}</p>
+      {message.changes.length > 0 && (
+        <ul className="mt-2 grid gap-1.5">
+          {message.changes.map((change) => (
+            <li
+              key={`${change.field}-${change.kind}`}
+              className="rounded-md bg-muted/40 px-2.5 py-1.5 font-mono text-xs leading-5 text-muted-foreground"
+            >
+              <span className="font-semibold text-foreground">{change.field}</span>
+              {change.detail ? (
+                <span className="ml-2">{change.detail}</span>
+              ) : change.added || change.removed ? (
+                <span className="ml-2">
+                  {(change.added ?? []).map((item) => (
+                    <span key={`add-${item}`} className="mr-2 text-emerald-600 dark:text-emerald-400">
+                      +{item}
+                    </span>
+                  ))}
+                  {(change.removed ?? []).map((item) => (
+                    <span key={`rm-${item}`} className="mr-2 text-red-600 dark:text-red-400">
+                      -{item}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <span className="ml-2">
+                  {change.before ? `${change.before} → ` : ""}
+                  {change.after ?? ""}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -1522,13 +2020,13 @@ function TemplateBrowser({
   return (
     <div className="flex h-full min-h-[560px] flex-col rounded-lg border border-border bg-card p-5 shadow-sm">
       <div className="mb-4">
-        <h2 className="text-lg font-semibold text-foreground">Browse templates</h2>
+        <h2 className="text-lg font-semibold text-foreground">浏览模板</h2>
         <div className="relative mt-4">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search templates"
+            placeholder="搜索模板"
             className="h-10 pl-9"
           />
         </div>
@@ -1618,6 +2116,7 @@ function AgentDraftControls({
   const selectedTools = new Set(draft.tools.map((tool) => tool.type).filter(Boolean));
   const selectedSubAgents = new Set(draft.sub_agents.map((agent) => agent.agent_id));
   const [vaultKeyInput, setVaultKeyInput] = useState("");
+  const [vaultKeyError, setVaultKeyError] = useState<string | null>(null);
   const setTool = (toolId: string, enabled: boolean) => {
     const next = new Set(selectedTools);
     if (enabled) next.add(toolId);
@@ -1647,7 +2146,12 @@ function AgentDraftControls({
   };
   const addVaultKey = () => {
     const key = vaultKeyInput.trim();
-    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return;
+    if (!key) return;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      setVaultKeyError("密钥名只能包含字母、数字和下划线，且不能以数字开头，例如 BROWSER_USE_API_KEY。");
+      return;
+    }
+    setVaultKeyError(null);
     update({ vault_keys: Array.from(new Set([...draft.vault_keys, key])) });
     setVaultKeyInput("");
   };
@@ -1676,7 +2180,7 @@ function AgentDraftControls({
             id="draft-description"
             value={draft.description}
             onChange={(event) => update({ description: event.target.value })}
-            placeholder="What this agent does"
+            placeholder="这个智能体做什么"
             className="border-white/10 bg-[#242321] text-[#f7f2e8] placeholder:text-[#9d9384]"
           />
         </div>
@@ -1691,13 +2195,33 @@ function AgentDraftControls({
             />
           </div>
           {modelsLoading && (
-            <p className="text-xs text-[#9d9384]">Loading runtime models...</p>
+            <p className="text-xs text-[#9d9384]">正在加载可用模型...</p>
           )}
           {modelsError && (
             <p className="text-xs text-red-300">{modelsError}</p>
           )}
         </div>
 
+        {harnesses.length === 0 && (
+          <div className="grid gap-1.5">
+            <Label className="text-[#c9c0b1]">Runtime</Label>
+            <div className="rounded-md border border-white/10 bg-white/5 px-3 py-3 text-xs text-[#9d9384]">
+              <p>没有已连接的运行时 harness，当前使用默认运行时 {runtimeLabel(draft.runtime)}。</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  window.location.href = "/runtimes/";
+                }}
+                className="mt-2 border-white/10 bg-white/5 text-[#f7f2e8] hover:bg-white/10 hover:text-white"
+              >
+                <ExternalLink className="size-3.5" />
+                去连接运行时
+              </Button>
+            </div>
+          </div>
+        )}
         {harnesses.length >= 1 && (
           <div className="grid gap-1.5">
             <Label className="text-[#c9c0b1]">Runtime</Label>
@@ -1738,6 +2262,9 @@ function AgentDraftControls({
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-[#9d9384]">
+              切换运行时会把已选工具重置为该运行时的默认工具集，并重新加载可用模型。
+            </p>
           </div>
         )}
 
@@ -1767,17 +2294,20 @@ function AgentDraftControls({
             <div className="grid gap-1">
               <Label className="text-sm font-medium">Vault Credentials</Label>
               <p className="max-w-xl text-xs leading-5 text-muted-foreground">
-                Attach secret names now, then save their values from the agent detail page.
+                先登记密钥名称，创建后在智能体详情页填写密钥值。
               </p>
             </div>
             <span className="shrink-0 font-mono text-xs text-muted-foreground">
-              {draft.vault_keys.length} attached
+              {draft.vault_keys.length} 已挂载
             </span>
           </div>
           <div className="flex gap-2">
             <Input
               value={vaultKeyInput}
-              onChange={(event) => setVaultKeyInput(event.target.value)}
+              onChange={(event) => {
+                setVaultKeyInput(event.target.value);
+                setVaultKeyError(null);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -1797,11 +2327,12 @@ function AgentDraftControls({
               className="border-white/10 bg-white/5 hover:bg-white/10"
             >
               <Plus className="size-3.5" />
-              Add Key
+              添加密钥
             </Button>
           </div>
+          {vaultKeyError && <p className="text-xs text-red-300">{vaultKeyError}</p>}
           {draft.vault_keys.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No vault credentials attached.</p>
+            <p className="text-xs text-muted-foreground">尚未挂载保险库凭证。</p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {draft.vault_keys.map((key) => (
@@ -1831,7 +2362,7 @@ function AgentDraftControls({
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Tools</Label>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.tools.length} selected
+              {draft.tools.length} 已选
             </span>
           </div>
           <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
@@ -1856,11 +2387,11 @@ function AgentDraftControls({
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Skills</Label>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.skill_ids.length} attached
+              {draft.skill_ids.length} 已挂载
             </span>
           </div>
           {skills.length === 0 ? (
-            <p className="text-xs text-[#9d9384]">No skills available.</p>
+            <p className="text-xs text-[#9d9384]">暂无可用技能。</p>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
               {skills.map((skill) => {
@@ -1882,7 +2413,7 @@ function AgentDraftControls({
                         <span className="truncate font-mono text-[#9d9384]">{skill.id}</span>
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
-                        {skill.description || "No description."}
+                        {skill.description || "暂无描述。"}
                       </div>
                     </div>
                   </label>
@@ -1897,11 +2428,11 @@ function AgentDraftControls({
             <div className="grid gap-1">
               <Label className="text-sm font-medium">MCP integrations</Label>
               <p className="max-w-xl text-xs leading-5 text-muted-foreground">
-                Attach managed MCP servers from the registry. Toolsets are rebuilt from these IDs when the agent is created.
+                从注册表挂载托管 MCP 服务器。创建智能体时会根据这些 ID 重建工具集。
               </p>
             </div>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.mcp_server_ids.length} attached
+              {draft.mcp_server_ids.length} 已挂载
             </span>
           </div>
           {mcpError && (
@@ -1924,9 +2455,9 @@ function AgentDraftControls({
           ) : mcpIntegrations.length === 0 ? (
             <div className="rounded-md border border-white/10 bg-white/5 px-3 py-4 text-center">
               <Plug className="mx-auto size-6 text-muted-foreground" />
-              <p className="mt-2 text-xs font-medium">No MCP servers available</p>
+              <p className="mt-2 text-xs font-medium">暂无可用的 MCP 服务器</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Add a server in the MCP registry, then return here to attach it.
+                先到 MCP 注册表添加服务器，再回到这里挂载。
               </p>
             </div>
           ) : (
@@ -1958,17 +2489,17 @@ function AgentDraftControls({
                         <span className="font-medium">{integration.name}</span>
                         <span className="truncate font-mono text-muted-foreground">{integration.id}</span>
                         <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[10px] text-[#c9c0b1]">
-                          {integration.source === "registry" ? "Registry" : "Catalog"}
+                          {integration.source === "registry" ? "注册表" : "目录"}
                         </Badge>
                         {integration.connected ? (
                           <Badge variant="secondary" className="h-5 rounded-md text-[10px]">
                             <KeyRound className="size-3" />
-                            Connected
+                            已连接
                           </Badge>
                         ) : (
                           <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[10px] text-[#c9c0b1]">
                             <KeyRound className="size-3" />
-                            Needs Credentials
+                            待配置凭证
                           </Badge>
                         )}
                       </div>
@@ -1983,8 +2514,8 @@ function AgentDraftControls({
                         <span className="inline-flex items-center gap-1">
                           <Wrench className="size-3" />
                           {availableTools.length > 0
-                            ? `${availableTools.length} tools available`
-                            : "Tools not discovered yet"}
+                            ? `${availableTools.length} 个可用工具`
+                            : "尚未发现工具"}
                         </span>
                       </div>
                       {(enabled || availableTools.length > 0) && (
@@ -2006,7 +2537,7 @@ function AgentDraftControls({
                       )}
                       {!canAttach && (
                         <p className="mt-2 text-xs text-destructive">
-                          This server is missing a URL, so it cannot be attached to a managed agent yet.
+                          该服务器缺少 URL，暂时无法挂载到托管智能体。
                         </p>
                       )}
                     </div>
@@ -2025,7 +2556,7 @@ function AgentDraftControls({
             className="justify-self-start border-white/10 bg-white/5 text-[#f7f2e8] hover:bg-white/10 hover:text-white"
           >
             <ExternalLink className="size-3.5" />
-            Manage MCP Servers
+            管理 MCP 服务器
           </Button>
         </div>
 
@@ -2034,15 +2565,15 @@ function AgentDraftControls({
             <div className="grid gap-1">
               <Label className="text-sm font-medium">Rules</Label>
               <p className="max-w-xl text-xs leading-5 text-[#9d9384]">
-                Rules are persistent prompt-level instructions. When attached, their Markdown is added to the agent context before the model runs.
+                规则是持久的 prompt 级指令。挂载后其 Markdown 内容会在模型运行前注入智能体上下文。
               </p>
             </div>
             <span className="shrink-0 font-mono text-xs text-[#9d9384]">
-              {draft.rule_ids.length} attached
+              {draft.rule_ids.length} 已挂载
             </span>
           </div>
           {rules.length === 0 ? (
-            <p className="text-xs text-[#9d9384]">No rules available.</p>
+            <p className="text-xs text-[#9d9384]">暂无可用规则。</p>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
               {rules.map((rule) => {
@@ -2064,7 +2595,7 @@ function AgentDraftControls({
                         <span className="truncate font-mono text-[#9d9384]">{rule.id}</span>
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
-                        {rule.description || "No description."}
+                        {rule.description || "暂无描述。"}
                       </div>
                     </div>
                   </label>
@@ -2078,12 +2609,12 @@ function AgentDraftControls({
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Sub-agents</Label>
             <span className="font-mono text-xs text-[#9d9384]">
-              {draft.sub_agents.length} attached
+              {draft.sub_agents.length} 已挂载
             </span>
           </div>
           {agents.length === 0 ? (
             <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-[#9d9384]">
-              Create helper agents first, then attach them here.
+              请先创建辅助智能体，再回到这里挂载。
             </div>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
@@ -2112,7 +2643,7 @@ function AgentDraftControls({
                         <span className="truncate font-mono text-[#9d9384]">{agent.id}</span>
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
-                        {agent.description || agent.model || "Saved LAP agent"}
+                        {agent.description || agent.model || "已保存的 LAP 智能体"}
                       </div>
                     </div>
                   </label>
@@ -2246,7 +2777,7 @@ function ConfigPreview({
         <div>
           <div className="text-xs uppercase text-[#9d9384]">System prompt</div>
           <pre className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/15 p-3 font-mono text-[12px] leading-6 text-[#f0d3bd]">
-            {draft.system || "No system prompt set."}
+            {draft.system || "未设置 system prompt。"}
           </pre>
         </div>
 
@@ -2293,7 +2824,7 @@ function PreviewItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-white/10 bg-black/10 p-3">
       <div className="text-xs uppercase text-[#9d9384]">{label}</div>
-      <div className="mt-1 break-words font-mono text-xs text-[#f7f2e8]">{value || "Not set"}</div>
+      <div className="mt-1 break-words font-mono text-xs text-[#f7f2e8]">{value || "未设置"}</div>
     </div>
   );
 }

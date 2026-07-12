@@ -118,23 +118,19 @@ fn require_active_server_url<'a>(
         .ok_or_else(|| GatewayError::InvalidConfig("MCP server has no URL configured".to_owned()))
 }
 
-/// GET /v1/mcp/server/{server_id}/tools
-pub async fn list_tools(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(server_id): Path<String>,
-) -> Result<Json<ToolsResponse>, GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
-    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
-    let server = repository::get(pool, &server_id)
-        .await?
-        .ok_or_else(|| GatewayError::NotFound(format!("MCP server not found: {server_id}")))?;
-    let url = require_active_server_url(&server, &server_id)?;
-    let user_id = super::caller_user_id(&headers, &state);
-    let enc_key_opt =
-        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref()).ok();
-    let vars: HashMap<String, String> = if let Some(key) = enc_key_opt.as_deref() {
-        build_vars_map(pool, &server, &user_id, key).await
+/// Shared core of the single and batch tools listings: resolve variables and
+/// credentials for one server, call its tools/list, and filter the result.
+async fn tools_for_server(
+    state: &Arc<AppState>,
+    pool: &sqlx::PgPool,
+    server: &McpServerRow,
+    server_id: &str,
+    user_id: &str,
+    enc_key_opt: Option<&str>,
+) -> Result<Vec<Value>, GatewayError> {
+    let url = require_active_server_url(server, server_id)?;
+    let vars: HashMap<String, String> = if let Some(key) = enc_key_opt {
+        build_vars_map(pool, server, user_id, key).await
     } else {
         HashMap::new()
     };
@@ -147,9 +143,30 @@ pub async fn list_tools(
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream");
     let req = apply_static_headers(req, &server.static_headers, &vars);
-    let req = apply_user_credential(
+    let req =
+        apply_user_credential(state, req, pool, server, server_id, user_id, enc_key_opt).await?;
+    Ok(filter_allowed_tools(
+        fetch_tools(req).await?,
+        &server.allowed_tools,
+    ))
+}
+
+/// GET /v1/mcp/server/{server_id}/tools
+pub async fn list_tools(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(server_id): Path<String>,
+) -> Result<Json<ToolsResponse>, GatewayError> {
+    require_any_gateway_key(&headers, &state).await?;
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    let server = repository::get(pool, &server_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound(format!("MCP server not found: {server_id}")))?;
+    let user_id = super::caller_user_id(&headers, &state);
+    let enc_key_opt =
+        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref()).ok();
+    let tools = tools_for_server(
         &state,
-        req,
         pool,
         &server,
         &server_id,
@@ -157,8 +174,61 @@ pub async fn list_tools(
         enc_key_opt.as_deref(),
     )
     .await?;
-    let tools = filter_allowed_tools(fetch_tools(req).await?, &server.allowed_tools);
     Ok(Json(ToolsResponse { server_id, tools }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchToolsEntry {
+    pub server_id: String,
+    pub tools: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchToolsResponse {
+    pub servers: Vec<BatchToolsEntry>,
+}
+
+/// GET /v1/mcp/servers/tools — tools for every active server in one call.
+/// Discovery runs concurrently; a server that fails reports its error inline
+/// instead of failing the whole batch, so the UI never falls back to N+1.
+pub async fn list_all_tools(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<BatchToolsResponse>, GatewayError> {
+    require_any_gateway_key(&headers, &state).await?;
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    let user_id = super::caller_user_id(&headers, &state);
+    let enc_key_opt =
+        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref()).ok();
+    let servers: Vec<McpServerRow> = repository::list(pool)
+        .await?
+        .into_iter()
+        .filter(|server| server.approval_status.as_deref() == Some("active"))
+        .collect();
+    let futures = servers.iter().map(|server| {
+        let server_id = server.server_id.clone();
+        let state = &state;
+        let user_id = &user_id;
+        let enc_key = enc_key_opt.as_deref();
+        async move {
+            match tools_for_server(state, pool, server, &server_id, user_id, enc_key).await {
+                Ok(tools) => BatchToolsEntry {
+                    server_id,
+                    tools,
+                    error: None,
+                },
+                Err(error) => BatchToolsEntry {
+                    server_id,
+                    tools: vec![],
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+    });
+    let servers = futures_util::future::join_all(futures).await;
+    Ok(Json(BatchToolsResponse { servers }))
 }
 
 async fn apply_user_credential(
