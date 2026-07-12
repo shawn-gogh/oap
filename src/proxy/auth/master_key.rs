@@ -8,12 +8,13 @@ use axum::http::{header::AUTHORIZATION, HeaderMap};
 
 use crate::{errors::GatewayError, proxy::state::AppState};
 
+/// TTL cache of key-validation results: value None caches a rejection.
+type KeyValidationCache = Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>;
+
 // Cache litellm key validation results for 60 s to avoid a round-trip on every request.
-static LITELLM_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>> =
-    Mutex::new(None);
+static LITELLM_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 // Same TTL cache for DB-backed gateway keys, keyed by key hash.
-static GATEWAY_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>> =
-    Mutex::new(None);
+static GATEWAY_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Identity derived from the presented key. `user_id` is the ownership
@@ -165,10 +166,7 @@ fn short_hash(key: &str) -> String {
     hash[..16].to_owned()
 }
 
-fn cache_get(
-    cache: &Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>,
-    key: &str,
-) -> Option<Option<AuthContext>> {
+fn cache_get(cache: &KeyValidationCache, key: &str) -> Option<Option<AuthContext>> {
     let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     match map.get(key) {
@@ -181,11 +179,7 @@ fn cache_get(
     }
 }
 
-fn cache_put(
-    cache: &Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>,
-    key: String,
-    ctx: Option<AuthContext>,
-) {
+fn cache_put(cache: &KeyValidationCache, key: String, ctx: Option<AuthContext>) {
     let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
     guard
         .get_or_insert_with(HashMap::new)

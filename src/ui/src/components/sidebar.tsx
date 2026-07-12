@@ -98,7 +98,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 15000);
     return () => clearInterval(t);
   }, []);
 

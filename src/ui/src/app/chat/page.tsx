@@ -48,9 +48,9 @@ import type { Frame } from "@/components/inspector-panel";
 import SessionsPage from "../sessions/page";
 
 const FALLBACK_MODELS = [
-  "anthropic/claude-opus-4-7",
-  "anthropic/claude-sonnet-4-5",
-  "anthropic/claude-opus-4-1",
+  "anthropic/claude-opus-4-8",
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-sonnet-5",
   "anthropic/claude-haiku-4-5",
 ];
 
@@ -644,6 +644,9 @@ function ChatInner() {
     }).catch(() => {}).finally(() => {
       if (activeSessionRef.current === sid) setSessionLoaded(true);
     });
+    // `sp` is read once for the transient ?resumed flag; depending on it
+    // would re-reset the whole session when router.replace strips the flag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
   useEffect(() => {
