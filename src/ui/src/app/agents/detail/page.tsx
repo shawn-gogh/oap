@@ -1139,15 +1139,15 @@ function AgentDetail() {
                     <div className="grid grid-cols-3 overflow-hidden rounded-md border border-border bg-muted/20 text-center sm:w-[300px]">
                       <div className="px-3 py-2">
                         <div className="text-base font-semibold">{memories.length}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Total</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total</div>
                       </div>
                       <div className="border-x border-border px-3 py-2">
                         <div className="text-base font-semibold">{alwaysOnCount}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Always-on</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Always-on</div>
                       </div>
                       <div className="px-3 py-2">
                         <div className="text-base font-semibold">{selectedKeys.size}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Selected</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Selected</div>
                       </div>
                     </div>
                   </div>
@@ -1300,7 +1300,7 @@ function AgentDetail() {
                                     <div className="flex flex-wrap items-center gap-2">
                                       <span className="font-mono text-xs font-medium">{memory.key}</span>
                                       {isAlwaysOn(memory) && (
-                                        <Badge variant="secondary" className="gap-1 text-[10px]">
+                                        <Badge variant="secondary" className="gap-1 text-[11px]">
                                           <Pin className="size-3" />
                                           Always-on
                                         </Badge>
@@ -1392,7 +1392,7 @@ function AgentDetail() {
                         >
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium">{s.title ?? "Untitled session"}</p>
-                            <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{s.id}</p>
+                            <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{s.id}</p>
                           </div>
                           {s.time?.created && (
                             <span className="shrink-0 text-xs text-muted-foreground">

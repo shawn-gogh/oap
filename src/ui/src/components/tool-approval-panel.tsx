@@ -238,7 +238,7 @@ function ArgumentField({
     <div className="space-y-1.5">
       <label className="flex items-center justify-between gap-2 text-xs">
         <span className="font-medium text-muted-foreground">{toFieldLabel(name)}</span>
-        <span className="truncate font-mono text-[10px] text-muted-foreground/70">{name}</span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground/70">{name}</span>
       </label>
       <textarea
         value={value}

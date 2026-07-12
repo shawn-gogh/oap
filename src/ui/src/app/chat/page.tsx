@@ -766,13 +766,13 @@ function ChatInner() {
                   <SelectItem value="github-copilot" className="text-xs font-mono">github copilot</SelectItem>
                   {savedAgents.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-[10px] text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Saved agents</div>
+                      <div className="px-2 py-1.5 text-[11px] text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Saved agents</div>
                       {savedAgents.map(a => (
                         <SelectItem key={a.id} value={a.id} className="text-xs font-mono">{a.name}</SelectItem>
                       ))}
                     </>
                   )}
-                  <div className="px-2 py-2 text-[10px] text-muted-foreground border-t mt-1">
+                  <div className="px-2 py-2 text-[11px] text-muted-foreground border-t mt-1">
                     切换智能体会打开一个新会话。
                   </div>
                 </SelectContent>
@@ -844,16 +844,16 @@ function ChatInner() {
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 flex-wrap items-center gap-2">
                   <span className="truncate text-sm font-semibold">{activeAgentName}</span>
-                  <span className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+                  <span className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-px font-mono text-[11px] text-muted-foreground">
                     {baseRuntime}
                   </span>
                   {activePrompt ? (
-                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
                       <CheckCircle2 className="size-3" />
                       prompt 已加载
                     </span>
                   ) : (
-                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                       <AlertTriangle className="size-3" />
                       无保存的 prompt
                     </span>
@@ -876,12 +876,12 @@ function ChatInner() {
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="truncate text-base font-semibold tracking-tight leading-5">{activeAgentName}</h2>
                         {activePrompt ? (
-                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
                             <CheckCircle2 className="size-3" />
                             prompt 已加载
                           </span>
                         ) : (
-                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                             <AlertTriangle className="size-3" />
                             无保存的 prompt
                           </span>
@@ -927,7 +927,7 @@ function ChatInner() {
                           {skills.map((skill) => (
                             <span
                               key={skill}
-                              className="inline-flex h-5 items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/10 px-1.5 font-mono text-[10px] text-sky-600 dark:text-sky-400"
+                              className="inline-flex h-5 items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/10 px-1.5 font-mono text-[11px] text-sky-600 dark:text-sky-400"
                             >
                               <Wrench className="size-3" />
                               {skill}
@@ -936,7 +936,7 @@ function ChatInner() {
                           {vaultKeys.map((key) => (
                             <span
                               key={key}
-                              className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 font-mono text-[10px] text-amber-600 dark:text-amber-400"
+                              className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 font-mono text-[11px] text-amber-600 dark:text-amber-400"
                             >
                               <KeyRound className="size-3" />
                               {key}
@@ -951,7 +951,7 @@ function ChatInner() {
                 <section className="min-w-0 bg-background/35 p-4">
                   <div className="flex items-center gap-2">
                     <div className="min-w-0">
-                      <h3 className="text-[13.5px] font-semibold tracking-tight">System prompt</h3>
+                      <h3 className="text-[13px] font-semibold tracking-tight">System prompt</h3>
                       <div className="text-[11px] text-muted-foreground">
                         {activePrompt ? "首轮运行前可在此查看。" : "未挂载可复用的智能体 prompt。"}
                       </div>
@@ -985,12 +985,12 @@ function ChatInner() {
                   <div className="mt-3">
                     {activePrompt ? (
                       promptOpen ? (
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-[12px] leading-relaxed text-foreground">
+                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground">
                           {activePrompt}
                         </pre>
                       ) : (
                         <div className="rounded-md border border-border bg-background p-3">
-                          <p className="line-clamp-4 font-mono text-[12px] leading-relaxed text-muted-foreground">
+                          <p className="line-clamp-4 font-mono text-xs leading-relaxed text-muted-foreground">
                             {shortPrompt(activePrompt)}
                           </p>
                         </div>

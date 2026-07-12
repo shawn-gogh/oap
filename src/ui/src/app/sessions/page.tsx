@@ -4,6 +4,8 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowUp, Bot, Loader2, MessageSquareText, Plus } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icons";
+import { EmptyState } from "@/components/empty-state";
+import { StatusDot } from "@/components/status-dot";
 import { Sidebar } from "@/components/sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -328,7 +330,7 @@ function SessionsStart() {
               >
                 <SelectTrigger className="h-10 w-auto min-w-[230px] max-w-[320px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Agent
                     </span>
                     <span className="truncate text-sm font-medium">
@@ -352,7 +354,7 @@ function SessionsStart() {
                   </SelectItem>
                   {savedAgents.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                      <div className="px-2 py-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
                         已保存的智能体
                       </div>
                       {savedAgents.map((agent) => {
@@ -371,7 +373,7 @@ function SessionsStart() {
                                 <span className="flex min-w-0 items-center gap-2">
                                   <span className="truncate text-sm font-medium">{agent.name}</span>
                                   {agent.model && (
-                                    <span className="shrink-0 rounded border border-border bg-muted/40 px-1 py-px font-mono text-[10px] text-muted-foreground">
+                                    <span className="shrink-0 rounded border border-border bg-muted/40 px-1 py-px font-mono text-[11px] text-muted-foreground">
                                       {agent.model}
                                     </span>
                                   )}
@@ -392,7 +394,7 @@ function SessionsStart() {
               <Select value={runtime} onValueChange={(value) => setRuntime((value ?? "") as AgentRuntimeId | "")}>
                 <SelectTrigger className="h-10 w-auto min-w-[260px] max-w-[340px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Runtime
                     </span>
                     <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted">
@@ -438,13 +440,10 @@ function SessionsStart() {
               </Select>
 
               <span className="ml-auto hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-                <span
-                  className={cn(
-                    "inline-block size-2 rounded-full",
-                    selectedAgentIsConfigured || selectedRuntime?.connected
-                      ? "bg-emerald-500"
-                      : "bg-amber-500",
-                  )}
+                <StatusDot
+                  tone={selectedAgentIsConfigured || selectedRuntime?.connected ? "success" : "warning"}
+                  label={runtimeStatusLabel}
+                  className="size-2"
                 />
                 {runtimeStatusLabel}
               </span>
@@ -513,12 +512,12 @@ function SessionsStart() {
                 ))}
               </div>
             ) : recentSessions.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border bg-card/60 px-4 py-6 text-center backdrop-blur">
-                <MessageSquareText className="mx-auto size-6 text-muted-foreground" />
-                <p className="mt-2 text-sm text-muted-foreground">
-                  还没有会话。在上方输入任务描述即可开始第一个会话。
-                </p>
-              </div>
+              <EmptyState
+                icon={MessageSquareText}
+                title="还没有会话。"
+                hint="在上方输入任务描述即可开始第一个会话。"
+                className="backdrop-blur"
+              />
             ) : (
               <div className="grid gap-2 sm:grid-cols-2">
                 {recentSessions.map((session) => (
@@ -571,13 +570,7 @@ function RecentSessionCard({
             <span className="truncate text-sm font-medium">
               {session.title || "未命名会话"}
             </span>
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                busy ? "bg-emerald-500" : "bg-muted-foreground/40",
-              )}
-              title={busy ? "运行中" : "空闲"}
-            />
+            <StatusDot tone={busy ? "success" : "idle"} label={busy ? "运行中" : "空闲"} />
           </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
             {agent && <span className="truncate">{agent.name}</span>}

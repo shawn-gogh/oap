@@ -681,7 +681,7 @@ export default function AgentsPage() {
                     return (
                       <div key={k} className="flex items-center gap-2 px-2.5 py-1.5">
                         <span className="text-xs font-mono min-w-0 flex-1 truncate">{k}</span>
-                        <Badge variant={isSet ? "secondary" : "outline"} className="text-[10px]">
+                        <Badge variant={isSet ? "secondary" : "outline"} className="text-[11px]">
                           {badgeLabel}
                         </Badge>
                         <Input

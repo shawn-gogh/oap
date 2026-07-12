@@ -525,7 +525,7 @@ export default function NewAgentPage() {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto bg-[#fbfbfa] text-[#20201f] dark:bg-background dark:text-foreground">
+        <main className="min-h-0 flex-1 overflow-y-auto bg-background text-foreground">
           <PlatformSteps
             activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
             canEnterConfig={evalGatePassed(draft.design)}

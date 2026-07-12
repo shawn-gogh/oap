@@ -89,7 +89,7 @@ export function CreateStep({
             </div>
           ) : (
             <div>
-              <h1 className="text-2xl font-semibold text-[#20201f] dark:text-foreground">
+              <h1 className="text-2xl font-semibold text-foreground">
                 用对话创建智能体
               </h1>
               <p className="mt-4 text-base text-muted-foreground">

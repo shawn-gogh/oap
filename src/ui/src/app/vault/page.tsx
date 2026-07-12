@@ -251,13 +251,13 @@ function SecretRow({
           <span className="font-mono tracking-widest">••••••••</span>
           {hasTimestamp && <span>· updated {timeAgo(entry.updated_at)}</span>}
           {isEnv && (
-            <span className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide">
+            <span className="rounded bg-muted px-1 py-0.5 text-[11px] uppercase tracking-wide">
               env
             </span>
           )}
           {!isEnv && (
             <span
-              className={`rounded px-1 py-0.5 text-[10px] uppercase tracking-wide ${
+              className={`rounded px-1 py-0.5 text-[11px] uppercase tracking-wide ${
                 entry.scope === "global"
                   ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
                   : "bg-muted text-muted-foreground"

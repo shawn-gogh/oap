@@ -346,7 +346,7 @@ export default function ObservabilityLogsPage() {
 
 function TableHeader() {
   return (
-    <div className={`grid ${TABLE_COLUMNS} border-b border-border bg-card px-4 py-2.5 text-[12px] font-semibold text-foreground`}>
+    <div className={`grid ${TABLE_COLUMNS} border-b border-border bg-card px-4 py-2.5 text-xs font-semibold text-foreground`}>
       <div>Time</div>
       <div>Type</div>
       <div>Status</div>
@@ -623,7 +623,7 @@ function PayloadBlock({
 function DetailStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 border-r border-border px-3 py-2 last:border-r-0">
-      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
       <div className="mt-1 truncate font-mono text-[13px] font-semibold text-foreground">
         {value}
       </div>
@@ -645,7 +645,7 @@ function InfoCard({
       tone === "error" ? "border-destructive/40" : "border-border"
     }`}>
       <div className="flex h-12 items-center gap-2 border-b border-border px-5">
-        <h3 className="text-[13.5px] font-semibold tracking-tight text-foreground">{title}</h3>
+        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">{title}</h3>
         {tone === "error" && (
           <span className="ml-auto rounded-md bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
             Captured on error

@@ -672,19 +672,19 @@ function ServerRow({
         </span>
       </td>
       <td className="px-4 py-3">
-        <Badge variant="outline" className="text-[10px] uppercase font-mono">
+        <Badge variant="outline" className="text-[11px] uppercase font-mono">
           {server.transport}
         </Badge>
       </td>
       <td className="px-4 py-3">
         <div className="flex flex-wrap gap-1">
           {server.is_byok && (
-            <Badge className="text-[10px] bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30">
+            <Badge className="text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30">
               BYOK
             </Badge>
           )}
           {server.available_on_public_internet && (
-            <Badge className="text-[10px] bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30">
+            <Badge className="text-[11px] bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30">
               Public
             </Badge>
           )}
@@ -693,7 +693,7 @@ function ServerRow({
       <td className="px-4 py-3">
         <Badge
           variant={status === "active" ? "secondary" : "outline"}
-          className={`text-[10px] ${
+          className={`text-[11px] ${
             status === "active"
               ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
               : "text-muted-foreground"
@@ -754,7 +754,7 @@ function McpTemplatesPanel({ onOpenGmail }: { onOpenGmail: () => void }) {
           <div className="mt-5">
             <div className="flex items-center gap-2">
               <h3 className="text-base font-semibold tracking-tight">Gmail</h3>
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 OAuth
               </span>
             </div>
@@ -766,7 +766,7 @@ function McpTemplatesPanel({ onOpenGmail }: { onOpenGmail: () => void }) {
             {GMAIL_TEMPLATE_TOOLS.slice(0, 4).map((tool) => (
               <span
                 key={tool}
-                className="rounded border border-border bg-background/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                className="rounded border border-border bg-background/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
               >
                 {tool}
               </span>
@@ -965,7 +965,7 @@ function ProxyBaseUrlPanel({
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <Label htmlFor="mcp-proxy-base-url">Gateway public URL</Label>
-            <Badge variant="outline" className="text-[10px] uppercase">
+            <Badge variant="outline" className="text-[11px] uppercase">
               {sourceLabel}
             </Badge>
           </div>
@@ -1017,7 +1017,7 @@ function SectionHeader({ label, tooltip }: { label: string; tooltip: string }) {
   const [show, setShow] = useState(false);
   return (
     <div className="flex items-start gap-1.5">
-      <span className="text-[13.5px] font-semibold tracking-tight">{label}</span>
+      <span className="text-[13px] font-semibold tracking-tight">{label}</span>
       <div className="relative">
         <button
           type="button"
@@ -1080,13 +1080,13 @@ function VariablesTable({
         <div className="rounded-md border border-border overflow-hidden">
           {/* header */}
           <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-0 border-b border-border bg-muted/40">
-            <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
               Variable name
             </div>
-            <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
               Description
             </div>
-            <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
               Scope
             </div>
             <div className="w-8" />
@@ -1145,7 +1145,7 @@ function VariablesTable({
                 <div className="px-3 pb-2 pt-0 bg-muted/20 border-t border-dashed border-border">
                   <Label
                     htmlFor={`var-value-${idx}`}
-                    className="block text-[10px] text-muted-foreground mb-1 mt-1 font-normal"
+                    className="block text-[11px] text-muted-foreground mb-1 mt-1 font-normal"
                   >
                     Value
                     <button
@@ -1215,10 +1215,10 @@ function StaticHeadersTable({
       {headers.length > 0 && (
         <div className="rounded-md border border-border overflow-hidden">
           <div className="grid grid-cols-[1fr_1fr_auto] gap-0 border-b border-border bg-muted/40">
-            <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
               Header name
             </div>
-            <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
               Value
             </div>
             <div className="w-8" />
@@ -1343,7 +1343,7 @@ function TestConnectionPanel({
         <div className="space-y-2">
           {instanceVars.map((v) => (
             <div key={v.name} className="space-y-1">
-              <Label htmlFor={`test-instance-${v.name}`} className="text-[10px] text-muted-foreground font-mono font-normal">
+              <Label htmlFor={`test-instance-${v.name}`} className="text-[11px] text-muted-foreground font-mono font-normal">
                 {v.name}{" "}
                 <span className="text-muted-foreground/60">(instance — pre-filled)</span>
               </Label>
@@ -1358,7 +1358,7 @@ function TestConnectionPanel({
           ))}
           {perUserVars.map((v) => (
             <div key={v.name} className="space-y-1">
-              <Label htmlFor={`test-user-${v.name}`} className="text-[10px] font-mono font-normal">
+              <Label htmlFor={`test-user-${v.name}`} className="text-[11px] font-mono font-normal">
                 Test value for{" "}
                 <span className="font-semibold">{v.name}</span>
                 {v.description && (
@@ -1401,7 +1401,7 @@ function TestConnectionPanel({
 
       {result && "tools" in result && (
         <div className="space-y-1">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
+          <p className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">
             Tools returned ({result.tools.length})
           </p>
           {result.tools.length === 0 ? (

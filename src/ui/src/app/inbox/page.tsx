@@ -346,7 +346,7 @@ function InboxInner() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <span className="truncate text-sm font-medium">{item.title}</span>
-                              <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
                                 {timeAgo(item.createdAt)}
                               </span>
                             </div>

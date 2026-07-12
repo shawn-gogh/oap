@@ -589,16 +589,16 @@ function AgentEdit() {
                                   <span className="truncate font-mono text-muted-foreground">
                                     {integration.id}
                                   </span>
-                                  <Badge variant="outline" className="h-5 rounded-md text-[10px]">
+                                  <Badge variant="outline" className="h-5 rounded-md text-[11px]">
                                     {integration.source === "registry" ? "Registry" : "Saved"}
                                   </Badge>
                                   {integration.connected ? (
-                                    <Badge variant="secondary" className="h-5 rounded-md text-[10px]">
+                                    <Badge variant="secondary" className="h-5 rounded-md text-[11px]">
                                       <KeyRound className="size-3" />
                                       Connected
                                     </Badge>
                                   ) : (
-                                    <Badge variant="outline" className="h-5 rounded-md text-[10px]">
+                                    <Badge variant="outline" className="h-5 rounded-md text-[11px]">
                                       <KeyRound className="size-3" />
                                       Needs Credentials
                                     </Badge>
@@ -624,13 +624,13 @@ function AgentEdit() {
                                     {previewTools.map((tool) => (
                                       <span
                                         key={tool}
-                                        className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                                        className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
                                       >
                                         {tool}
                                       </span>
                                     ))}
                                     {remainingTools > 0 && (
-                                      <span className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                                      <span className="rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                                         +{remainingTools} more
                                       </span>
                                     )}

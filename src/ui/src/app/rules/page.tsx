@@ -181,7 +181,7 @@ export default function RulesPage() {
                       <div className="font-medium leading-none group-hover:underline">
                         {rule.name}
                       </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
                         {rule.id}
                       </div>
                     </button>

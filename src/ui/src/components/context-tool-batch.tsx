@@ -39,7 +39,7 @@ export function ContextToolBatch({ parts }: { parts: ToolPart[] }) {
         )}
         <span className="min-w-0 truncate text-[13px]">
           {summarize(parts)}
-          {firstDesc && !open && <span className="mono ml-1.5 text-[12px] text-muted-foreground/70">{firstDesc}</span>}
+          {firstDesc && !open && <span className="mono ml-1.5 text-xs text-muted-foreground/70">{firstDesc}</span>}
         </span>
         <ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
       </button>

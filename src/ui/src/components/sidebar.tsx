@@ -296,7 +296,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 <Icon className="size-4" />
                 <span className="hidden sm:inline">{item.label}</span>
                 {badge > 0 && (
-                  <span className="absolute ml-7 mt-[-18px] flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white sm:static sm:ml-auto sm:mt-0 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-[11px]">
+                  <span className="absolute ml-7 mt-[-18px] flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-semibold text-white sm:static sm:ml-auto sm:mt-0 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-[11px]">
                     {badge}
                   </span>
                 )}
@@ -339,7 +339,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium">{title}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground truncate">
+                    <div className="font-mono text-[11px] text-muted-foreground truncate">
                       {(s.agent ?? s.harness) === "claude-code" ? "cc" : (s.agent ?? s.harness) === "github-copilot" ? "gh" : "oc"} · {short} · {timeAgo(s.time?.created)}
                     </div>
                   </div>

@@ -237,7 +237,7 @@ export default function RoutinesPage() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-medium">{routine.name}</span>
-                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                         {routine.status}
                       </span>
                     </div>

@@ -185,7 +185,7 @@ export function ConfigStep({
       </section>
 
       <section className="min-h-0">
-        <div className="flex h-full min-h-[560px] flex-col overflow-hidden rounded-lg border border-[#343330] bg-[#2b2a28] text-[#f7f2e8] shadow-[0_18px_70px_rgba(15,23,42,0.16)]">
+        <div className="flex h-full min-h-[560px] flex-col overflow-hidden rounded-lg border border-editor-border bg-editor-surface text-editor-foreground shadow-[0_18px_70px_rgba(15,23,42,0.16)]">
           <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
             <div className="flex items-center gap-1">
               <Button
@@ -194,8 +194,8 @@ export function ConfigStep({
                 variant={view === "config" ? "secondary" : "ghost"}
                 onClick={() => onViewChange("config")}
                 className={cn(
-                  "h-8 text-[#c9c0b1] hover:bg-white/10 hover:text-white",
-                  view === "config" && "bg-white text-[#1b1b1a] hover:bg-white",
+                  "h-8 text-editor-muted hover:bg-white/10 hover:text-white",
+                  view === "config" && "bg-white text-editor-inverse hover:bg-white",
                 )}
               >
                 <Code2 className="size-3.5" />
@@ -207,8 +207,8 @@ export function ConfigStep({
                 variant={view === "preview" ? "secondary" : "ghost"}
                 onClick={() => onViewChange("preview")}
                 className={cn(
-                  "h-8 text-[#c9c0b1] hover:bg-white/10 hover:text-white",
-                  view === "preview" && "bg-white text-[#1b1b1a] hover:bg-white",
+                  "h-8 text-editor-muted hover:bg-white/10 hover:text-white",
+                  view === "preview" && "bg-white text-editor-inverse hover:bg-white",
                 )}
               >
                 <FileSearch className="size-3.5" />
@@ -220,8 +220,8 @@ export function ConfigStep({
                 variant={view === "edit" ? "secondary" : "ghost"}
                 onClick={() => onViewChange("edit")}
                 className={cn(
-                  "h-8 text-[#c9c0b1] hover:bg-white/10 hover:text-white",
-                  view === "edit" && "bg-white text-[#1b1b1a] hover:bg-white",
+                  "h-8 text-editor-muted hover:bg-white/10 hover:text-white",
+                  view === "edit" && "bg-white text-editor-inverse hover:bg-white",
                 )}
               >
                 <Bot className="size-3.5" />
@@ -245,7 +245,7 @@ export function ConfigStep({
                 size="icon-sm"
                 variant="ghost"
                 onClick={onCopy}
-                className="text-[#c9c0b1] hover:bg-white/10 hover:text-white"
+                className="text-editor-muted hover:bg-white/10 hover:text-white"
                 aria-label="复制配置"
                 title="复制配置"
               >
@@ -275,14 +275,14 @@ export function ConfigStep({
               value={configText}
               onChange={(event) => onConfigChange(event.target.value)}
               spellCheck={false}
-              className="min-h-0 flex-1 resize-none rounded-none border-0 bg-[#2b2a28] px-5 py-4 font-mono text-[13px] leading-6 text-[#e8b28c] shadow-none outline-none focus-visible:ring-0"
+              className="min-h-0 flex-1 resize-none rounded-none border-0 bg-editor-surface px-5 py-4 font-mono text-[13px] leading-6 text-editor-accent shadow-none outline-none focus-visible:ring-0"
               aria-label="Agent YAML config"
             />
           ) : (
             <ConfigPreview draft={draft} mcpIntegrations={mcpIntegrations} />
           )}
 
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 px-4 py-3 text-xs text-[#c9c0b1]">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 px-4 py-3 text-xs text-editor-muted">
             <span className="font-mono">{scheduleLabel(draft.cron, draft.timezone)}</span>
             <span className="hidden text-white/20 sm:inline">/</span>
             <span className="font-mono">{draft.max_runtime_minutes} 分钟上限</span>
