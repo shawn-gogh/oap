@@ -50,13 +50,30 @@ pub async fn runtime_events(
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
     // generic_chat sessions have no provider stream: replay the local event
-    // store and end; the UI's poll loop picks up anything newer.
+    // store, then stay subscribed to the session's local event channel so new
+    // turns stream in real time instead of waiting on the UI's poll loop.
     if super::generic_chat::is_generic_chat(pool, runtime).await? {
+        // Subscribe before the replay query so events appended in between
+        // are not lost (they'd be duplicated instead, which the UI dedupes).
+        let mut local_rx = state.local_session_events.subscribe(&row.id);
         let stored = runtime_events::repository::list(pool, &row.id).await?;
-        let frames = stored
+        let replay = stored
             .into_iter()
             .map(|event| provider_event_line(Ok::<_, crate::sdk::agents::AgentSdkError>(event)));
-        let body_stream = futures_util::stream::iter(frames);
+        let live = async_stream::stream! {
+            loop {
+                match local_rx.recv().await {
+                    Ok(value) => {
+                        yield provider_event_line(
+                            Ok::<_, crate::sdk::agents::AgentSdkError>(value),
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        };
+        let body_stream = futures_util::stream::iter(replay).chain(live);
         return Response::builder()
             .header("content-type", "text/event-stream")
             .header("cache-control", "no-cache")
