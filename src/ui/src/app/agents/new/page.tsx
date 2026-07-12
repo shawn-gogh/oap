@@ -74,6 +74,7 @@ import {
   listAgentRuntimes,
   listRuntimeHarnesses,
   listAgents,
+  listAllMcpServerTools,
   listMcpServerTools,
   listMcpUserCredentials,
   listModels,
@@ -230,18 +231,30 @@ export default function NewAgentPage() {
           listMcpUserCredentials().catch(() => [] as { server_id: string }[]),
         ]);
         const connectedIds = new Set(credentials.map((credential) => credential.server_id));
-        const toolEntries = await Promise.all(
-          servers.map(async (server) => {
-            try {
-              const tools = await listMcpServerTools(server.server_id);
-              return [server.server_id, tools.map((tool) => tool.name).filter(Boolean)] as const;
-            } catch {
-              return [server.server_id, [] as string[]] as const;
-            }
-          }),
-        );
+        let toolsByServer: Map<string, string[]>;
+        try {
+          const batch = await listAllMcpServerTools();
+          toolsByServer = new Map(
+            Array.from(batch, ([serverId, tools]) => [
+              serverId,
+              tools.map((tool) => tool.name).filter(Boolean),
+            ]),
+          );
+        } catch {
+          // Older backends without the batch route: fall back to per-server calls.
+          const toolEntries = await Promise.all(
+            servers.map(async (server) => {
+              try {
+                const tools = await listMcpServerTools(server.server_id);
+                return [server.server_id, tools.map((tool) => tool.name).filter(Boolean)] as const;
+              } catch {
+                return [server.server_id, [] as string[]] as const;
+              }
+            }),
+          );
+          toolsByServer = new Map(toolEntries);
+        }
         if (cancelled) return;
-        const toolsByServer = new Map(toolEntries);
         const registryIntegrations = servers.map((server) =>
           integrationFromMcpServer(server, {
             connected: connectedIds.has(server.server_id),

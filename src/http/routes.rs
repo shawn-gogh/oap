@@ -149,6 +149,8 @@ fn mcp_registry_routes() -> Router<Arc<AppState>> {
             "/v1/mcp/server/{server_id}/tools",
             get(tools::list_tools).post(tools::test_tools),
         )
+        // Batch tools discovery across all active servers (avoids N+1 from the UI)
+        .route("/v1/mcp/servers/tools", get(tools::list_all_tools))
         // Discover tools from an arbitrary URL (no saved server required)
         .route("/v1/mcp/discover", post(discover::discover_tools))
         // Admin CRUD

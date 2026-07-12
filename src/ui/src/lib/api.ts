@@ -1593,6 +1593,16 @@ export async function listMcpServerTools(server_id: string): Promise<McpToolDef[
   return data.tools ?? data.data ?? [];
 }
 
+/** Batch tools discovery for all active MCP servers in one request.
+ *  Servers that fail discovery come back with an empty tools list. */
+export async function listAllMcpServerTools(): Promise<Map<string, McpToolDef[]>> {
+  const res = await req("/v1/mcp/servers/tools");
+  const data = await jsonOrThrow<{
+    servers?: Array<{ server_id: string; tools?: McpToolDef[] }>;
+  }>(res);
+  return new Map((data.servers ?? []).map((entry) => [entry.server_id, entry.tools ?? []]));
+}
+
 /** Test tools discovery with caller-supplied variable values (for admin test panel). */
 export async function testMcpServerTools(
   server_id: string,
