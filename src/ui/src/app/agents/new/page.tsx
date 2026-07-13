@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, ExternalLink } from "lucide-react";
@@ -442,6 +443,7 @@ export default function NewAgentPage() {
       } catch {
         // Best-effort cleanup.
       }
+      toast.success("已创建为草稿：通过预检并激活后才能运行或被调度。");
       router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`);
     } catch (err) {
       setError(apiErrorMessage(err, "创建智能体失败"));

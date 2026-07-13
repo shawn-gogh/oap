@@ -60,6 +60,10 @@ pub(crate) async fn messages(
         Some(message) => message,
         None => return Ok(StatusCode::OK),
     };
+    if crate::http::managed_agents::assert_agent_runnable(&agent).is_err() {
+        tracing::info!(agent_id = %agent.id, "ignoring Teams activity for draft agent");
+        return Ok(StatusCode::OK);
+    }
     let _conversation_lock =
         TeamsConversationLock::acquire(&state.keyed_locks, &agent.id, &message.conversation_id)
             .await;

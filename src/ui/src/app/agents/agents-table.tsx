@@ -338,7 +338,14 @@ function AgentCell({
       onClick={() => onOpenDetail(row.agent)}
       className="flex w-full min-w-0 flex-col overflow-hidden text-left"
     >
-      <span className="truncate text-sm font-medium text-foreground">{row.name}</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-sm font-medium text-foreground">{row.name}</span>
+        {row.agent.status === "draft" && (
+          <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+            草稿
+          </span>
+        )}
+      </span>
       <span className="mt-0.5 block truncate text-xs text-muted-foreground">
         {row.description || row.prompt || row.agent.id}
       </span>

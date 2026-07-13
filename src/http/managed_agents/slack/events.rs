@@ -66,6 +66,10 @@ async fn handle_event_callback(
     };
     let (agent, config) =
         super::dispatch::route_agent(&pool, agent, config, payload, &message).await?;
+    if crate::http::managed_agents::assert_agent_runnable(&agent).is_err() {
+        tracing::info!(agent_id = %agent.id, "ignoring Slack event for draft agent");
+        return Ok(());
+    }
     let event_key = slack_event_key(payload, &message);
     if !slack::repository::record_event(&pool, &agent.id, &event_key).await? {
         return Ok(());
