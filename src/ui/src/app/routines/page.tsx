@@ -203,7 +203,7 @@ export default function RoutinesPage() {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <h1 className="text-sm font-semibold">Routines</h1>
+          <h1 className="text-sm font-semibold">定时任务</h1>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={openCreate} disabled={agents.length === 0}>
               <Plus className="size-4" />
@@ -221,7 +221,7 @@ export default function RoutinesPage() {
               </Card>
             )}
             {!routines && !error && (
-              <div className="text-sm text-muted-foreground">Loading...</div>
+              <div className="text-sm text-muted-foreground">加载中...</div>
             )}
             {routines && routines.length === 0 && (
               <div className="py-16 text-center text-sm text-muted-foreground">
@@ -265,7 +265,7 @@ export default function RoutinesPage() {
                           Last run {lastRun}
                         </button>
                       ) : (
-                        <span>Last run {lastRun}</span>
+                        <span>上次运行 {lastRun}</span>
                       )}
                     </div>
                   </div>
@@ -299,7 +299,7 @@ export default function RoutinesPage() {
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid gap-1.5">
-              <Label>Agent</Label>
+              <Label>智能体</Label>
               <Select
                 value={form.agent_id}
                 onValueChange={(value) => setForm({ ...form, agent_id: value ?? "" })}
@@ -319,22 +319,22 @@ export default function RoutinesPage() {
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="routine-name">Name</Label>
+              <Label htmlFor="routine-name">名称</Label>
               <Input
                 id="routine-name"
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="Daily code review"
+                placeholder="每日代码审查"
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="routine-prompt">Instructions</Label>
+              <Label htmlFor="routine-prompt">指令</Label>
               <Textarea
                 id="routine-prompt"
                 value={form.prompt}
                 onChange={(event) => setForm({ ...form, prompt: event.target.value })}
                 rows={5}
-                placeholder="Tell the agent what to do each time this routine runs."
+                placeholder="告诉智能体每次运行时要做什么。"
               />
             </div>
             <ScheduleEditor
@@ -343,7 +343,7 @@ export default function RoutinesPage() {
               onChange={(next) => setForm({ ...form, ...next })}
             />
             <div className="grid gap-1.5">
-              <Label>Status</Label>
+              <Label>状态</Label>
               <Select
                 value={form.status}
                 onValueChange={(value) => setForm({ ...form, status: value || "active" })}
@@ -352,8 +352,8 @@ export default function RoutinesPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="paused">Paused</SelectItem>
+                  <SelectItem value="active">启用</SelectItem>
+                  <SelectItem value="paused">暂停</SelectItem>
                 </SelectContent>
               </Select>
             </div>

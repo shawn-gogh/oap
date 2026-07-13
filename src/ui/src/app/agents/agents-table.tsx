@@ -218,7 +218,7 @@ export function AgentsTable({
           <Input
             value={globalFilter}
             onChange={(event) => setGlobalFilter(event.target.value)}
-            placeholder="Search agents, runtime, model..."
+            placeholder="搜索智能体、运行时、模型..."
             className="pl-8"
           />
         </div>
@@ -390,7 +390,7 @@ function ActionsCell({
   const webhook = webhookConfig(agent);
   return (
     <div className="flex justify-end gap-1">
-      <Button size="icon-sm" onClick={() => onRun(agent)} aria-label="Run" title="Run">
+      <Button size="icon-sm" onClick={() => onRun(agent)} aria-label="运行" title="运行">
         <Play className="size-3.5" />
       </Button>
       <Button

@@ -36,7 +36,7 @@ function timeAgo(ts?: number | null): string {
 }
 
 function formatDate(ts?: number | null): string {
-  if (!ts) return "Unknown";
+  if (!ts) return "未知";
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -46,24 +46,24 @@ function formatDate(ts?: number | null): string {
 }
 
 const TABS: { key: InboxFilter; label: string }[] = [
-  { key: "attention", label: "Attention" },
-  { key: "completed", label: "Completed" },
-  { key: "all", label: "All" },
+  { key: "attention", label: "待处理" },
+  { key: "completed", label: "已完成" },
+  { key: "all", label: "全部" },
 ];
 
 const statusStyles: Record<string, { label: string; cls: string }> = {
-  pending: { label: "Needs approval", cls: "border-border bg-muted/50 text-foreground" },
-  open: { label: "Open issue", cls: "border-border bg-muted/50 text-foreground" },
+  pending: { label: "待审批", cls: "border-border bg-muted/50 text-foreground" },
+  open: { label: "待处理问题", cls: "border-border bg-muted/50 text-foreground" },
   accepted: {
-    label: "Accepted",
+    label: "已批准",
     cls: "border-border bg-muted/40 text-muted-foreground",
   },
   rejected: {
-    label: "Rejected",
+    label: "已拒绝",
     cls: "border-border bg-muted/40 text-muted-foreground",
   },
   resolved: {
-    label: "Resolved",
+    label: "已解决",
     cls: "border-border bg-muted text-muted-foreground",
   },
 };
@@ -112,12 +112,12 @@ function EmptyState({ tab }: { tab: InboxFilter }) {
           <ShieldCheck className="size-5 text-muted-foreground" />
         </div>
         <div className="mt-4 text-sm font-medium">
-          {tab === "attention" ? "No blocked agents" : "No inbox items"}
+          {tab === "attention" ? "没有被阻塞的智能体" : "收件箱为空"}
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
           {tab === "attention"
-            ? "Approvals and agent-filed issues will appear here when work needs a human decision."
-            : "Switch tabs or refresh when agents have more activity."}
+            ? "当智能体的工作需要人工决定时，审批和问题会出现在这里。"
+            : "切换标签或稍后刷新查看智能体的新动态。"}
         </p>
       </div>
     </div>
@@ -241,10 +241,10 @@ function InboxInner() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4">
           <div className="flex items-center gap-2">
             <InboxIcon className="size-4 text-muted-foreground" />
-            <span className="text-sm font-semibold">Agent Inbox</span>
+            <span className="text-sm font-semibold">智能体收件箱</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon-sm" onClick={() => load(tab)} aria-label="Refresh inbox">
+            <Button variant="ghost" size="icon-sm" onClick={() => load(tab)} aria-label="刷新收件箱">
               <RefreshCw className="size-3.5" />
             </Button>
             <ThemeToggle />
@@ -255,9 +255,9 @@ function InboxInner() {
           <section className="border-b border-border px-4 py-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
-                <h1 className="text-xl font-semibold tracking-tight leading-tight">Human review queue</h1>
+                <h1 className="text-xl font-semibold tracking-tight leading-tight">人工审核队列</h1>
                 <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Review blocked tool calls, resolve agent-filed issues, and jump back into the originating session.
+                  审批被阻塞的工具调用、处理智能体上报的问题，并可直接跳回来源会话。
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
@@ -299,7 +299,7 @@ function InboxInner() {
             </div>
             <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
               <Clock3 className="size-3.5" />
-              <span>{items ? `${items.length} visible` : "Loading queue"}</span>
+              <span>{items ? `${items.length} 条` : "正在加载队列"}</span>
             </div>
           </div>
 
@@ -312,7 +312,7 @@ function InboxInner() {
                   </div>
                 )}
                 {!items && !error && (
-                  <div className="space-y-2 px-4 py-3" aria-label="Loading inbox">
+                  <div className="space-y-2 px-4 py-3" aria-label="正在加载收件箱">
                     {[...Array(5)].map((_, i) => (
                       <div key={i} className="animate-pulse rounded-md border border-border/50 bg-muted/40 px-4 py-3">
                         <div className="flex items-start gap-2">
@@ -356,7 +356,7 @@ function InboxInner() {
                               </span>
                               <span className="text-xs text-muted-foreground" aria-hidden="true">/</span>
                               <span className="truncate text-xs text-muted-foreground">
-                                {item.agent ?? "Unassigned agent"}
+                                {item.agent ?? "未指派智能体"}
                               </span>
                             </div>
                             {itemPreview && (
@@ -387,9 +387,9 @@ function InboxInner() {
                         </div>
                         <h2 className="mt-3 text-base font-semibold tracking-tight leading-snug">{selected.title}</h2>
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                          <span>{selected.agent ?? "Unassigned agent"}</span>
+                          <span>{selected.agent ?? "未指派智能体"}</span>
                           <span>{formatDate(selected.createdAt)}</span>
-                          {selected.resolvedAt && <span>Resolved {formatDate(selected.resolvedAt)}</span>}
+                          {selected.resolvedAt && <span>解决于 {formatDate(selected.resolvedAt)}</span>}
                         </div>
                       </div>
                       {selected.sessionId && (
@@ -399,31 +399,31 @@ function InboxInner() {
                           onClick={() => router.push(`/chat/?id=${encodeURIComponent(selected.sessionId!)}`)}
                         >
                           <ExternalLink className="size-3.5" />
-                          Open session
+                          打开会话
                         </Button>
                       )}
                     </div>
                     {selected.body && (
                       <div className="border-b border-border px-4 py-3">
-                        <div className="text-[11px] font-medium uppercase text-muted-foreground">Agent note</div>
+                        <div className="text-[11px] font-medium uppercase text-muted-foreground">智能体备注</div>
                         <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{selected.body}</p>
                       </div>
                     )}
                     <div className="grid grid-cols-2 gap-px bg-border text-xs md:grid-cols-4">
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">Item ID</div>
+                        <div className="text-muted-foreground">条目 ID</div>
                         <div className="mt-1 truncate font-mono">{selected.id}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">Session</div>
+                        <div className="text-muted-foreground">会话</div>
                         <div className="mt-1 truncate font-mono">{selected.sessionId ?? "none"}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">Status</div>
+                        <div className="text-muted-foreground">状态</div>
                         <div className="mt-1">{statusStyles[selected.status]?.label ?? selected.status}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">Feedback</div>
+                        <div className="text-muted-foreground">反馈</div>
                         <div className="mt-1 truncate">{selected.feedback ? "Provided" : "None"}</div>
                       </div>
                     </div>
@@ -447,7 +447,7 @@ function InboxInner() {
 
                   {selected.kind === "approval" && selected.status !== "pending" && (
                     <div className="rounded-lg border border-border bg-card p-4">
-                      <div className="mb-3 text-sm font-medium">Approval record</div>
+                      <div className="mb-3 text-sm font-medium">审批记录</div>
                       {selected.args && Object.keys(selected.args).length > 0 ? (
                         <div className="space-y-3">
                           {Object.entries(selected.args).map(([k, v]) => (
@@ -460,11 +460,11 @@ function InboxInner() {
                           ))}
                         </div>
                       ) : (
-                        <p className="text-sm text-muted-foreground">This action had no arguments.</p>
+                        <p className="text-sm text-muted-foreground">该操作没有参数。</p>
                       )}
                       {selected.feedback && (
                         <div className="mt-4 border-t border-border pt-4">
-                          <div className="text-xs font-medium text-muted-foreground">Feedback to agent</div>
+                          <div className="text-xs font-medium text-muted-foreground">给智能体的反馈</div>
                           <p className="mt-1 whitespace-pre-wrap text-sm">{selected.feedback}</p>
                         </div>
                       )}
@@ -475,18 +475,18 @@ function InboxInner() {
                     <div className="rounded-lg border border-border bg-card p-4">
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-sm font-medium">Issue details</div>
-                          <div className="text-xs text-muted-foreground">Agent-filed note for a human operator.</div>
+                          <div className="text-sm font-medium">问题详情</div>
+                          <div className="text-xs text-muted-foreground">智能体提交给人工处理的备注。</div>
                         </div>
                         {selected.status === "open" && (
                           <Button size="sm" onClick={() => onResolve(selected.id)} disabled={busy}>
                             <CheckCircle2 className="size-3.5" />
-                            Mark resolved
+                            标记已解决
                           </Button>
                         )}
                       </div>
                       <p className="whitespace-pre-wrap rounded-md border border-border bg-muted/30 px-3 py-2 text-sm leading-6">
-                        {selected.body || "No details provided."}
+                        {selected.body || "未提供详情。"}
                       </p>
                     </div>
                   )}

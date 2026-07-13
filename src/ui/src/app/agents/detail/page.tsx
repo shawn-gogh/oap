@@ -648,7 +648,7 @@ function AgentDetail() {
                   <Pencil className="size-3.5" />
                   Edit
                 </Button>
-                <Button size="sm" variant="outline" onClick={handleDelete} aria-label="Delete">
+                <Button size="sm" variant="outline" onClick={handleDelete} aria-label="删除">
                   <Trash2 className="size-3.5" />
                 </Button>
               </>
@@ -664,7 +664,7 @@ function AgentDetail() {
                 <p className="text-sm text-destructive">{error}</p>
               </Card>
             )}
-            {loading && <div className="text-sm text-muted-foreground">Loading...</div>}
+            {loading && <div className="text-sm text-muted-foreground">加载中...</div>}
 
             {agent && (
               <>
@@ -690,7 +690,7 @@ function AgentDetail() {
 
                 <section>
                   <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Configuration
+                    配置
                   </h2>
                   <Card className="p-4">
                     <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[140px_1fr]">
@@ -699,22 +699,22 @@ function AgentDetail() {
 
                       {agent.model && (
                         <>
-                          <dt className="font-medium text-muted-foreground">Model</dt>
+                          <dt className="font-medium text-muted-foreground">模型</dt>
                           <dd className="font-mono text-xs">{String(agent.model)}</dd>
                         </>
                       )}
 
                       {agent.owner_id && (
                         <>
-                          <dt className="font-medium text-muted-foreground">Owner</dt>
+                          <dt className="font-medium text-muted-foreground">属主</dt>
                           <dd className="font-mono text-xs">{String(agent.owner_id)}</dd>
                         </>
                       )}
 
-                      <dt className="font-medium text-muted-foreground">Default runtime</dt>
+                      <dt className="font-medium text-muted-foreground">默认运行时</dt>
                       <dd className="font-mono text-xs">{runtimeFromAgent(agent)}</dd>
 
-                      <dt className="font-medium text-muted-foreground">Run schedule</dt>
+                      <dt className="font-medium text-muted-foreground">运行计划</dt>
                       <dd className="flex flex-col gap-1">
                         <span className="font-mono text-xs">
                           {scheduleLabel(agent.cron, agent.timezone)}
@@ -1022,7 +1022,7 @@ function AgentDetail() {
                     <div>
                       <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                         <FileText className="size-3.5" />
-                        Workspace Files
+                        工作区文件
                       </h2>
                       <p className="mt-1 text-xs text-muted-foreground">
                         Knowledge files copied into every new session workspace of this agent.
@@ -1034,7 +1034,7 @@ function AgentDetail() {
                         <Input
                           value={fileQuery}
                           onChange={(e) => setFileQuery(e.target.value)}
-                          placeholder="Search files"
+                          placeholder="搜索文件"
                           className="h-8 pl-8 text-xs"
                         />
                       </div>
@@ -1071,22 +1071,22 @@ function AgentDetail() {
 
                   <Card className="overflow-hidden">
                     <div className="grid grid-cols-3 border-b border-border bg-muted/20 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      <span>Path</span>
-                      <span className="text-right">Size</span>
-                      <span className="text-right">Actions</span>
+                      <span>路径</span>
+                      <span className="text-right">大小</span>
+                      <span className="text-right">操作</span>
                     </div>
                     {filesLoading && files.length === 0 ? (
-                      <div className="p-6 text-sm text-muted-foreground">Loading files...</div>
+                      <div className="p-6 text-sm text-muted-foreground">正在加载文件...</div>
                     ) : visibleFiles.length === 0 ? (
                       <div className="p-8 text-center">
                         <FileText className="mx-auto mb-3 size-7 text-muted-foreground/60" />
                         <p className="text-sm font-medium">
-                          {files.length === 0 ? "No workspace files" : "No matching files"}
+                          {files.length === 0 ? "暂无工作区文件" : "没有匹配的文件"}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {files.length === 0
-                            ? "Upload files to make them available in every new session."
-                            : "Adjust the search to broaden the file list."}
+                            ? "上传文件后，每个新会话都能使用它们。"
+                            : "调整搜索条件以显示更多文件。"}
                         </p>
                       </div>
                     ) : (
@@ -1145,7 +1145,7 @@ function AgentDetail() {
                     <div>
                       <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                         <Brain className="size-3.5" />
-                        Memory
+                        记忆
                       </h2>
                       <p className="mt-1 text-xs text-muted-foreground">
                         Review what this agent has learned, pin critical notes, and curate stale context.
@@ -1154,15 +1154,15 @@ function AgentDetail() {
                     <div className="grid grid-cols-3 overflow-hidden rounded-md border border-border bg-muted/20 text-center sm:w-[300px]">
                       <div className="px-3 py-2">
                         <div className="text-base font-semibold">{memories.length}</div>
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">总数</div>
                       </div>
                       <div className="border-x border-border px-3 py-2">
                         <div className="text-base font-semibold">{alwaysOnCount}</div>
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Always-on</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">常驻</div>
                       </div>
                       <div className="px-3 py-2">
                         <div className="text-base font-semibold">{selectedKeys.size}</div>
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Selected</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">已选</div>
                       </div>
                     </div>
                   </div>
@@ -1175,7 +1175,7 @@ function AgentDetail() {
                           <Input
                             value={memoryQuery}
                             onChange={(e) => setMemoryQuery(e.target.value)}
-                            placeholder="Search keys or memory text"
+                            placeholder="搜索键名或记忆内容"
                             className="h-8 pl-8 text-xs"
                           />
                         </div>
@@ -1189,7 +1189,7 @@ function AgentDetail() {
                               className="h-8 capitalize"
                               onClick={() => setMemoryFilter(filter)}
                             >
-                              {filter === "always" ? "Always-on" : filter}
+                              {filter === "always" ? "常驻" : filter}
                             </Button>
                           ))}
                           <Button
@@ -1239,7 +1239,7 @@ function AgentDetail() {
                         <Textarea
                           value={newMemory.value}
                           onChange={(e) => setNewMemory((m) => ({ ...m, value: e.target.value }))}
-                          placeholder="Add a durable note for this agent"
+                          placeholder="为该智能体添加一条持久备注"
                           rows={1}
                           className="min-h-9 resize-none text-xs"
                         />
@@ -1268,17 +1268,17 @@ function AgentDetail() {
                     </div>
 
                     {memoryLoading && memories.length === 0 ? (
-                      <div className="p-6 text-sm text-muted-foreground">Loading memories...</div>
+                      <div className="p-6 text-sm text-muted-foreground">正在加载记忆...</div>
                     ) : visibleMemories.length === 0 ? (
                       <div className="p-8 text-center">
                         <Brain className="mx-auto mb-3 size-7 text-muted-foreground/60" />
                         <p className="text-sm font-medium">
-                          {memories.length === 0 ? "No memories yet" : "No matching memories"}
+                          {memories.length === 0 ? "还没有记忆" : "没有匹配的记忆"}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {memories.length === 0
-                            ? "The agent can add memories as it works, or you can seed one above."
-                            : "Adjust the search or filter to broaden the list."}
+                            ? "智能体会在工作中自行积累记忆，也可以在上方手动添加。"
+                            : "调整搜索或筛选条件以显示更多。"}
                         </p>
                       </div>
                     ) : (
@@ -1339,7 +1339,7 @@ function AgentDetail() {
                                       variant={editDraft.alwaysOn ? "default" : "outline"}
                                       className="h-8"
                                       onClick={() => setEditDraft((d) => ({ ...d, alwaysOn: !d.alwaysOn }))}
-                                      aria-label="Toggle always-on"
+                                      aria-label="切换常驻"
                                     >
                                       <Pin className="size-3.5" />
                                     </Button>
@@ -1358,7 +1358,7 @@ function AgentDetail() {
                                       variant="outline"
                                       className="h-8"
                                       onClick={() => setMemoryAlwaysOn(memory, !isAlwaysOn(memory))}
-                                      aria-label={isAlwaysOn(memory) ? "Disable always-on" : "Make always-on"}
+                                      aria-label={isAlwaysOn(memory) ? "取消常驻" : "设为常驻"}
                                     >
                                       {isAlwaysOn(memory) ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
                                     </Button>
@@ -1388,7 +1388,7 @@ function AgentDetail() {
                 <section>
                   <div className="mb-2 flex items-center justify-between">
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Sessions ({sessions.length})
+                      会话（{sessions.length}）
                     </h2>
                     <Button size="sm" variant="outline" onClick={openSessionStart}>
                       <Play className="size-3" />
@@ -1396,7 +1396,7 @@ function AgentDetail() {
                     </Button>
                   </div>
                   {sessions.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No sessions yet.</p>
+                    <p className="text-sm text-muted-foreground">还没有会话。</p>
                   ) : (
                     <div className="flex flex-col gap-2">
                       {sessions.map((s) => (

@@ -168,10 +168,10 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
       label: "AI Gateway",
       icon: ShieldCheck,
       home: "/providers/",
-      description: "Keys, teams, logs, providers, and runtimes",
+      description: "密钥、团队、日志、模型提供方与运行时",
       items: [
         {
-          label: "Keys",
+          label: "密钥 Keys",
           href: "/keys/",
           icon: KeyRound,
           active: (path) => path.startsWith("/keys"),
@@ -191,35 +191,35 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           group: "访问控制",
         }] : []),
         {
-          label: "Teams",
+          label: "团队 Teams",
           href: "/teams/",
           icon: Users,
           active: (path) => path.startsWith("/teams"),
           group: "访问控制",
         },
         {
-          label: "LLM Providers",
+          label: "LLM 提供方",
           href: "/providers/",
           icon: ServerCog,
           active: (path) => path.startsWith("/providers"),
           group: "基础设施",
         },
         {
-          label: "Agent Runtimes",
+          label: "Agent 运行时",
           href: "/runtimes/",
           icon: ServerCog,
           active: (path) => path.startsWith("/runtimes"),
           group: "基础设施",
         },
         {
-          label: "MCP Servers",
+          label: "MCP 服务器",
           href: "/mcp-servers/",
           icon: Server,
           active: (path) => path.startsWith("/mcp-servers"),
           group: "基础设施",
         },
         {
-          label: "Logs",
+          label: "调用日志",
           href: "/observability/logs/",
           icon: Activity,
           active: (path) => path.startsWith("/observability"),
@@ -231,17 +231,17 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
       label: "Agent Platform",
       icon: Bot,
       home: "/chat/",
-      description: "Agents, inbox, integrations, skills",
+      description: "智能体、收件箱、集成与技能",
       items: [
         {
-          label: "Chat",
+          label: "对话",
           href: "/chat/",
           icon: MessageCircle,
           active: (path) => path === "/" || path.startsWith("/chat") || path.startsWith("/sessions"),
           group: "工作台",
         },
         {
-          label: "Inbox",
+          label: "收件箱",
           href: "/inbox/",
           icon: Inbox,
           active: (path) => path.startsWith("/inbox"),
@@ -249,42 +249,42 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           group: "工作台",
         },
         {
-          label: "Routines",
+          label: "定时任务",
           href: "/routines/",
           icon: Zap,
           active: (path) => path.startsWith("/routines"),
           group: "工作台",
         },
         {
-          label: "Agents",
+          label: "智能体",
           href: "/agents/",
           icon: Bot,
           active: (path) => path.startsWith("/agents"),
           group: "构建",
         },
         {
-          label: "Skills",
+          label: "技能",
           href: "/skills/",
           icon: FileText,
           active: (path) => path.startsWith("/skills"),
           group: "构建",
         },
         {
-          label: "Rules",
+          label: "规则",
           href: "/rules/",
           icon: ScrollText,
           active: (path) => path.startsWith("/rules"),
           group: "构建",
         },
         {
-          label: "Integrations",
+          label: "集成",
           href: "/integrations/",
           icon: Puzzle,
           active: (path) => path.startsWith("/integrations"),
           group: "构建",
         },
         {
-          label: "Vault",
+          label: "凭证保险库",
           href: "/vault/",
           icon: KeyRound,
           active: (path) => path.startsWith("/vault"),
@@ -314,10 +314,10 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
             onClick={onNew}
             className="relative w-full justify-center sm:justify-start"
             size="sm"
-            aria-label="New session"
+            aria-label="新建会话"
           >
             <Plus className="size-4" />
-            <span className="hidden sm:inline">New session</span>
+            <span className="hidden sm:inline">新建会话</span>
           </Button>
         )}
         <div className="space-y-1">
@@ -362,17 +362,17 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         {isAgentPlatform && (
           <>
             <div className="px-4 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Agent Sessions
+              会话历史
             </div>
             {error && (
               <div className="px-3 py-2 text-xs text-destructive">{error}</div>
             )}
             {!sessions && !error && (
-              <div className="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
+              <div className="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
             )}
             {sessions && sessions.length === 0 && (
               <div className="px-3 py-2 text-xs text-muted-foreground">
-                No sessions yet.
+                还没有会话。
               </div>
             )}
             {sessions?.map((s) => {
@@ -398,7 +398,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                   <button
                     onClick={(e) => onDelete(e, s.id)}
                     className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-background rounded focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                    aria-label="Delete session"
+                    aria-label="删除会话"
                   >
                     <Trash2 className="size-3" />
                   </button>

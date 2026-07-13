@@ -132,7 +132,7 @@ export default function OnboardingPage() {
             className="rounded-lg border border-border bg-card p-6 shadow-sm flex flex-col gap-5"
           >
             <div className="flex flex-col gap-1">
-              <h2 className="text-base font-semibold">Sign in</h2>
+              <h2 className="text-base font-semibold">登录</h2>
               <p className="text-sm text-muted-foreground">
                 Enter the master key. Default is{" "}
                 <code className="font-mono text-xs">sk-local</code>.
@@ -172,7 +172,7 @@ export default function OnboardingPage() {
             className="rounded-lg border border-border bg-card p-6 shadow-sm flex flex-col gap-5"
           >
             <div className="flex flex-col gap-1">
-              <h2 className="text-base font-semibold">Connect Anthropic</h2>
+              <h2 className="text-base font-semibold">连接 Anthropic</h2>
               <p className="text-sm text-muted-foreground">
                 Paste your Anthropic API key to start running agents.
               </p>
@@ -225,7 +225,7 @@ export default function OnboardingPage() {
             <span className="flex size-10 items-center justify-center rounded-full bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400">
               <Check className="size-5" />
             </span>
-            <p className="font-medium">All set! Redirecting…</p>
+            <p className="font-medium">全部就绪，正在跳转...</p>
           </div>
         )}
       </div>

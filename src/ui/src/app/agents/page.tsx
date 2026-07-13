@@ -281,8 +281,8 @@ export default function AgentsPage() {
     setSaving(true);
     setFormError(null);
     try {
-      if (!form.name.trim()) throw new Error("Name is required");
-      if (!editingId) throw new Error("Agent ID is required");
+      if (!form.name.trim()) throw new Error("名称不能为空");
+      if (!editingId) throw new Error("缺少智能体 ID");
       const cron = form.cron.trim();
       const timezone = form.timezone.trim() || "UTC";
       const currentAgent = agents?.find((agent) => agent.id === editingId);
@@ -343,7 +343,7 @@ export default function AgentsPage() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
-          <h1 className="text-sm font-semibold">Agents</h1>
+          <h1 className="text-sm font-semibold">智能体</h1>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={() => router.push("/agents/new/")}>
               <Plus className="size-4" />
@@ -365,7 +365,7 @@ export default function AgentsPage() {
               </Card>
             )}
             {!agents && !error && (
-              <div className="text-sm text-muted-foreground">Loading…</div>
+              <div className="text-sm text-muted-foreground">加载中...</div>
             )}
             {agents && agents.length === 0 && (
               <div className="text-center text-sm text-muted-foreground py-16">
@@ -396,11 +396,11 @@ export default function AgentsPage() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-[92vw] sm:max-w-2xl max-h-[88vh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-border">
-            <DialogTitle>Edit agent</DialogTitle>
+            <DialogTitle>编辑智能体</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-4 px-6 py-4 overflow-y-auto">
             <div className="grid gap-1.5">
-              <Label htmlFor="ag-name">Name</Label>
+              <Label htmlFor="ag-name">名称</Label>
               <Input
                 id="ag-name"
                 value={form.name}
@@ -409,16 +409,16 @@ export default function AgentsPage() {
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="ag-desc">Description</Label>
+              <Label htmlFor="ag-desc">描述</Label>
               <Input
                 id="ag-desc"
                 value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
-                placeholder="What this agent does"
+                placeholder="这个智能体做什么"
               />
             </div>
             <div className="grid gap-1.5">
-              <Label>Default runtime</Label>
+              <Label>默认运行时</Label>
               <Select
                 value={form.runtime}
                 onValueChange={(value) => {
@@ -453,10 +453,10 @@ export default function AgentsPage() {
               onChange={(next) => setForm({ ...form, ...next })}
             />
             <div className="grid gap-1.5">
-              <Label>Rules</Label>
+              <Label>规则</Label>
               {rules.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No rules available on this server.
+                  当前服务器上暂无规则。
                 </p>
               ) : (
                 <div className="max-h-44 divide-y divide-border overflow-y-auto rounded-md border border-border">
@@ -493,10 +493,10 @@ export default function AgentsPage() {
               )}
             </div>
             <div className="grid gap-1.5">
-              <Label>Skills</Label>
+              <Label>技能</Label>
               {skills.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No skills available on this server.
+                  当前服务器上暂无技能。
                 </p>
               ) : (
                 <div className="max-h-44 overflow-y-auto rounded-md border border-border divide-y divide-border">
@@ -627,7 +627,7 @@ export default function AgentsPage() {
               )}
             </div>
             <div className="grid gap-1.5">
-              <Label>Vault credentials</Label>
+              <Label>保险库凭证</Label>
               <p className="text-[11px] text-muted-foreground -mt-1">
                 Secrets this agent can use. Reference them in the prompt as{" "}
                 <span className="font-mono">{"{{vault.KEY_NAME}}"}</span>.
@@ -716,7 +716,7 @@ export default function AgentsPage() {
                           className="h-7 px-2"
                           onClick={() => removeVaultKey(k)}
                           aria-label={`Detach ${k}`}
-                          title="Detach from agent"
+                          title="从智能体上移除"
                         >
                           <X className="size-3.5" />
                         </Button>
@@ -737,7 +737,7 @@ export default function AgentsPage() {
                   via its <span className="font-mono">memory_*</span> tools.
                 </p>
                 {memories === null ? (
-                  <p className="text-xs text-muted-foreground">Loading…</p>
+                  <p className="text-xs text-muted-foreground">加载中...</p>
                 ) : memories.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
                     Nothing remembered yet. The agent fills this in as it works — or add a note below.
@@ -791,7 +791,7 @@ export default function AgentsPage() {
               Cancel
             </Button>
             <Button onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
+              {saving ? "保存中..." : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>

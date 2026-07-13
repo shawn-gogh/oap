@@ -454,7 +454,7 @@ export default function McpServersPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <Server className="size-4 text-muted-foreground" />
-            <h1 className="text-sm font-semibold tracking-tight">MCP Servers</h1>
+            <h1 className="text-sm font-semibold tracking-tight">MCP 服务器</h1>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={onAddServer}>
@@ -512,7 +512,7 @@ export default function McpServersPage() {
                 {servers !== null && servers.length === 0 && (
                   <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
                     <Server className="size-10 text-muted-foreground/40" />
-                    <p className="text-sm text-muted-foreground">No MCP servers registered yet.</p>
+                    <p className="text-sm text-muted-foreground">还没有注册 MCP 服务器。</p>
                     <Button size="sm" onClick={onAddServer}>
                       <Plus className="size-4" />
                       Add your first server
@@ -584,7 +584,7 @@ export default function McpServersPage() {
       <Dialog open={confirmDelete !== null} onOpenChange={(o) => { if (!o) setConfirmDelete(null); }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Delete MCP server?</DialogTitle>
+            <DialogTitle>删除 MCP 服务器？</DialogTitle>
             <DialogDescription>
               This will permanently remove &ldquo;
               {confirmDelete?.alias ?? confirmDelete?.server_name ?? confirmDelete?.server_id}
@@ -731,7 +731,7 @@ function McpTemplatesPanel({ onOpenGmail }: { onOpenGmail: () => void }) {
   return (
     <section className="space-y-3">
       <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold tracking-tight">Templates</h2>
+        <h2 className="text-base font-semibold tracking-tight">模板</h2>
         <p className="text-sm text-muted-foreground">
           Start from known MCP integrations that need setup before users can connect them.
         </p>
@@ -964,7 +964,7 @@ function ProxyBaseUrlPanel({
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
-            <Label htmlFor="mcp-proxy-base-url">Gateway public URL</Label>
+            <Label htmlFor="mcp-proxy-base-url">网关公开 URL</Label>
             <Badge variant="outline" className="text-[11px] uppercase">
               {sourceLabel}
             </Badge>
@@ -1110,7 +1110,7 @@ function VariablesTable({
                     id={`var-desc-${idx}`}
                     value={v.description}
                     onChange={(e) => patchRow(idx, "description", e.target.value)}
-                    placeholder="Short description"
+                    placeholder="简短描述"
                     className="w-full bg-transparent text-xs outline-none focus:ring-1 focus:ring-ring rounded placeholder:text-muted-foreground/60"
                   />
                 </div>
@@ -1123,8 +1123,8 @@ function VariablesTable({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="per_user">Per-user</SelectItem>
-                      <SelectItem value="instance">Instance</SelectItem>
+                      <SelectItem value="per_user">按用户</SelectItem>
+                      <SelectItem value="instance">实例级</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1150,7 +1150,7 @@ function VariablesTable({
                     Value
                     <button
                       type="button"
-                      title="Admin-set value shared across all users. Encryption support is coming soon."
+                      title="由管理员设置、所有用户共享的值。加密支持即将上线。"
                       aria-label="Admin-set value shared across all users. Encryption support is coming soon."
                       className="ml-1 cursor-help text-muted-foreground/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded align-middle"
                     >
@@ -1162,7 +1162,7 @@ function VariablesTable({
                     type="password"
                     value={v.value}
                     onChange={(e) => patchRow(idx, "value", e.target.value)}
-                    placeholder="Enter value…"
+                    placeholder="输入值..."
                     autoComplete="off"
                     className="w-full rounded border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
                   />
@@ -1328,7 +1328,7 @@ function TestConnectionPanel({
   return (
     <div className="rounded-md border border-border p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium">Test connection</span>
+        <span className="text-xs font-medium">测试连接</span>
         <button
           type="button"
           onClick={() => { setOpen(false); setResult(null); }}
@@ -1405,7 +1405,7 @@ function TestConnectionPanel({
             Tools returned ({result.tools.length})
           </p>
           {result.tools.length === 0 ? (
-            <p className="text-xs text-muted-foreground italic">No tools found.</p>
+            <p className="text-xs text-muted-foreground italic">未发现工具。</p>
           ) : (
             <div className="rounded border border-border divide-y divide-border max-h-32 overflow-y-auto">
               {result.tools.map((t) => (
@@ -1562,7 +1562,7 @@ function McpServerEditor({
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
           {/* server_name */}
           <div className="space-y-1.5">
-            <Label htmlFor="mcp-server-name">Server name</Label>
+            <Label htmlFor="mcp-server-name">服务器名称</Label>
             <Input
               id="mcp-server-name"
               value={form.server_name}
@@ -1573,23 +1573,23 @@ function McpServerEditor({
 
           {/* alias */}
           <div className="space-y-1.5">
-            <Label htmlFor="mcp-alias">Alias</Label>
+            <Label htmlFor="mcp-alias">别名</Label>
             <Input
               id="mcp-alias"
               value={form.alias}
               onChange={(e) => patch("alias", e.target.value)}
-              placeholder="Human-readable shortname"
+              placeholder="易读的短名称"
             />
           </div>
 
           {/* description */}
           <div className="space-y-1.5">
-            <Label htmlFor="mcp-description">Description</Label>
+            <Label htmlFor="mcp-description">描述</Label>
             <textarea
               id="mcp-description"
               value={form.description}
               onChange={(e) => patch("description", e.target.value)}
-              placeholder="What this MCP server provides…"
+              placeholder="这个 MCP 服务器提供什么能力..."
               rows={2}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
             />
@@ -1620,7 +1620,7 @@ function McpServerEditor({
 
           {/* transport */}
           <div className="space-y-1.5">
-            <Label htmlFor="mcp-transport">Transport</Label>
+            <Label htmlFor="mcp-transport">传输方式</Label>
             <select
               id="mcp-transport"
               value={form.transport}

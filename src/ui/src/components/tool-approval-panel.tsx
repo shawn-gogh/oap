@@ -102,7 +102,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
           <span className="size-2 rounded-full bg-amber-400" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium uppercase text-muted-foreground">Approval required</div>
+          <div className="text-[11px] font-medium uppercase text-muted-foreground">需要人工审批</div>
           <div className="mt-1 truncate text-base font-semibold">{approval.tool}</div>
         </div>
         <Button variant="outline" size="sm" onClick={copyName}>
@@ -139,7 +139,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
             })}
           </div>
           <div className="mt-2 text-xs text-muted-foreground/80">
-            Selecting a choice will fill it as the feedback if you reject, and set the approved argument if you accept.
+            选择一个选项后：拒绝时它将作为反馈，批准时它将作为通过的参数。
           </div>
         </div>
       )}
@@ -148,8 +148,8 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
         <div className="rounded-md border border-border bg-background">
           <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div>
-              <div className="text-sm font-medium">Arguments</div>
-              <div className="text-xs text-muted-foreground">Edit values before allowing the agent to continue.</div>
+              <div className="text-sm font-medium">参数</div>
+              <div className="text-xs text-muted-foreground">可在允许智能体继续前修改参数值。</div>
             </div>
             <Button
               variant="ghost"
@@ -183,14 +183,14 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
 
         <div className="flex flex-col rounded-md border border-border bg-background">
           <div className="border-b border-border px-4 py-3">
-            <div className="text-sm font-medium">Decision</div>
-            <div className="text-xs text-muted-foreground">Accept runs the edited call. Reject returns feedback.</div>
+            <div className="text-sm font-medium">决定</div>
+            <div className="text-xs text-muted-foreground">批准将按编辑后的参数执行；拒绝会把反馈返回给智能体。</div>
           </div>
 
           <div className="flex flex-1 flex-col gap-3 p-4">
             <Button onClick={() => onAccept(approval.id, buildArgs())} disabled={busy}>
               <Send className="size-3.5" />
-              Accept and continue
+              批准并继续
             </Button>
 
             <div className="h-px bg-border" />
@@ -203,7 +203,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
               rows={5}
-              placeholder="Tell the agent what to change before retrying..."
+              placeholder="告诉智能体重试前需要调整什么..."
               className="min-h-28 w-full flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm leading-5 outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
               disabled={busy}
             />
@@ -214,7 +214,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
               disabled={busy}
             >
               <XCircle className="size-3.5" />
-              Reject
+              拒绝
             </Button>
           </div>
         </div>
