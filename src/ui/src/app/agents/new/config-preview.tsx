@@ -6,27 +6,23 @@ import type { AgentDraft } from "@/lib/agent-builder";
 import type { Integration } from "@/lib/integrations";
 import { scheduleLabel } from "@/lib/schedule";
 
-export function ConfigPreview({
-  draft,
-  mcpIntegrations,
-}: {
-  draft: AgentDraft;
-  mcpIntegrations: Integration[];
-}) {
+export function ConfigPreview({ draft, mcpIntegrations }: { draft: AgentDraft; mcpIntegrations: Integration[] }) {
   const selectedMcpIntegrations = draft.mcp_server_ids.map((id) => {
     const integration = mcpIntegrations.find((item) => item.id === id);
-    return integration ?? {
-      id,
-      name: id,
-      description: "Unknown MCP server.",
-      category: "Other",
-      envKey: "Unknown",
-      mcpUrl: "",
-      tools: [],
-      source: "catalog" as const,
-      connected: false,
-      status: null,
-    };
+    return (
+      integration ?? {
+        id,
+        name: id,
+        description: "Unknown MCP server.",
+        category: "Other",
+        envKey: "Unknown",
+        mcpUrl: "",
+        tools: [],
+        source: "catalog" as const,
+        connected: false,
+        status: null,
+      }
+    );
   });
 
   return (
@@ -42,8 +38,42 @@ export function ConfigPreview({
           <PreviewItem label="Model" value={draft.model} />
           <PreviewItem label="Runtime" value={draft.runtime} />
           <PreviewItem label="Schedule" value={scheduleLabel(draft.cron, draft.timezone)} />
-          <PreviewItem label="Tools" value={draft.tools.map((tool) => tool.type).filter(Boolean).join(", ")} />
+          <PreviewItem
+            label="Tools"
+            value={draft.tools
+              .map((tool) => tool.type)
+              .filter(Boolean)
+              .join(", ")}
+          />
         </div>
+
+        {draft.application && (
+          <div className="grid gap-3 rounded-lg border border-sky-300/20 bg-sky-300/5 p-4">
+            <div>
+              <div className="text-xs uppercase text-editor-faint">Application blueprint</div>
+              <p className="mt-2 text-sm leading-6 text-editor-foreground">
+                {draft.application.objective || "未定义业务目标。"}
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <PreviewItem label="运行方式" value={draft.application.interaction_mode} />
+              <PreviewItem label="使用者" value={draft.application.audience.join(", ")} />
+              <TokenList
+                label="输入"
+                values={draft.application.inputs
+                  .map((input) => [input.source, input.description].filter(Boolean).join(": "))
+                  .filter(Boolean)}
+              />
+              <TokenList
+                label="输出"
+                values={draft.application.outputs.map((output) => output.description || output.type).filter(Boolean)}
+              />
+              <TokenList label="明确不做" values={draft.application.non_goals} />
+              <TokenList label="完成条件" values={draft.application.completion_criteria} />
+            </div>
+            <PreviewItem label="失败处理" value={draft.application.failure_behavior} />
+          </div>
+        )}
 
         <div>
           <div className="text-xs uppercase text-editor-faint">System prompt</div>
@@ -68,14 +98,14 @@ export function ConfigPreview({
               {selectedMcpIntegrations.map((integration) => {
                 const toolCount = integration.tools.filter(Boolean).length;
                 return (
-                  <div
-                    key={integration.id}
-                    className="rounded-md border border-white/10 bg-white/5 px-2.5 py-2"
-                  >
+                  <div key={integration.id} className="rounded-md border border-white/10 bg-white/5 px-2.5 py-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-medium text-editor-foreground">{integration.name}</span>
                       <span className="font-mono text-[11px] text-editor-faint">{integration.id}</span>
-                      <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[11px] text-editor-muted">
+                      <Badge
+                        variant="outline"
+                        className="h-5 rounded-md border-white/10 bg-white/5 text-[11px] text-editor-muted"
+                      >
                         {toolCount > 0 ? `${toolCount} tools` : "Toolset attached"}
                       </Badge>
                     </div>
@@ -118,4 +148,3 @@ function TokenList({ label, values }: { label: string; values: string[] }) {
     </div>
   );
 }
-

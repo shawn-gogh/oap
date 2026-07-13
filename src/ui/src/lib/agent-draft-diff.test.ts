@@ -19,19 +19,23 @@ describe("diffAgentDrafts", () => {
 
   it("reports scalar edits as before → after", () => {
     const changes = diffAgentDrafts(base(), { ...base(), model: "m2" });
-    expect(changes).toEqual([
-      { field: "model", kind: "edited", before: "m1", after: "m2" },
-    ]);
+    expect(changes).toEqual([{ field: "model", kind: "edited", before: "m1", after: "m2" }]);
   });
 
   it("reports setting a previously empty scalar as set", () => {
     const before = { ...base(), description: "" };
-    const changes = diffAgentDrafts(before, { ...before, description: "does things" });
+    const changes = diffAgentDrafts(before, {
+      ...before,
+      description: "does things",
+    });
     expect(changes).toEqual([{ field: "description", kind: "set", after: "does things" }]);
   });
 
   it("splits tool list changes into added and removed", () => {
-    const after = { ...base(), tools: [{ type: "read" }, { type: "web_search" }] };
+    const after = {
+      ...base(),
+      tools: [{ type: "read" }, { type: "web_search" }],
+    };
     const changes = diffAgentDrafts(base(), after);
     expect(changes).toHaveLength(1);
     expect(changes[0].field).toBe("tools");
@@ -43,9 +47,7 @@ describe("diffAgentDrafts", () => {
   it("marks pure additions as added", () => {
     const after = { ...base(), skill_ids: ["s1"] };
     const changes = diffAgentDrafts(base(), after);
-    expect(changes).toEqual([
-      { field: "skills", kind: "added", added: ["s1"], removed: [] },
-    ]);
+    expect(changes).toEqual([{ field: "skills", kind: "added", added: ["s1"], removed: [] }]);
   });
 
   it("summarizes system prompt edits with a line delta instead of full text", () => {
@@ -66,16 +68,54 @@ describe("diffAgentDrafts", () => {
   it("diffs sub-agents by agent_id", () => {
     const after = { ...base(), sub_agents: [{ agent_id: "agent_1" }] };
     const changes = diffAgentDrafts(base(), after);
-    expect(changes).toEqual([
-      { field: "sub-agents", kind: "added", added: ["agent_1"], removed: [] },
-    ]);
+    expect(changes).toEqual([{ field: "sub-agents", kind: "added", added: ["agent_1"], removed: [] }]);
   });
 
   it("reports max runtime changes with units", () => {
     const after = { ...base(), max_runtime_minutes: 60 };
     const changes = diffAgentDrafts(base(), after);
     expect(changes).toEqual([
-      { field: "max runtime", kind: "edited", before: "30 min", after: "60 min" },
+      {
+        field: "max runtime",
+        kind: "edited",
+        before: "30 min",
+        after: "60 min",
+      },
+    ]);
+  });
+
+  it("reports application contract changes separately from runtime config", () => {
+    const before = base();
+    const after = {
+      ...before,
+      application: {
+        version: 1 as const,
+        objective: "Triage the support inbox.",
+        audience: ["support lead"],
+        interaction_mode: "scheduled" as const,
+        inputs: [
+          {
+            type: "email",
+            source: "gmail",
+            description: "Unread support email.",
+          },
+        ],
+        outputs: [{ type: "report", description: "Prioritized reply queue." }],
+        non_goals: ["Do not send email."],
+        completion_criteria: ["Every email is categorized."],
+        failure_behavior: "Notify the owner.",
+      },
+    };
+    const changes = diffAgentDrafts(before, after);
+    expect(changes.map((change) => change.field)).toEqual([
+      "application objective",
+      "interaction mode",
+      "audience",
+      "application inputs",
+      "application outputs",
+      "non-goals",
+      "completion criteria",
+      "failure behavior",
     ]);
   });
 });

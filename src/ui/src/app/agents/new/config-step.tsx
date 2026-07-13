@@ -127,7 +127,7 @@ export function ConfigStep({
             </div>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button type="button" onClick={onCreate} disabled={!canCreate || drafting}>
-                {saving ? "创建中..." : "进入复核并创建"}
+                {saving ? "处理中..." : "进入评估与验证"}
               </Button>
               <Button
                 type="button"
@@ -141,7 +141,8 @@ export function ConfigStep({
               <div className="mt-4 flex max-w-xl flex-wrap items-center gap-2 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-sm text-sky-800 dark:text-sky-300">
                 <span className="min-w-0">
                   AI 建议将模型从 <span className="font-mono text-xs">{modelSuggestion.current}</span> 改为{" "}
-                  <span className="font-mono text-xs">{modelSuggestion.suggested}</span>（当前保留了你的选择）
+                  <span className="font-mono text-xs">{modelSuggestion.suggested}</span>
+                  （当前保留了你的选择）
                 </span>
                 <span className="ml-auto flex shrink-0 gap-2">
                   <button
@@ -206,7 +207,11 @@ export function ConfigStep({
               className="size-9 rounded-full"
               aria-label="调整配置"
             >
-              {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
+              {drafting ? (
+                <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+              ) : (
+                <ArrowUp className="size-4" />
+              )}
             </Button>
           </div>
         </div>
@@ -322,11 +327,7 @@ export function ConfigStep({
   );
 }
 
-function AssistantChangeMessage({
-  message,
-}: {
-  message: Extract<BuilderChatMessage, { role: "assistant" }>;
-}) {
+function AssistantChangeMessage({ message }: { message: Extract<BuilderChatMessage, { role: "assistant" }> }) {
   return (
     <div className="mr-auto max-w-[92%] rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
       <p className="leading-6 text-foreground">{message.summary}</p>
@@ -425,7 +426,10 @@ function AgentBuilderCopilot({
       if (recommendation.action === "add") next.add(recommendation.tool);
       if (recommendation.action === "remove") next.delete(recommendation.tool);
     }
-    onDraftChange({ ...draft, tools: Array.from(next).map((type) => ({ type })) });
+    onDraftChange({
+      ...draft,
+      tools: Array.from(next).map((type) => ({ type })),
+    });
   };
 
   return (
@@ -468,9 +472,7 @@ function AgentBuilderCopilot({
           {response.tool_recommendations.length > 0 && (
             <div className="grid gap-2">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  工具建议
-                </h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">工具建议</h3>
                 <Button type="button" size="sm" variant="outline" onClick={applyToolRecommendations}>
                   应用 add/remove
                 </Button>
@@ -487,13 +489,9 @@ function AgentBuilderCopilot({
                       </Badge>
                       <span className="font-mono text-xs">{recommendation.tool}</span>
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {recommendation.reason}
-                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{recommendation.reason}</p>
                     {recommendation.risk && (
-                      <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                        {recommendation.risk}
-                      </p>
+                      <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">{recommendation.risk}</p>
                     )}
                   </div>
                 ))}
@@ -520,7 +518,11 @@ function CopilotButton({
   const loading = loadingMode === mode;
   return (
     <Button type="button" size="sm" variant="outline" onClick={onClick} disabled={loadingMode !== null}>
-      {loading ? <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Sparkles className="size-3.5" />}
+      {loading ? (
+        <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+      ) : (
+        <Sparkles className="size-3.5" />
+      )}
       {children}
     </Button>
   );

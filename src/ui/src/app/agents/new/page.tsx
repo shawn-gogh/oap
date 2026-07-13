@@ -10,6 +10,7 @@ import { ImportAgentDialog } from "../import-agent-dialog";
 import { Button } from "@/components/ui/button";
 import {
   AGENT_TEMPLATES,
+  applicationGatePassed,
   agentTemplateForPrompt,
   buildAgentDraftFromPrompt,
   createInputFromDraft,
@@ -21,10 +22,7 @@ import {
 import type { AgentDraft } from "@/lib/agent-builder";
 import { diffAgentDrafts } from "@/lib/agent-draft-diff";
 import type { FieldChange } from "@/lib/agent-draft-diff";
-import {
-  integrationFromMcpServer,
-  sortIntegrations,
-} from "@/lib/integrations";
+import { integrationFromMcpServer, sortIntegrations } from "@/lib/integrations";
 import type { Integration } from "@/lib/integrations";
 import {
   apiErrorMessage,
@@ -42,11 +40,7 @@ import {
   listRules,
   listSkills,
 } from "@/lib/api";
-import {
-  defaultModelForRuntime,
-  runtimeSupportsModelDiscovery,
-  selectedRuntimeModel,
-} from "@/lib/model-options";
+import { defaultModelForRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import type { Agent, AgentRuntime, Rule, Skill, RuntimeHarness } from "@/lib/types";
 import {
   BUILDER_DRAFT_STORAGE_KEY,
@@ -84,7 +78,10 @@ export default function NewAgentPage() {
   const [view, setView] = useState<BuilderView>("edit");
   const [drafting, setDrafting] = useState(false);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
-  const [modelSuggestion, setModelSuggestion] = useState<{ suggested: string; current: string } | null>(null);
+  const [modelSuggestion, setModelSuggestion] = useState<{
+    suggested: string;
+    current: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -95,7 +92,8 @@ export default function NewAgentPage() {
 
   const parsed = useMemo(() => parseAgentDraftConfig(configText), [configText]);
   const draft = parsed.draft;
-  const canCreate = !saving && !parsed.error && draft.name.trim().length > 0;
+  const canCreate =
+    !saving && !parsed.error && draft.name.trim().length > 0 && applicationGatePassed(draft.application);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,10 +132,7 @@ export default function NewAgentPage() {
         try {
           const batch = await listAllMcpServerTools();
           toolsByServer = new Map(
-            Array.from(batch, ([serverId, tools]) => [
-              serverId,
-              tools.map((tool) => tool.name).filter(Boolean),
-            ]),
+            Array.from(batch, ([serverId, tools]) => [serverId, tools.map((tool) => tool.name).filter(Boolean)]),
           );
         } catch {
           // Older backends without the batch route: fall back to per-server calls.
@@ -199,7 +194,10 @@ export default function NewAgentPage() {
         if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
         if (currentDraft.draft.runtime.trim() !== runtime) return current;
         if (currentDraft.draft.model.trim() === defaultModel) return current;
-        return stringifyAgentDraft({ ...currentDraft.draft, model: defaultModel });
+        return stringifyAgentDraft({
+          ...currentDraft.draft,
+          model: defaultModel,
+        });
       });
       return;
     }
@@ -213,7 +211,10 @@ export default function NewAgentPage() {
           if (currentDraft.draft.runtime.trim() !== runtime) return current;
           const nextModel = selectedRuntimeModel(modelValues, currentDraft.draft.model);
           if (currentDraft.draft.model.trim() === nextModel) return current;
-          return stringifyAgentDraft({ ...currentDraft.draft, model: nextModel });
+          return stringifyAgentDraft({
+            ...currentDraft.draft,
+            model: nextModel,
+          });
         });
       })
       .catch((err) => {
@@ -265,7 +266,12 @@ export default function NewAgentPage() {
     if (step === "create") return;
     const timer = window.setTimeout(() => {
       try {
-        const payload: SavedBuilderDraft = { configText, step, messages, savedAt: Date.now() };
+        const payload: SavedBuilderDraft = {
+          configText,
+          step,
+          messages,
+          savedAt: Date.now(),
+        };
         localStorage.setItem(BUILDER_DRAFT_STORAGE_KEY, JSON.stringify(payload));
       } catch {
         // Storage full or unavailable; autosave is best-effort.
@@ -297,7 +303,12 @@ export default function NewAgentPage() {
   const openConfig = (
     next: AgentDraft,
     templateId: string,
-    options?: { request?: string; notice?: string | null; summary?: string; changes?: FieldChange[] },
+    options?: {
+      request?: string;
+      notice?: string | null;
+      summary?: string;
+      changes?: FieldChange[];
+    },
   ) => {
     setSelectedTemplateId(templateId);
     setConfigText(stringifyAgentDraft(next));
@@ -314,8 +325,7 @@ export default function NewAgentPage() {
       },
     ]);
     setView("edit");
-    // Methodology gate: evaluation definition comes before design.
-    setStep("eval");
+    setStep("config");
     setError(null);
   };
 
@@ -341,14 +351,9 @@ export default function NewAgentPage() {
       // differing recommendation: surface it as an inline suggestion the
       // user can accept or dismiss (only when it's actually selectable).
       const recommendedModel = generatedDraft.draft.model?.trim() ?? "";
-      const nextDraft = selectedModel
-        ? { ...generatedDraft.draft, model: selectedModel }
-        : generatedDraft.draft;
+      const nextDraft = selectedModel ? { ...generatedDraft.draft, model: selectedModel } : generatedDraft.draft;
       setModelSuggestion(
-        selectedModel &&
-          recommendedModel &&
-          recommendedModel !== selectedModel &&
-          models.includes(recommendedModel)
+        selectedModel && recommendedModel && recommendedModel !== selectedModel && models.includes(recommendedModel)
           ? { suggested: recommendedModel, current: selectedModel }
           : null,
       );
@@ -403,10 +408,7 @@ export default function NewAgentPage() {
         {
           id: userMessageId + 1,
           role: "assistant",
-          summary:
-            changes.length === 0
-              ? "配置没有需要修改的地方。"
-              : `已应用 ${changes.length} 处修改：`,
+          summary: changes.length === 0 ? "配置没有需要修改的地方。" : `已应用 ${changes.length} 处修改：`,
           changes,
         },
       ]);
@@ -507,19 +509,18 @@ export default function NewAgentPage() {
             <span className="truncate text-sm font-semibold">创建智能体</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setImportOpen(true)}
-              className="hidden sm:inline-flex"
-            >
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)} className="hidden sm:inline-flex">
               <ExternalLink className="size-3.5" />
               导入智能体
             </Button>
             {step === "config" && (
-              <Button size="sm" onClick={() => setStep("review")} disabled={Boolean(parsed.error)}>
+              <Button
+                size="sm"
+                onClick={() => setStep("eval")}
+                disabled={Boolean(parsed.error) || !applicationGatePassed(draft.application)}
+              >
                 <CheckCircle2 className="size-3.5" />
-                进入复核
+                进入验证
               </Button>
             )}
             {step === "review" && (
@@ -542,15 +543,16 @@ export default function NewAgentPage() {
 
         <main className="min-h-0 flex-1 overflow-y-auto bg-background text-foreground">
           <PlatformSteps
-            activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
-            canEnterConfig={evalGatePassed(draft.design)}
-            canEnterReview={!parsed.error && draft.name.trim().length > 0}
+            activeStep={step === "create" ? 1 : step === "config" ? 2 : step === "eval" ? 3 : 4}
+            canEnterEvaluation={applicationGatePassed(draft.application) && !parsed.error}
+            canEnterReview={evalGatePassed(draft.design) && !parsed.error && draft.name.trim().length > 0}
             onNavigate={setStep}
           />
           {savedDraft && step === "create" && (
             <div className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
               <span className="min-w-0 flex-1">
-                检测到未完成的草稿（{savedDraftAgeLabel(savedDraft.savedAt)}保存），是否继续编辑？
+                检测到未完成的草稿（{savedDraftAgeLabel(savedDraft.savedAt)}
+                保存），是否继续编辑？
               </span>
               <Button type="button" size="sm" onClick={restoreSavedDraft}>
                 恢复草稿
@@ -564,8 +566,8 @@ export default function NewAgentPage() {
             <EvalStep
               draft={draft}
               onDraftChange={updateDraft}
-              onBack={() => setStep("create")}
-              onContinue={() => setStep("config")}
+              onBack={() => setStep("config")}
+              onContinue={() => setStep("review")}
             />
           ) : step === "review" ? (
             <ReviewStep
@@ -580,7 +582,7 @@ export default function NewAgentPage() {
               saving={saving}
               mcpIntegrations={mcpIntegrations}
               onDraftChange={updateDraft}
-              onBack={() => setStep("config")}
+              onBack={() => setStep("eval")}
               onCreate={() => void create()}
             />
           ) : step === "create" ? (
@@ -645,7 +647,7 @@ export default function NewAgentPage() {
                 setError(null);
               }}
               onCopy={() => void copyConfig()}
-              onCreate={() => setStep("review")}
+              onCreate={() => setStep("eval")}
               onDraftChange={updateDraft}
               onPromptChange={setPrompt}
               onRefine={refineFromPrompt}
