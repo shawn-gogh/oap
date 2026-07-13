@@ -41,10 +41,10 @@
 
 ## 未完成（按优先级）
 
-### 阶段 C：P0 收尾（小，建议下一个做）
-- [ ] C1 创建流程收尾：`POST /api/agents` 成功后跳转详情页并滚动/高亮预检面板（目前需手动进入详情页）
-- [ ] C2 channel 触发入口核查：确认 Slack/Teams/收件箱触发路径是否绕过 `runs/create`；若绕过，补 `assert_agent_runnable`
-- [ ] C3 agents 列表页显示 draft 状态徽章，与详情页语义一致
+### ~~阶段 C：P0 收尾~~（已完成，commit `cefc3d06`）
+- [x] C1 创建成功 toast 说明草稿语义，跳转详情页（预检面板在详情页顶部）
+- [x] C2 Slack/Teams 事件路径确认绕过 `runs/create`，已补 draft 忽略（记日志、不回错给渠道）
+- [x] C3 agents 列表页 draft 显示「草稿」徽章
 
 ### 阶段 D：在线连通性预检（中）
 - [ ] D1 MCP 冒烟：对每个已挂载 MCP 调 `initialize` + `list_tools`，`exists_only` → `verified`/`failed`。身份：agent owner 凭证；结果缓存 ~10 分钟并显示测试时间戳；错误归因区分网络不可达 / 认证失败 / 协议错误
