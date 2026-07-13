@@ -53,9 +53,6 @@ import type {
   VaultKeyEntry,
   PlatformMcp,
 } from "@/lib/types";
-import { useGoogleChatAppFlow } from "./google-chat-app-flow";
-import { useSlackAppFlow } from "./slack-app-flow";
-import { useTeamsAppFlow } from "./teams-app-flow";
 import { useWebhookAppFlow } from "./webhook-app-flow";
 import { ImportAgentDialog } from "./import-agent-dialog";
 import { AgentsTable } from "./agents-table";
@@ -118,9 +115,6 @@ export default function AgentsPage() {
   const [memValue, setMemValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [byoConfiguredAgents, setByoConfiguredAgents] = useState<Set<string>>(new Set());
-  const googleChatFlow = useGoogleChatAppFlow(setAgents);
-  const slackFlow = useSlackAppFlow(setAgents);
-  const teamsFlow = useTeamsAppFlow(setAgents);
   const webhookFlow = useWebhookAppFlow(setAgents);
 
   const load = async () => {
@@ -372,9 +366,6 @@ export default function AgentsPage() {
                 onRun={openAgent}
                 onEdit={openEdit}
                 onDelete={remove}
-                onSlack={slackFlow.openSlack}
-                onTeams={teamsFlow.openTeams}
-                onGoogleChat={googleChatFlow.openGoogleChat}
                 onWebhook={webhookFlow.openWebhook}
                 onOpenDetail={(agent) =>
                   router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`)
@@ -793,9 +784,6 @@ export default function AgentsPage() {
         onOpenChange={setImportOpen}
         onImported={(imported) => setAgents((current) => [...imported, ...(current ?? [])])}
       />
-      {googleChatFlow.dialog}
-      {slackFlow.dialog}
-      {teamsFlow.dialog}
       {webhookFlow.dialog}
     </div>
   );

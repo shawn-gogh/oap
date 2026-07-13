@@ -156,7 +156,6 @@ mod tests {
             }],
             mcp_servers: Default::default(),
             general_settings: Default::default(),
-            slack: Default::default(),
             agents: Vec::new(),
         };
 
@@ -183,7 +182,6 @@ mod tests {
             }],
             mcp_servers: Default::default(),
             general_settings: Default::default(),
-            slack: Default::default(),
             agents: Vec::new(),
         };
 
@@ -210,7 +208,6 @@ mod tests {
             }],
             mcp_servers: Default::default(),
             general_settings: Default::default(),
-            slack: Default::default(),
             agents: Vec::new(),
         };
 
@@ -247,7 +244,6 @@ mod tests {
             ],
             mcp_servers: Default::default(),
             general_settings: Default::default(),
-            slack: Default::default(),
             agents: Vec::new(),
         };
 

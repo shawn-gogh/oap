@@ -10,7 +10,7 @@ use litellm_rust::{
     db::managed_agents::pool as managed_agents_pool,
     http::routes::router,
     proxy::{
-        config::{GatewayConfig, GeneralSettings, SlackSettings},
+        config::{GatewayConfig, GeneralSettings},
         state::AppState,
     },
     sdk::{providers::ProviderRegistry, routing::Router as ModelRouter},
@@ -25,17 +25,14 @@ use wiremock::{
 
 mod db;
 pub mod flows;
-mod slack_mock;
 
 use db::reset_tables;
-use slack_mock::mock_slack;
 
 pub struct AppFixture {
     pub app: axum::Router,
     pub state: Arc<AppState>,
     pub(crate) pool: PgPool,
     _e2b: MockServer,
-    pub slack: MockServer,
 }
 
 impl AppFixture {
@@ -47,19 +44,17 @@ impl AppFixture {
         managed_agents_pool::migrate(&pool).await.unwrap();
         reset_tables(&pool).await;
         let e2b = mock_e2b().await;
-        let slack = mock_slack().await;
-        let state = build_state(pool.clone(), e2b.uri(), slack.uri());
+        let state = build_state(pool.clone(), e2b.uri());
         Some(Self {
             app: router(state.clone()),
             state,
             pool,
             _e2b: e2b,
-            slack,
         })
     }
 }
 
-fn build_state(pool: PgPool, e2b_api_base: String, slack_api_base_url: String) -> Arc<AppState> {
+fn build_state(pool: PgPool, e2b_api_base: String) -> Arc<AppState> {
     let config = GatewayConfig {
         model_list: Vec::new(),
         mcp_servers: Default::default(),
@@ -78,9 +73,6 @@ fn build_state(pool: PgPool, e2b_api_base: String, slack_api_base_url: String) -
             },
             ..Default::default()
         },
-        slack: SlackSettings {
-            api_base_url: slack_api_base_url,
-        },
         agents: Vec::new(),
     };
     let http = AppState::build_http_client().unwrap();
@@ -93,7 +85,6 @@ fn empty_router() -> ModelRouter {
             model_list: Vec::new(),
             mcp_servers: Default::default(),
             general_settings: GeneralSettings::default(),
-            slack: Default::default(),
             agents: Vec::new(),
         },
         &ProviderRegistry::new(),

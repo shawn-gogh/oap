@@ -22,9 +22,6 @@ pub struct GatewayConfig {
     pub general_settings: GeneralSettings,
 
     #[serde(default)]
-    pub slack: SlackSettings,
-
-    #[serde(default)]
     pub agents: Vec<AgentDefinition>,
 }
 
@@ -100,24 +97,6 @@ impl DerefMut for McpServersConfig {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.servers
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SlackSettings {
-    #[serde(default = "default_slack_api_base_url")]
-    pub api_base_url: String,
-}
-
-impl Default for SlackSettings {
-    fn default() -> Self {
-        Self {
-            api_base_url: default_slack_api_base_url(),
-        }
-    }
-}
-
-fn default_slack_api_base_url() -> String {
-    "https://slack.com/api".to_owned()
 }
 
 fn default_spend_logs_batch_interval_seconds() -> u64 {

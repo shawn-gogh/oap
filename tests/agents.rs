@@ -173,7 +173,6 @@ fn test_config(e2b_api_base: String) -> GatewayConfig {
             },
             ..Default::default()
         },
-        slack: Default::default(),
         agents: vec![AgentDefinition {
             id: None,
             name: "Untitled agent".to_owned(),

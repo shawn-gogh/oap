@@ -129,7 +129,6 @@ fn test_config() -> GatewayConfig {
             master_key: Some("sk-local".to_owned()),
             ..Default::default()
         },
-        slack: Default::default(),
         agents: Vec::new(),
     }
 }
