@@ -81,11 +81,11 @@ pub async fn has_permission(
         r#"
         SELECT EXISTS(
           SELECT 1
-          FROM "LiteLLM_AgentGroupGrantsTable" grant
-          JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = grant.group_id
-          JOIN "LiteLLM_GroupsTable" groups ON groups.id = grant.group_id
-          WHERE grant.agent_id = $1 AND member.user_id = $2 AND groups.status = 'active'
-            AND ($3 = 'use' OR grant.permission = 'edit')
+          FROM "LiteLLM_AgentGroupGrantsTable" ag_grant
+          JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = ag_grant.group_id
+          JOIN "LiteLLM_GroupsTable" groups ON groups.id = ag_grant.group_id
+          WHERE ag_grant.agent_id = $1 AND member.user_id = $2 AND groups.status = 'active'
+            AND ($3 = 'use' OR ag_grant.permission = 'edit')
         )
         "#,
     )
@@ -100,10 +100,10 @@ pub async fn has_permission(
 pub async fn agent_ids_for_user(pool: &PgPool, user_id: &str) -> Result<Vec<String>, GatewayError> {
     sqlx::query_scalar::<_, String>(
         r#"
-        SELECT DISTINCT grant.agent_id
-        FROM "LiteLLM_AgentGroupGrantsTable" grant
-        JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = grant.group_id
-        JOIN "LiteLLM_GroupsTable" groups ON groups.id = grant.group_id
+        SELECT DISTINCT ag_grant.agent_id
+        FROM "LiteLLM_AgentGroupGrantsTable" ag_grant
+        JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = ag_grant.group_id
+        JOIN "LiteLLM_GroupsTable" groups ON groups.id = ag_grant.group_id
         WHERE member.user_id = $1 AND groups.status = 'active'
         "#,
     )
