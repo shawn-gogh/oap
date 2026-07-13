@@ -46,10 +46,10 @@
 - [x] C2 Slack/Teams 事件路径确认绕过 `runs/create`，已补 draft 忽略（记日志、不回错给渠道）
 - [x] C3 agents 列表页 draft 显示「草稿」徽章
 
-### 阶段 D：在线连通性预检（中）
-- [ ] D1 MCP 冒烟：对每个已挂载 MCP 调 `initialize` + `list_tools`，`exists_only` → `verified`/`failed`。身份：agent owner 凭证；结果缓存 ~10 分钟并显示测试时间戳；错误归因区分网络不可达 / 认证失败 / 协议错误
-- [ ] D2 Runtime health 探测（自定义 harness 的 api_base 连通性）
-- [ ] D3 模型可用性：对所选 Runtime 查询模型列表（可行时），`exists_only` → `verified`
+### ~~阶段 D：在线连通性预检~~（已完成，见分支提交）
+- [x] D1 MCP 冒烟：复用 `mcp_registry::tools::tools_for_server` 调 `tools/list`，以 agent owner 凭证执行，8s 超时；错误归因区分认证失败(401/403)/协议错误(HTTP n)/网络不可达/超时。偏差说明：未做结果缓存——预检仅由用户手动触发（详情页按钮），无轮询场景，缓存收益不成立；若后续加自动预检再补
+- [x] D2 Runtime health：自定义 harness 对 api_base 发 GET 探测（任何 HTTP 响应即视为连通）；内置 SaaS Runtime 不探测（探测厂商 API 无意义且增加抖动），保持解析+凭证即 verified
+- [x] D3 模型可用性：模型在网关 `model_list` 中 → `verified`；不在 → `unverified`（外部 Runtime 厂商侧解析无法验证，如实说明），不误报 failed
 
 ### 阶段 E：opencode wrapper 强制审批（中大，独立分支做）
 - [ ] E1 approval token 语义实现：绑定 `(user, agent_id, session_id, tool_name, args_hash)`，一次性、短 TTL（15min）、参数变化重批、子智能体不继承；签发/消费写审计表（schema 与后续迁移一起规划）

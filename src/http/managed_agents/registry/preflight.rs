@@ -28,8 +28,12 @@ use crate::{
     },
     errors::GatewayError,
     http::{agent_runtime_tools::runtime_tools, runtime_resolution::resolve_runtime},
-    proxy::{auth::master_key::authenticate, state::AppState},
+    proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
 };
+
+/// Upper bound for each outbound connectivity probe so one hung server
+/// cannot stall the whole preflight report.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 #[derive(Debug, Serialize)]
 pub struct PreflightCheck {
@@ -53,17 +57,17 @@ const UNVERIFIED: &str = "unverified";
 const FAILED: &str = "failed";
 
 pub async fn run_preflight(
-    state: &AppState,
+    state: &Arc<AppState>,
     pool: &PgPool,
     agent: &ManagedAgentRow,
 ) -> Result<PreflightReport, GatewayError> {
     let mut checks = Vec::new();
 
     checks.push(check_runtime(state, pool, agent).await);
-    checks.push(check_model(agent));
+    checks.push(check_model(state, agent));
     checks.push(check_tools(agent));
     checks.extend(check_vault_keys(pool, agent).await?);
-    checks.extend(check_mcp_servers(pool, agent).await?);
+    checks.extend(check_mcp_servers(state, pool, agent).await?);
 
     let can_activate = checks.iter().all(|check| check.verdict != FAILED);
     Ok(PreflightReport {
@@ -84,7 +88,11 @@ fn agent_runtime_alias(agent: &ManagedAgentRow) -> Option<String> {
         .map(str::to_owned)
 }
 
-async fn check_runtime(state: &AppState, pool: &PgPool, agent: &ManagedAgentRow) -> PreflightCheck {
+async fn check_runtime(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+) -> PreflightCheck {
     let Some(alias) = agent_runtime_alias(agent) else {
         return PreflightCheck {
             id: "runtime",
@@ -93,24 +101,61 @@ async fn check_runtime(state: &AppState, pool: &PgPool, agent: &ManagedAgentRow)
             detail: "未配置外部 Runtime，将使用内置聊天执行。".to_owned(),
         };
     };
-    match resolve_runtime(pool, state, &alias).await {
-        Ok(_) => PreflightCheck {
+    let resolved = match resolve_runtime(pool, state, &alias).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return PreflightCheck {
+                id: "runtime",
+                label: "Runtime".to_owned(),
+                verdict: FAILED,
+                detail: format!("Runtime「{alias}」无法解析：{error}"),
+            }
+        }
+    };
+    // Built-in SaaS runtimes (Anthropic etc.) are not probed; a reachability
+    // check against a vendor API proves little and adds flakiness. Custom
+    // harnesses run on user infrastructure, where "registered but down" is
+    // the common failure worth catching before activation.
+    if !resolved.is_custom_harness {
+        return PreflightCheck {
             id: "runtime",
             label: "Runtime".to_owned(),
             verdict: VERIFIED,
             detail: format!("Runtime「{alias}」已注册且凭证已配置。"),
+        };
+    }
+    let base = resolved
+        .credential
+        .api_base
+        .trim_end_matches('/')
+        .to_owned();
+    match state.http.get(&base).timeout(PROBE_TIMEOUT).send().await {
+        // Any HTTP response (even 404) proves the harness endpoint is up;
+        // route-level correctness is the session layer's job.
+        Ok(_) => PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: VERIFIED,
+            detail: format!("Runtime「{alias}」已连通（{base}）。"),
+        },
+        Err(error) if error.is_timeout() => PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: FAILED,
+            detail: format!("Runtime「{alias}」连接超时（{base}）。"),
         },
         Err(error) => PreflightCheck {
             id: "runtime",
             label: "Runtime".to_owned(),
             verdict: FAILED,
-            detail: format!("Runtime「{alias}」无法解析：{error}"),
+            detail: format!("Runtime「{alias}」无法连接（{base}）：{error}"),
         },
     }
 }
 
-fn check_model(agent: &ManagedAgentRow) -> PreflightCheck {
-    if agent.model.trim().is_empty() {
+fn check_model(state: &Arc<AppState>, agent: &ManagedAgentRow) -> PreflightCheck {
+    let model = agent.model.trim();
+    if model.is_empty() {
         return PreflightCheck {
             id: "model",
             label: "模型".to_owned(),
@@ -118,13 +163,29 @@ fn check_model(agent: &ManagedAgentRow) -> PreflightCheck {
             detail: "未配置模型。".to_owned(),
         };
     }
+    // Custom-harness agents route inference back through this gateway, so the
+    // gateway's own model_list is authoritative for them. External runtimes
+    // (Anthropic managed agents, Gemini) resolve models vendor-side, which we
+    // cannot verify here — say so instead of guessing.
+    if state
+        .config
+        .model_list
+        .iter()
+        .any(|entry| entry.model_name == model)
+    {
+        return PreflightCheck {
+            id: "model",
+            label: "模型".to_owned(),
+            verdict: VERIFIED,
+            detail: format!("模型「{model}」在网关模型列表中。"),
+        };
+    }
     PreflightCheck {
         id: "model",
         label: "模型".to_owned(),
-        verdict: EXISTS_ONLY,
+        verdict: UNVERIFIED,
         detail: format!(
-            "模型「{}」已配置；是否在所选 Runtime 中可用未验证。",
-            agent.model
+            "模型「{model}」不在网关模型列表中；若由外部 Runtime 直接解析则可能可用，此处无法验证。"
         ),
     }
 }
@@ -229,6 +290,7 @@ async fn check_vault_keys(
 }
 
 async fn check_mcp_servers(
+    state: &Arc<AppState>,
     pool: &PgPool,
     agent: &ManagedAgentRow,
 ) -> Result<Vec<PreflightCheck>, GatewayError> {
@@ -243,28 +305,92 @@ async fn check_mcp_servers(
         .collect();
     let mut checks = Vec::new();
     for server_id in server_ids {
-        let row = mcp_servers::repository::get(pool, &server_id).await?;
-        checks.push(match row {
-            Some(row) => PreflightCheck {
-                id: "mcp_server",
-                label: format!(
-                    "MCP {}",
-                    row.server_name
-                        .or(row.alias)
-                        .unwrap_or_else(|| row.server_id.clone())
-                ),
-                verdict: EXISTS_ONLY,
-                detail: "已在注册表中；连通性与凭证有效性未验证。".to_owned(),
-            },
-            None => PreflightCheck {
+        let Some(row) = mcp_servers::repository::get(pool, &server_id).await? else {
+            checks.push(PreflightCheck {
                 id: "mcp_server",
                 label: format!("MCP {server_id}"),
                 verdict: FAILED,
                 detail: "配置引用了不存在的 MCP 服务器。".to_owned(),
-            },
-        });
+            });
+            continue;
+        };
+        let label = format!(
+            "MCP {}",
+            row.server_name
+                .clone()
+                .or(row.alias.clone())
+                .unwrap_or_else(|| row.server_id.clone())
+        );
+        checks.push(smoke_test_mcp(state, pool, agent, &row, &server_id, label).await);
     }
     Ok(checks)
+}
+
+/// Live tools/list smoke test against one attached MCP server, on behalf of
+/// the agent owner (matching the identity used at run time). A successful
+/// tools/list upgrades the verdict to `verified`; failures are classified so
+/// the user knows whether to fix the network, the credential, or the server.
+async fn smoke_test_mcp(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+    row: &crate::db::mcp_servers::schema::McpServerRow,
+    server_id: &str,
+    label: String,
+) -> PreflightCheck {
+    let owner = agent.owner_id.clone().unwrap_or_default();
+    let enc_key =
+        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref()).ok();
+    let smoke = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        crate::http::mcp_registry::tools::tools_for_server(
+            state,
+            pool,
+            row,
+            server_id,
+            &owner,
+            enc_key.as_deref(),
+        ),
+    )
+    .await;
+    match smoke {
+        Ok(Ok(tools)) => PreflightCheck {
+            id: "mcp_server",
+            label,
+            verdict: VERIFIED,
+            detail: format!("tools/list 连通成功，{} 个工具可用。", tools.len()),
+        },
+        Ok(Err(GatewayError::UpstreamHttp(status @ (401 | 403), _))) => PreflightCheck {
+            id: "mcp_server",
+            label,
+            verdict: FAILED,
+            detail: format!("认证失败（HTTP {status}）：请检查该服务器的凭证配置。"),
+        },
+        Ok(Err(GatewayError::UpstreamHttp(status, _))) => PreflightCheck {
+            id: "mcp_server",
+            label,
+            verdict: FAILED,
+            detail: format!("服务器返回 HTTP {status}：协议或服务端错误。"),
+        },
+        Ok(Err(GatewayError::Upstream(error))) => PreflightCheck {
+            id: "mcp_server",
+            label,
+            verdict: FAILED,
+            detail: format!("网络不可达：{error}"),
+        },
+        Ok(Err(error)) => PreflightCheck {
+            id: "mcp_server",
+            label,
+            verdict: FAILED,
+            detail: format!("冒烟测试失败：{error}"),
+        },
+        Err(_) => PreflightCheck {
+            id: "mcp_server",
+            label,
+            verdict: FAILED,
+            detail: format!("连接超时（>{}s）。", PROBE_TIMEOUT.as_secs()),
+        },
+    }
 }
 
 pub async fn preflight(

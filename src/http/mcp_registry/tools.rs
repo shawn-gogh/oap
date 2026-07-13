@@ -120,7 +120,8 @@ fn require_active_server_url<'a>(
 
 /// Shared core of the single and batch tools listings: resolve variables and
 /// credentials for one server, call its tools/list, and filter the result.
-async fn tools_for_server(
+/// Also reused by agent preflight as the MCP connectivity smoke test.
+pub(crate) async fn tools_for_server(
     state: &Arc<AppState>,
     pool: &sqlx::PgPool,
     server: &McpServerRow,
