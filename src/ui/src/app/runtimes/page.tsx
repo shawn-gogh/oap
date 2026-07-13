@@ -56,36 +56,27 @@ import {
 import type { RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+// "claude_managed_agents" is the wire protocol id, not a vendor lock-in: it's
+// the Anthropic-Messages-API-compatible surface that self-hosted open
+// harnesses (opencode/hermes/openclaw) speak when registering as a custom
+// runtime (see compose.yaml's RUNTIME_API_SPEC=claude_managed_agents). OAP
+// hides direct-to-Anthropic/Cursor/Gemini connections from the built-in
+// runtime list (see src/site_config.rs) but keeps this protocol option here,
+// under a neutral label, since open harnesses depend on it.
 const SPEC_DEFAULTS: Record<string, string> = {
-  claude_managed_agents: "https://api.anthropic.com",
-  cursor: "https://api.cursor.com",
-  gemini_antigravity: "https://generativelanguage.googleapis.com",
+  claude_managed_agents: "http://localhost:8080",
 };
 
 const SPEC_LABELS: Record<string, string> = {
-  claude_managed_agents: "Claude Managed Agents",
-  cursor: "Cursor",
-  gemini_antigravity: "Gemini Antigravity",
+  claude_managed_agents: "自托管开放 Harness（Anthropic 兼容协议）",
 };
 
 const RUNTIME_OPTIONS = [
   {
     value: "claude_managed_agents",
-    label: "Claude Managed Agents",
+    label: "自托管开放 Harness（Anthropic 兼容协议）",
     apiSpec: "claude_managed_agents",
     defaultApiBase: SPEC_DEFAULTS.claude_managed_agents,
-  },
-  {
-    value: "cursor",
-    label: "Cursor",
-    apiSpec: "cursor",
-    defaultApiBase: SPEC_DEFAULTS.cursor,
-  },
-  {
-    value: "gemini_antigravity",
-    label: "Gemini Antigravity",
-    apiSpec: "gemini_antigravity",
-    defaultApiBase: SPEC_DEFAULTS.gemini_antigravity,
   },
 ];
 
@@ -93,26 +84,8 @@ const FALLBACK_DEFAULT_RUNTIMES: RuntimeHarness[] = [
   {
     alias: "claude_managed_agents",
     api_spec: "claude_managed_agents",
-    display_name: "Claude Agents",
+    display_name: "自托管开放 Harness",
     api_base: SPEC_DEFAULTS.claude_managed_agents,
-    is_default: true,
-    connected: false,
-    tools: [],
-  },
-  {
-    alias: "cursor",
-    api_spec: "cursor",
-    display_name: "Cursor",
-    api_base: SPEC_DEFAULTS.cursor,
-    is_default: true,
-    connected: false,
-    tools: [],
-  },
-  {
-    alias: "gemini_antigravity",
-    api_spec: "gemini_antigravity",
-    display_name: "Gemini Antigravity",
-    api_base: SPEC_DEFAULTS.gemini_antigravity,
     is_default: true,
     connected: false,
     tools: [],

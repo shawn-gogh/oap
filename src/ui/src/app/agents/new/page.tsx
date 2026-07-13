@@ -1556,7 +1556,7 @@ function runtimeApiSpec(value: string): string {
 }
 
 function runtimeLabel(value: string): string {
-  if (value === "claude_managed_agents") return "Claude Managed Agents";
+  if (value === "claude_managed_agents") return "自托管开放 Harness";
   if (value === "cursor") return "Cursor";
   if (value === "gemini_antigravity") return "Gemini Antigravity";
   if (value === "opencode") return "OpenCode";

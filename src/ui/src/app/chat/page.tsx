@@ -67,7 +67,7 @@ function shortPrompt(prompt: string): string {
 }
 
 function runtimeLabel(runtime?: string): string {
-  if (runtime === "claude_managed_agents") return "Claude Managed Agents";
+  if (runtime === "claude_managed_agents") return "自托管开放 Harness";
   if (runtime === "cursor") return "Cursor";
   if (runtime === "gemini_antigravity") return "Gemini Antigravity";
   return BUILTIN_AGENTS[runtime ?? ""] ?? runtime ?? "Claude Code";

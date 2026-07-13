@@ -9,3 +9,4 @@ pub mod mcp;
 pub mod model_prices;
 pub mod proxy;
 pub mod sdk;
+pub mod site_config;
