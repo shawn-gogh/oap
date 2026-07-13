@@ -12,7 +12,6 @@ pub async fn exercise_platform_mcps(fixture: &AppFixture, agent_id: &str) {
     assert_session_send(fixture, agent_id).await;
     assert_sub_agent_allowlist(fixture, agent_id).await;
     super::platform_approvals::assert_human_approval(fixture, agent_id).await;
-    super::platform_factory::assert_agent_factory(fixture, agent_id).await;
 }
 
 async fn assert_catalog(fixture: &AppFixture) {
@@ -30,10 +29,7 @@ async fn assert_catalog(fixture: &AppFixture) {
             "send_platform_session_message",
             "agent_memory",
             "edit_agent_skill",
-            "send_slack_message",
             "create_managed_agent",
-            "connect_agent_to_slack",
-            "list_slack_agent_bindings",
             "list_sub_agents",
             "run_sub_agent",
             "request_human_approval",
@@ -237,6 +233,7 @@ async fn seed_session_message(fixture: &AppFixture, agent_id: &str) -> String {
         "platform mcp test",
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -257,6 +254,7 @@ async fn seed_empty_session(fixture: &AppFixture, agent_id: &str) -> String {
         "claude-code",
         Some(agent_id),
         "platform mcp send test",
+        None,
         None,
         None,
     )

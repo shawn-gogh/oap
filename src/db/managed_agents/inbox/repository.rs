@@ -56,7 +56,7 @@ pub async fn pending_approvals(
         r#"
         SELECT i.*
         FROM "LiteLLM_ManagedAgentInboxItemsTable" i
-        WHERE i.kind = 'approval' AND i.status = 'pending'
+        WHERE i.kind IN ('approval', 'tool_permission') AND i.status = 'pending'
           AND ($1::TEXT IS NULL OR i.session_id = $1)
           AND (i.session_id IS NULL OR EXISTS (
                 SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
@@ -146,6 +146,7 @@ pub async fn get(pool: &PgPool, item_id: &str) -> Result<Option<InboxItemRow>, G
 
 pub async fn create_approval(
     pool: &PgPool,
+    kind: &str,
     title: String,
     session_id: Option<String>,
     agent: Option<String>,
@@ -157,11 +158,12 @@ pub async fn create_approval(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentInboxItemsTable"
           (id, kind, title, session_id, agent, body, args_json, status, created_at)
-        VALUES ($1, 'approval', $2, $3, $4, $5, $6, 'pending', $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
         RETURNING *
         "#,
     )
     .bind(id("appr"))
+    .bind(kind)
     .bind(title)
     .bind(session_id)
     .bind(agent)

@@ -164,7 +164,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
 
   const currentPath = pathname ?? "";
   const sections: NavSection[] = [
-    {
+    ...(currentUser?.is_admin ? [{
       label: "AI Gateway",
       icon: ShieldCheck,
       home: "/providers/",
@@ -174,59 +174,60 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           label: "密钥 Keys",
           href: "/keys/",
           icon: KeyRound,
-          active: (path) => path.startsWith("/keys"),
+          active: (path: string) => path.startsWith("/keys"),
           group: "访问控制",
         },
-        ...(currentUser?.is_admin ? [{
+        {
           label: "用户管理",
           href: "/users/",
           icon: Users,
           active: (path: string) => path.startsWith("/users"),
           group: "访问控制",
-        }, {
+        },
+        {
           label: "用户组",
           href: "/groups/",
           icon: Users,
           active: (path: string) => path.startsWith("/groups"),
           group: "访问控制",
-        }] : []),
+        },
         {
           label: "团队 Teams",
           href: "/teams/",
           icon: Users,
-          active: (path) => path.startsWith("/teams"),
+          active: (path: string) => path.startsWith("/teams"),
           group: "访问控制",
         },
         {
           label: "LLM 提供方",
           href: "/providers/",
           icon: ServerCog,
-          active: (path) => path.startsWith("/providers"),
+          active: (path: string) => path.startsWith("/providers"),
           group: "基础设施",
         },
         {
           label: "Agent 运行时",
           href: "/runtimes/",
           icon: ServerCog,
-          active: (path) => path.startsWith("/runtimes"),
+          active: (path: string) => path.startsWith("/runtimes"),
           group: "基础设施",
         },
         {
           label: "MCP 服务器",
           href: "/mcp-servers/",
           icon: Server,
-          active: (path) => path.startsWith("/mcp-servers"),
+          active: (path: string) => path.startsWith("/mcp-servers"),
           group: "基础设施",
         },
         {
           label: "调用日志",
           href: "/observability/logs/",
           icon: Activity,
-          active: (path) => path.startsWith("/observability"),
+          active: (path: string) => path.startsWith("/observability"),
           group: "观测",
         },
       ],
-    },
+    }] : []),
     {
       label: "Agent Platform",
       icon: Bot,
@@ -295,7 +296,8 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   ];
   const currentSection =
     sections.find((section) => section.items.some((item) => item.active(currentPath))) ??
-    sections[1];
+    sections.find((section) => section.label === "Agent Platform") ??
+    sections[0];
   const isAgentPlatform = currentSection.label === "Agent Platform";
 
   return (

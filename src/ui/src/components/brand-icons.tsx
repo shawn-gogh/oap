@@ -408,15 +408,22 @@ function LangChainIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// Self-hosted mark (no hotlinked external image — self-contained deployment
+// requirement): a simple winged-staff glyph evoking Hermes/Nous Research,
+// drawn inline like every other icon in this file.
 function HermesIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" {...props}>
-      <image
-        width="48"
-        height="48"
-        preserveAspectRatio="xMidYMid meet"
-        href="https://raw.githubusercontent.com/lobehub/lobe-icons/refs/heads/master/packages/static-png/light/hermesagent.png"
+      <rect width="48" height="48" rx="10" fill="#111827" />
+      <path
+        d="M24 10v28M24 10c-5 0-8 3-8 3s3 3 8 3 8-3 8-3-3-3-8-3ZM17 30c2 3 5 4 7 4s5-1 7-4"
+        stroke="#F5F5F4"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
       />
+      <circle cx="24" cy="14" r="2" fill="#F5F5F4" />
     </svg>
   );
 }

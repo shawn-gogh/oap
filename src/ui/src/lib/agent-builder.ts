@@ -21,9 +21,35 @@ export interface AgentDraft {
   mcp_server_ids: string[];
   max_runtime_minutes: number;
   on_failure: string;
+  application?: AgentApplicationContract;
   /** Methodology artifacts (feasibility gate, eval definition, governance).
    *  Persisted in the agent's config JSON; not sent to the runtime. */
   design?: AgentDesign;
+}
+
+export type AgentInteractionMode = "conversational" | "scheduled" | "event_driven" | "manual";
+
+export interface AgentApplicationInput {
+  type: string;
+  source: string;
+  description: string;
+}
+
+export interface AgentApplicationOutput {
+  type: string;
+  description: string;
+}
+
+export interface AgentApplicationContract {
+  version: 1;
+  objective: string;
+  audience: string[];
+  interaction_mode: AgentInteractionMode;
+  inputs: AgentApplicationInput[];
+  outputs: AgentApplicationOutput[];
+  non_goals: string[];
+  completion_criteria: string[];
+  failure_behavior: string;
 }
 
 export interface AgentDesign {
@@ -74,26 +100,20 @@ export interface ParsedAgentDraft {
 const DEFAULT_RUNTIME = "local-opencode";
 const DEFAULT_OWNER = "local";
 const DEFAULT_FAILURE = "pause_and_notify";
-const DEFAULT_TOOLS: AgentTool[] = [
-  { type: "bash" },
-  { type: "read" },
-  { type: "write" },
-  { type: "edit" },
-  { type: "glob" },
-  { type: "grep" },
-  { type: "web_fetch" },
-  { type: "web_search" },
-];
+// Least-privilege fallback: read-only tools only. High-risk tools
+// (bash/write/edit/web_fetch) must be opted into explicitly, either by the
+// user or by a template that declares why it needs them.
+const DEFAULT_TOOLS: AgentTool[] = [{ type: "read" }, { type: "glob" }, { type: "grep" }];
 
 function baseDraft(): AgentDraft {
   return {
     name: "Untitled Agent",
-    description: "A blank starting point with the core toolset.",
+    description: "A blank starting point with a read-only toolset.",
     model: "",
     runtime: DEFAULT_RUNTIME,
     owner_id: DEFAULT_OWNER,
     system:
-      "You are a general-purpose agent. Research, write, run commands, and use connected tools to complete the user's task end to end. State assumptions clearly, keep progress visible, and ask for missing credentials only when blocked.",
+      "You are a general-purpose agent. Research, analyze, and use the tools you have been granted to complete the user's task end to end. State assumptions clearly, keep progress visible, and ask for missing credentials only when blocked.",
     tools: DEFAULT_TOOLS.map((tool) => ({ ...tool })),
     cron: "",
     timezone: DEFAULT_TIMEZONE,
@@ -122,9 +142,7 @@ export function blankAgentDraft(): AgentDraft {
 export function defaultToolsForRuntime(runtime: string, runtimes: AgentRuntime[]): AgentTool[] {
   const entry = runtimes.find((entry) => entry.id === runtime);
   if (!entry) return DEFAULT_TOOLS.map((tool) => ({ ...tool }));
-  return (entry.tools ?? [])
-    .filter((tool) => tool.enabled_by_default)
-    .map((tool) => ({ type: tool.id }));
+  return (entry.tools ?? []).filter((tool) => tool.enabled_by_default).map((tool) => ({ type: tool.id }));
 }
 
 export function withRuntimeDefaultTools(draft: AgentDraft, runtimes: AgentRuntime[]): AgentDraft {
@@ -132,7 +150,7 @@ export function withRuntimeDefaultTools(draft: AgentDraft, runtimes: AgentRuntim
 }
 
 function withDraft(patch: Partial<AgentDraft>): AgentDraft {
-  return {
+  const draft: AgentDraft = {
     ...baseDraft(),
     ...patch,
     tools: (patch.tools ?? DEFAULT_TOOLS).map((tool) => ({ ...tool })),
@@ -142,6 +160,40 @@ function withDraft(patch: Partial<AgentDraft>): AgentDraft {
     sub_agents: [...(patch.sub_agents ?? [])],
     mcp_server_ids: [...(patch.mcp_server_ids ?? [])],
   };
+  return {
+    ...draft,
+    application: patch.application ?? applicationContractForDraft(draft),
+  };
+}
+
+function applicationContractForDraft(draft: AgentDraft): AgentApplicationContract {
+  const successCriteria = draft.design?.evaluation?.success_criteria?.trim();
+  return {
+    version: 1,
+    objective: draft.description.trim() || "Complete the user's requested workflow.",
+    audience: ["requesting user"],
+    interaction_mode: draft.cron.trim() ? "scheduled" : "conversational",
+    inputs: [
+      {
+        type: "request",
+        source: "conversation",
+        description: "The user's request and supplied context.",
+      },
+    ],
+    outputs: [
+      {
+        type: "response",
+        description: draft.description.trim() || "A reviewable result.",
+      },
+    ],
+    non_goals: ["Do not perform unapproved write, destructive, or external-send actions."],
+    completion_criteria: [successCriteria || "Produce a complete, reviewable result for the request."],
+    failure_behavior: "Report the blocked dependency and propose a safe next step.",
+  };
+}
+
+export function applicationContractFor(draft: AgentDraft): AgentApplicationContract {
+  return draft.application ?? applicationContractForDraft(draft);
 }
 
 function designPreset(input: {
@@ -155,7 +207,12 @@ function designPreset(input: {
   timeout_minutes?: number;
 }): AgentDesign {
   return {
-    feasibility: { complexity: true, value: true, model_fit: true, recoverable_errors: true },
+    feasibility: {
+      complexity: true,
+      value: true,
+      model_fit: true,
+      recoverable_errors: true,
+    },
     evaluation: {
       task_distribution: input.task_distribution,
       success_criteria: input.success_criteria,
@@ -178,19 +235,28 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   {
     id: "blank",
     title: "Blank agent config",
-    description: "A neutral base agent with the core toolset.",
+    description: "A neutral base agent with a read-only toolset.",
     tags: ["core"],
     draft: withDraft({
       design: designPreset({
         success_criteria:
           "The agent completes the requested workflow with clear assumptions, explicit next steps, and no unapproved write or external side effects.",
         task_distribution: [
-          { type: "general workflow", example: "Research the requested topic, summarize findings, and list recommended next actions." },
+          {
+            type: "general workflow",
+            example: "Research the requested topic, summarize findings, and list recommended next actions.",
+          },
         ],
         normal_cases: ["User provides a clear task and enough context to complete it end to end."],
-        edge_cases: ["User request is ambiguous or missing required inputs; agent asks focused clarification questions."],
-        recovery_cases: ["A tool call fails or data is unavailable; agent reports the failure and offers a fallback path."],
-        safety_cases: ["User asks for destructive or external action; agent summarizes the intended action and waits for approval."],
+        edge_cases: [
+          "User request is ambiguous or missing required inputs; agent asks focused clarification questions.",
+        ],
+        recovery_cases: [
+          "A tool call fails or data is unavailable; agent reports the failure and offers a fallback path.",
+        ],
+        safety_cases: [
+          "User asks for destructive or external action; agent summarizes the intended action and waits for approval.",
+        ],
       }),
     }),
   },
@@ -209,8 +275,14 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "The final brief answers the question, cites source links for factual claims, separates evidence from uncertainty, and includes concise next steps.",
         task_distribution: [
-          { type: "research brief", example: "Compare three approaches to deploying private LLM gateways for internal teams." },
-          { type: "monitoring scan", example: "Find recent changes in vendor pricing and summarize product impact." },
+          {
+            type: "research brief",
+            example: "Compare three approaches to deploying private LLM gateways for internal teams.",
+          },
+          {
+            type: "monitoring scan",
+            example: "Find recent changes in vendor pricing and summarize product impact.",
+          },
         ],
         normal_cases: ["Research a well-scoped topic and produce a sourced summary with tradeoffs."],
         edge_cases: ["Sources disagree or are outdated; agent labels uncertainty instead of forcing a conclusion."],
@@ -237,12 +309,20 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "Each message is assigned a priority/category with a short reason, action items are extracted, and any reply is drafted but not sent.",
         task_distribution: [
-          { type: "daily inbox scan", example: "Triage unread messages from the last business day and identify replies needed today." },
-          { type: "urgent detection", example: "Flag customer or executive emails that need same-day response." },
+          {
+            type: "daily inbox scan",
+            example: "Triage unread messages from the last business day and identify replies needed today.",
+          },
+          {
+            type: "urgent detection",
+            example: "Flag customer or executive emails that need same-day response.",
+          },
         ],
         normal_cases: ["Classify a batch of ordinary inbox messages into urgent, needs reply, FYI, or archive."],
         edge_cases: ["Email body is short or ambiguous; agent marks uncertainty and asks what rule to apply."],
-        recovery_cases: ["Gmail access fails or returns partial data; agent reports what was checked and what remains unknown."],
+        recovery_cases: [
+          "Gmail access fails or returns partial data; agent reports what was checked and what remains unknown.",
+        ],
         safety_cases: ["A drafted reply would be sent externally; agent never sends without explicit approval."],
       }),
     }),
@@ -262,13 +342,23 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "Findings are evidence-backed, severity-ranked, include file or config references when available, and distinguish exploitable risks from hardening suggestions.",
         task_distribution: [
-          { type: "pull request review", example: "Review a diff that changes auth middleware and session ownership checks." },
-          { type: "dependency/config review", example: "Inspect dependency updates and deployment config for new security exposure." },
+          {
+            type: "pull request review",
+            example: "Review a diff that changes auth middleware and session ownership checks.",
+          },
+          {
+            type: "dependency/config review",
+            example: "Inspect dependency updates and deployment config for new security exposure.",
+          },
         ],
         normal_cases: ["Review a code diff and return blocking vulnerabilities plus lower-priority hardening notes."],
         edge_cases: ["Diff lacks enough context; agent states missing files or assumptions before judging severity."],
-        recovery_cases: ["Repository or file access fails; agent reports the exact failed access and reviews available context only."],
-        safety_cases: ["User asks to expose secrets, disable auth, or bypass permissions; agent refuses and suggests a safer alternative."],
+        recovery_cases: [
+          "Repository or file access fails; agent reports the exact failed access and reviews available context only.",
+        ],
+        safety_cases: [
+          "User asks to expose secrets, disable auth, or bypass permissions; agent refuses and suggests a safer alternative.",
+        ],
         evaluator: "llm_judge",
       }),
     }),
@@ -288,13 +378,23 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "The answer is grounded in product docs or known context, names assumptions, gives clear next steps, and escalates account-specific or risky requests.",
         task_distribution: [
-          { type: "how-to answer", example: "Explain how a customer can rotate an API key without downtime." },
-          { type: "troubleshooting", example: "Help a customer diagnose why a webhook stopped receiving events." },
+          {
+            type: "how-to answer",
+            example: "Explain how a customer can rotate an API key without downtime.",
+          },
+          {
+            type: "troubleshooting",
+            example: "Help a customer diagnose why a webhook stopped receiving events.",
+          },
         ],
         normal_cases: ["Answer a documented product question with concise steps and relevant caveats."],
-        edge_cases: ["Customer asks with incomplete product/version context; agent asks for the minimum missing detail."],
+        edge_cases: [
+          "Customer asks with incomplete product/version context; agent asks for the minimum missing detail.",
+        ],
         recovery_cases: ["Relevant docs cannot be found; agent says so and escalates instead of inventing policy."],
-        safety_cases: ["Customer requests account, billing, or security-sensitive changes; agent escalates and does not act directly."],
+        safety_cases: [
+          "Customer requests account, billing, or security-sensitive changes; agent escalates and does not act directly.",
+        ],
       }),
     }),
   },
@@ -314,12 +414,20 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "The agent summarizes impact, timeline, suspected cause, owner candidates, next actions, and drafts updates without posting or paging unapproved.",
         task_distribution: [
-          { type: "alert triage", example: "Investigate a spike in 500 errors and draft an incident update." },
-          { type: "status coordination", example: "Summarize current incident facts and propose next owner handoff." },
+          {
+            type: "alert triage",
+            example: "Investigate a spike in 500 errors and draft an incident update.",
+          },
+          {
+            type: "status coordination",
+            example: "Summarize current incident facts and propose next owner handoff.",
+          },
         ],
         normal_cases: ["Triage an alert with logs and issue context, then produce a concise incident note."],
         edge_cases: ["Alert has noisy or contradictory signals; agent separates facts from hypotheses."],
-        recovery_cases: ["Sentry, Linear, or Slack access fails; agent records missing source and continues with available evidence."],
+        recovery_cases: [
+          "Sentry, Linear, or Slack access fails; agent records missing source and continues with available evidence.",
+        ],
         safety_cases: ["Paging, posting to channels, or opening tickets requires explicit human approval."],
         evaluator: "llm_judge",
         timeout_minutes: 60,
@@ -342,13 +450,25 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "The analysis states dataset scope, validates assumptions, uses reproducible calculations, and presents findings with caveats and next checks.",
         task_distribution: [
-          { type: "metric investigation", example: "Explain why weekly activation rate dropped compared with the prior four weeks." },
-          { type: "dataset summary", example: "Profile a CSV and identify quality issues before analysis." },
+          {
+            type: "metric investigation",
+            example: "Explain why weekly activation rate dropped compared with the prior four weeks.",
+          },
+          {
+            type: "dataset summary",
+            example: "Profile a CSV and identify quality issues before analysis.",
+          },
         ],
         normal_cases: ["Inspect a dataset, calculate requested metrics, and summarize findings in a compact table."],
-        edge_cases: ["Columns are missing, sparse, or ambiguous; agent asks for schema clarification or states assumptions."],
-        recovery_cases: ["Database query or file read fails; agent reports the query/source and proposes a smaller validation step."],
-        safety_cases: ["Data appears sensitive or personally identifiable; agent minimizes exposure and avoids unnecessary raw dumps."],
+        edge_cases: [
+          "Columns are missing, sparse, or ambiguous; agent asks for schema clarification or states assumptions.",
+        ],
+        recovery_cases: [
+          "Database query or file read fails; agent reports the query/source and proposes a smaller validation step.",
+        ],
+        safety_cases: [
+          "Data appears sensitive or personally identifiable; agent minimizes exposure and avoids unnecessary raw dumps.",
+        ],
         evaluator: "environment",
         timeout_minutes: 45,
       }),
@@ -370,13 +490,25 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         success_criteria:
           "The retro note neutrally summarizes shipped work, blockers, carryover, incidents, themes, and follow-up actions with suggested owners.",
         task_distribution: [
-          { type: "weekly retro prep", example: "Summarize this sprint's completed Linear issues and draft retro themes." },
-          { type: "carryover review", example: "Identify unfinished work and recurring blockers from the last sprint." },
+          {
+            type: "weekly retro prep",
+            example: "Summarize this sprint's completed Linear issues and draft retro themes.",
+          },
+          {
+            type: "carryover review",
+            example: "Identify unfinished work and recurring blockers from the last sprint.",
+          },
         ],
         normal_cases: ["Gather completed and carryover work, then produce a facilitation-ready retro note."],
-        edge_cases: ["Issue labels or ownership are inconsistent; agent marks uncertainty and avoids blaming individuals."],
-        recovery_cases: ["Linear or Notion access fails; agent reports missing data and drafts from available context."],
-        safety_cases: ["Output could expose sensitive performance judgments; agent keeps tone neutral and focuses on process."],
+        edge_cases: [
+          "Issue labels or ownership are inconsistent; agent marks uncertainty and avoids blaming individuals.",
+        ],
+        recovery_cases: [
+          "Linear or Notion access fails; agent reports missing data and drafts from available context.",
+        ],
+        safety_cases: [
+          "Output could expose sensitive performance judgments; agent keeps tone neutral and focuses on process.",
+        ],
       }),
     }),
   },
@@ -467,12 +599,30 @@ function generatedSystem(template: AgentTemplate, prompt: string): string {
   return `${template.draft.system}\n\nUse this agent configuration to accomplish the requested workflow: ${objective} Before taking irreversible external actions, summarize the intended action and wait for explicit user approval. Keep outputs structured, concise, and easy to review.`;
 }
 
+function applicationContractFromPrompt(prompt: string, draft: AgentDraft): AgentApplicationContract {
+  const objective = sentence(cleanRequest(prompt) || prompt.trim());
+  const scheduled = Boolean(cronForPrompt(prompt) || draft.cron.trim());
+  return {
+    ...applicationContractForDraft(draft),
+    objective,
+    interaction_mode: scheduled ? "scheduled" : "conversational",
+    inputs: [
+      {
+        type: "request",
+        source: scheduled ? "scheduled routine" : "conversation",
+        description: objective,
+      },
+    ],
+    outputs: [{ type: "result", description: draft.description.trim() || objective }],
+  };
+}
+
 export function buildAgentDraftFromPrompt(prompt: string): AgentDraft {
   const promptVaultKeys = vaultKeysForPrompt(prompt);
   const promptCron = cronForPrompt(prompt);
   const promptSubAgents = subAgentsForPrompt(prompt);
   if (/\bhello\s*,?\s*world\b/i.test(prompt)) {
-    return {
+    const draft = {
       ...blankAgentDraft(),
       name: "Hello World Agent",
       description: "A simple agent that greets users with a hello world message.",
@@ -482,11 +632,15 @@ export function buildAgentDraftFromPrompt(prompt: string): AgentDraft {
       vault_keys: promptVaultKeys,
       sub_agents: promptSubAgents,
     };
+    return {
+      ...draft,
+      application: applicationContractFromPrompt(prompt, draft),
+    };
   }
 
   const template = agentTemplateForPrompt(prompt);
   const request = cleanRequest(prompt) || prompt.trim();
-  return {
+  const draft = {
     ...template.draft,
     name: requestedName(prompt),
     description: sentence(request).replace(/\.$/, ""),
@@ -495,6 +649,10 @@ export function buildAgentDraftFromPrompt(prompt: string): AgentDraft {
     vault_keys: unique([...template.draft.vault_keys, ...promptVaultKeys]),
     skill_ids: [...template.draft.skill_ids],
     sub_agents: promptSubAgents,
+  };
+  return {
+    ...draft,
+    application: applicationContractFromPrompt(prompt, draft),
   };
 }
 
@@ -541,10 +699,7 @@ function toolsBlock(tools: AgentTool[]): string {
 
 function subAgentsBlock(subAgents: AgentSubAgent[]): string {
   if (subAgents.length === 0) return "sub_agents: []";
-  return [
-    "sub_agents:",
-    ...subAgents.map((agent) => `  - agent_id: ${scalar(agent.agent_id)}`),
-  ].join("\n");
+  return ["sub_agents:", ...subAgents.map((agent) => `  - agent_id: ${scalar(agent.agent_id)}`)].join("\n");
 }
 
 export function stringifyAgentDraft(draft: AgentDraft): string {
@@ -553,9 +708,7 @@ export function stringifyAgentDraft(draft: AgentDraft): string {
     `description: ${scalar(draft.description)}`,
     `model: ${scalar(draft.model)}`,
     `runtime: ${scalar(draft.runtime)}`,
-    draft.system.includes("\n")
-      ? ["system: |", block(draft.system)].join("\n")
-      : `system: ${scalar(draft.system)}`,
+    draft.system.includes("\n") ? ["system: |", block(draft.system)].join("\n") : `system: ${scalar(draft.system)}`,
     toolsBlock(draft.tools),
   ];
 
@@ -569,6 +722,9 @@ export function stringifyAgentDraft(draft: AgentDraft): string {
   if (draft.mcp_server_ids.length > 0) lines.push(`mcp_servers: ${listBlock(draft.mcp_server_ids)}`);
   if (draft.max_runtime_minutes !== 30) lines.push(`max_runtime_minutes: ${draft.max_runtime_minutes}`);
   if (draft.on_failure !== DEFAULT_FAILURE) lines.push(`on_failure: ${scalar(draft.on_failure)}`);
+  if (draft.application) {
+    lines.push("application:", ...yamlLines(draft.application as unknown as YamlValue, 1));
+  }
   if (draft.design && Object.keys(draft.design).length > 0) {
     lines.push("design:", ...yamlLines(draft.design as YamlValue, 1));
   }
@@ -583,9 +739,7 @@ function yamlLines(value: YamlValue, depth: number): string[] {
     return value.flatMap((item) => {
       if (item && typeof item === "object" && !Array.isArray(item)) {
         const entries = Object.entries(item).filter(([, v]) => v !== undefined);
-        return entries.map(([k, v], idx) =>
-          `${pad}${idx === 0 ? "- " : "  "}${k}: ${scalar(String(v))}`,
-        );
+        return entries.map(([k, v], idx) => `${pad}${idx === 0 ? "- " : "  "}${k}: ${scalar(String(v))}`);
       }
       return [`${pad}- ${scalar(String(item))}`];
     });
@@ -606,7 +760,7 @@ function yamlLines(value: YamlValue, depth: number): string[] {
 
 /** Parses an indented YAML-subset subtree (maps, scalar lists, lists of flat
  *  maps) starting after `start`; returns the parsed value and the index of the
- *  last consumed line. Only used for the design block. */
+ *  last consumed line. */
 function parseYamlSubtree(lines: string[], start: number, minIndent: number): { value: YamlValue; end: number } {
   let i = start;
   let map: { [key: string]: YamlValue } | null = null;
@@ -627,7 +781,9 @@ function parseYamlSubtree(lines: string[], start: number, minIndent: number): { 
       if (kv) {
         // List item that is a flat map; following deeper-indented `k: v`
         // lines belong to the same item.
-        const item: { [key: string]: YamlValue } = { [kv[1]]: parseScalarValue(kv[2] ?? "") };
+        const item: { [key: string]: YamlValue } = {
+          [kv[1]]: parseScalarValue(kv[2] ?? ""),
+        };
         i += 1;
         while (i < lines.length) {
           const next = lines[i];
@@ -655,9 +811,7 @@ function parseYamlSubtree(lines: string[], start: number, minIndent: number): { 
     map = map ?? {};
     const raw = (kv[2] ?? "").trim();
     if (raw) {
-      map[kv[1]] = raw.startsWith("[")
-        ? inlineList(raw)
-        : parseScalarValue(raw);
+      map[kv[1]] = raw.startsWith("[") ? inlineList(raw) : parseScalarValue(raw);
       i += 1;
     } else {
       const nested = parseYamlSubtree(lines, i + 1, indent + 1);
@@ -676,6 +830,59 @@ function parseScalarValue(raw: string): YamlValue {
   return value;
 }
 
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function normalizeApplicationContract(value: YamlValue): AgentApplicationContract | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const interactionMode = stringValue(raw.interaction_mode);
+  const allowedModes: AgentInteractionMode[] = ["conversational", "scheduled", "event_driven", "manual"];
+  const inputs = Array.isArray(raw.inputs)
+    ? raw.inputs.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const input = item as Record<string, unknown>;
+        return [
+          {
+            type: stringValue(input.type),
+            source: stringValue(input.source),
+            description: stringValue(input.description),
+          },
+        ];
+      })
+    : [];
+  const outputs = Array.isArray(raw.outputs)
+    ? raw.outputs.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const output = item as Record<string, unknown>;
+        return [
+          {
+            type: stringValue(output.type),
+            description: stringValue(output.description),
+          },
+        ];
+      })
+    : [];
+  return {
+    version: 1,
+    objective: stringValue(raw.objective),
+    audience: stringList(raw.audience),
+    interaction_mode: allowedModes.includes(interactionMode as AgentInteractionMode)
+      ? (interactionMode as AgentInteractionMode)
+      : "conversational",
+    inputs,
+    outputs,
+    non_goals: stringList(raw.non_goals),
+    completion_criteria: stringList(raw.completion_criteria),
+    failure_behavior: stringValue(raw.failure_behavior),
+  };
+}
+
 function indentOf(line: string): number {
   return line.match(/^ */)?.[0].length ?? 0;
 }
@@ -683,14 +890,9 @@ function indentOf(line: string): number {
 function unquote(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "";
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
     try {
-      return trimmed.startsWith('"')
-        ? JSON.parse(trimmed)
-        : trimmed.slice(1, -1).replace(/''/g, "'");
+      return trimmed.startsWith('"') ? JSON.parse(trimmed) : trimmed.slice(1, -1).replace(/''/g, "'");
     } catch {
       return trimmed.slice(1, -1);
     }
@@ -798,7 +1000,9 @@ function parseSubAgents(lines: string[], start: number, draft: AgentDraft): numb
     const trimmed = next.trim();
     const itemPair = trimmed.match(/^-\s*([A-Za-z_][A-Za-z0-9_]*):(?:\s*(.*))?$/);
     if (itemPair) {
-      current = { agent_id: itemPair[1] === "agent_id" ? unquote(itemPair[2] ?? "") : "" };
+      current = {
+        agent_id: itemPair[1] === "agent_id" ? unquote(itemPair[2] ?? "") : "",
+      };
       subAgents.push(current);
       i += 1;
       continue;
@@ -888,6 +1092,13 @@ export function parseAgentDraftConfig(source: string): ParsedAgentDraft {
       continue;
     }
 
+    if (key === "application") {
+      const nested = parseYamlSubtree(lines, i + 1, 1);
+      draft.application = normalizeApplicationContract(nested.value);
+      i = nested.end - 1;
+      continue;
+    }
+
     if (key === "design") {
       const nested = parseYamlSubtree(lines, i + 1, 1);
       if (nested.value && typeof nested.value === "object" && !Array.isArray(nested.value)) {
@@ -946,9 +1157,23 @@ export function evalGatePassed(design: AgentDesign | undefined): boolean {
   );
 }
 
+export function applicationGatePassed(application: AgentApplicationContract | undefined): boolean {
+  return Boolean(
+    application?.objective.trim() &&
+    application.inputs.length > 0 &&
+    application.outputs.length > 0 &&
+    application.completion_criteria.length > 0,
+  );
+}
+
 export function blankDesign(): AgentDesign {
   return {
-    feasibility: { complexity: true, value: true, model_fit: true, recoverable_errors: true },
+    feasibility: {
+      complexity: true,
+      value: true,
+      model_fit: true,
+      recoverable_errors: true,
+    },
     evaluation: {
       task_distribution: [],
       success_criteria: "",
@@ -967,10 +1192,7 @@ export function blankDesign(): AgentDesign {
   };
 }
 
-export function createInputFromDraft(
-  draft: AgentDraft,
-  integrations: Integration[] = INTEGRATIONS,
-) {
+export function createInputFromDraft(draft: AgentDraft, integrations: Integration[] = INTEGRATIONS) {
   const cron = draft.cron.trim();
   const runtime = draft.runtime.trim() || DEFAULT_RUNTIME;
 
@@ -982,7 +1204,10 @@ export function createInputFromDraft(
     .filter((s): s is NonNullable<typeof s> => s !== null && s.url.trim().length > 0);
   const mcpServers = resolvedMcpServers.map(({ id: _id, ...rest }) => rest);
   const baseTools = draft.tools.filter((t) => t.type !== "mcp_toolset");
-  const mcpToolsets = resolvedMcpServers.map(({ id }) => ({ type: "mcp_toolset", mcp_server_name: id }));
+  const mcpToolsets = resolvedMcpServers.map(({ id }) => ({
+    type: "mcp_toolset",
+    mcp_server_name: id,
+  }));
   const allTools = [...baseTools, ...mcpToolsets];
   const subAgents = cleanSubAgents(draft.sub_agents);
   const platformMcpIds = [
@@ -1014,11 +1239,10 @@ export function createInputFromDraft(
       mcp_servers: mcpServers,
       sub_agents: subAgents,
       platform_mcp_ids: platformMcpIds,
+      ...(draft.application ? { application: draft.application } : {}),
       // Methodology artifacts; persisted for review/eval tooling, not
       // consumed by the runtime.
-      ...(draft.design && Object.keys(draft.design).length > 0
-        ? { design: draft.design }
-        : {}),
+      ...(draft.design && Object.keys(draft.design).length > 0 ? { design: draft.design } : {}),
     },
   };
 }

@@ -83,6 +83,10 @@ pub(super) async fn execute_prompt(
             )
             .await;
             sessions::repository::set_status(pool, &row.id, "idle").await?;
+            crate::db::managed_agents::tasks::artifacts::capture_session_output(pool, &row.id)
+                .await?;
+            crate::db::managed_agents::tasks::repository::mark_verifying_for_session(pool, &row.id)
+                .await?;
             Ok(())
         }
         Err(error) => {
@@ -98,6 +102,10 @@ pub(super) async fn execute_prompt(
             )
             .await;
             let _ = sessions::repository::set_status(pool, &row.id, "error").await;
+            let _ = crate::db::managed_agents::tasks::repository::fail_for_session(
+                pool, &row.id, &message,
+            )
+            .await;
             Err(error)
         }
     }

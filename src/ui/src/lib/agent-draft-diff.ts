@@ -30,7 +30,12 @@ function listChange(field: string, before: string[], after: string[]): FieldChan
   if (added.length === 0 && removed.length === 0) return null;
   return {
     field,
-    kind: added.length > 0 && removed.length === 0 ? "added" : removed.length > 0 && added.length === 0 ? "removed" : "edited",
+    kind:
+      added.length > 0 && removed.length === 0
+        ? "added"
+        : removed.length > 0 && added.length === 0
+          ? "removed"
+          : "edited",
     added,
     removed,
   };
@@ -51,11 +56,45 @@ function longTextChange(field: string, before: string, after: string): FieldChan
 /** Compare two parsed drafts field by field and return the user-visible changes.
  *  Computed locally so the summary never depends on the model self-reporting. */
 export function diffAgentDrafts(before: AgentDraft, after: AgentDraft): FieldChange[] {
+  const beforeApplication = before.application;
+  const afterApplication = after.application;
   const changes: Array<FieldChange | null> = [
     scalarChange("name", before.name.trim(), after.name.trim()),
     scalarChange("description", before.description.trim(), after.description.trim()),
     scalarChange("model", before.model.trim(), after.model.trim()),
     scalarChange("runtime", before.runtime.trim(), after.runtime.trim()),
+    scalarChange(
+      "application objective",
+      beforeApplication?.objective.trim() ?? "",
+      afterApplication?.objective.trim() ?? "",
+    ),
+    scalarChange(
+      "interaction mode",
+      beforeApplication?.interaction_mode ?? "",
+      afterApplication?.interaction_mode ?? "",
+    ),
+    listChange("audience", beforeApplication?.audience ?? [], afterApplication?.audience ?? []),
+    listChange(
+      "application inputs",
+      (beforeApplication?.inputs ?? []).map((input) => `${input.type}:${input.source}:${input.description}`),
+      (afterApplication?.inputs ?? []).map((input) => `${input.type}:${input.source}:${input.description}`),
+    ),
+    listChange(
+      "application outputs",
+      (beforeApplication?.outputs ?? []).map((output) => `${output.type}:${output.description}`),
+      (afterApplication?.outputs ?? []).map((output) => `${output.type}:${output.description}`),
+    ),
+    listChange("non-goals", beforeApplication?.non_goals ?? [], afterApplication?.non_goals ?? []),
+    listChange(
+      "completion criteria",
+      beforeApplication?.completion_criteria ?? [],
+      afterApplication?.completion_criteria ?? [],
+    ),
+    scalarChange(
+      "failure behavior",
+      beforeApplication?.failure_behavior.trim() ?? "",
+      afterApplication?.failure_behavior.trim() ?? "",
+    ),
     longTextChange("system prompt", before.system, after.system),
     listChange(
       "tools",
@@ -73,11 +112,7 @@ export function diffAgentDrafts(before: AgentDraft, after: AgentDraft): FieldCha
       after.sub_agents.map((agent) => agent.agent_id),
     ),
     listChange("MCP servers", before.mcp_server_ids, after.mcp_server_ids),
-    scalarChange(
-      "max runtime",
-      `${before.max_runtime_minutes} min`,
-      `${after.max_runtime_minutes} min`,
-    ),
+    scalarChange("max runtime", `${before.max_runtime_minutes} min`, `${after.max_runtime_minutes} min`),
   ];
   return changes.filter((change): change is FieldChange => change !== null);
 }

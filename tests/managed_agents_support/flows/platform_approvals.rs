@@ -155,6 +155,7 @@ async fn seed_empty_session(fixture: &AppFixture, agent_id: &str, title: &str) -
         title,
         None,
         None,
+        None,
     )
     .await
     .unwrap()

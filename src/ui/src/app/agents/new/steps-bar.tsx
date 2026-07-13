@@ -3,31 +3,39 @@
 import { cn } from "@/lib/utils";
 import type { BuilderStep } from "./builder-shared";
 
-const BUILDER_STEPS: Array<{ index: 1 | 2 | 3 | 4; step: BuilderStep; label: string; suffix?: string }> = [
-  { index: 1, step: "create", label: "定位 Fit" },
-  { index: 2, step: "eval", label: "评估 Eval" },
-  { index: 3, step: "config", label: "设计 Design" },
-  { index: 4, step: "review", label: "复核 Review", suffix: "POST /v1/agents" },
+const BUILDER_STEPS: Array<{
+  index: 1 | 2 | 3 | 4;
+  step: BuilderStep;
+  label: string;
+  suffix?: string;
+}> = [
+  { index: 1, step: "create", label: "目标 Goal" },
+  { index: 2, step: "config", label: "蓝图 Blueprint" },
+  { index: 3, step: "eval", label: "验证 Validate" },
+  {
+    index: 4,
+    step: "review",
+    label: "发布 Publish",
+    suffix: "POST /api/agents",
+  },
 ];
 
 export function PlatformSteps({
   activeStep,
-  canEnterConfig,
+  canEnterEvaluation,
   canEnterReview,
   onNavigate,
 }: {
   activeStep: 1 | 2 | 3 | 4;
-  canEnterConfig: boolean;
+  canEnterEvaluation: boolean;
   canEnterReview: boolean;
   onNavigate: (step: BuilderStep) => void;
 }) {
   const stepEnabled = (index: 1 | 2 | 3 | 4): boolean => {
-    // Backward navigation is always allowed; forward jumps must pass the
-    // same gates as the in-page buttons (eval gate, then a valid config).
     if (index <= activeStep) return true;
     if (index === 2) return activeStep >= 1;
-    if (index === 3) return canEnterConfig;
-    return canEnterConfig && canEnterReview;
+    if (index === 3) return canEnterEvaluation;
+    return canEnterEvaluation && canEnterReview;
   };
   return (
     <div className="border-b border-border bg-background/80 px-4 py-3 backdrop-blur">

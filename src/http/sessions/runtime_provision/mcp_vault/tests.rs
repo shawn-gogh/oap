@@ -200,7 +200,6 @@ fn config(proxy_base_url: &str, master_key: Option<&str>) -> GatewayConfig {
             },
             ..Default::default()
         },
-        slack: Default::default(),
         agents: Vec::new(),
     }
 }
@@ -210,7 +209,6 @@ fn empty_config() -> GatewayConfig {
         model_list: Vec::new(),
         mcp_servers: Default::default(),
         general_settings: GeneralSettings::default(),
-        slack: Default::default(),
         agents: Vec::new(),
     }
 }

@@ -32,6 +32,10 @@ pub fn spawn_managed_agent_run(
             let message = error.to_string();
             state.agent_runs.set_error(&run_id, message.clone());
             let _ = repository::fail(&pool, &run_id, &message).await;
+            let _ = crate::db::managed_agents::tasks::repository::fail_for_run(
+                &pool, &run_id, &message,
+            )
+            .await;
             let _ = emit_events(
                 &state,
                 &pool,
@@ -112,6 +116,7 @@ async fn mark_run_running(
     state
         .agent_runs
         .update_status(run_id, AgentRunStatus::Running);
+    crate::db::managed_agents::tasks::repository::mark_running_for_run(pool, run_id).await?;
     Ok(())
 }
 
@@ -166,6 +171,8 @@ async fn finish_run(
         .agent_runs
         .update_status(run_id, AgentRunStatus::Completed);
     repository::complete(pool, run_id).await?;
+    crate::db::managed_agents::tasks::artifacts::capture_run_output(pool, run_id).await?;
+    crate::db::managed_agents::tasks::repository::mark_verifying_for_run(pool, run_id).await?;
     emit_events(state, pool, agent_id, run_id, events.complete(context)).await
 }
 

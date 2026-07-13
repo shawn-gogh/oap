@@ -10,6 +10,7 @@ use crate::{
     db::managed_agents::{
         registry,
         runs::{repository, schema::CreateRun},
+        tasks::{repository as tasks_repository, schema::NewTask},
     },
     errors::GatewayError,
     http::agents::{has_configured_agent, parse_run_agent_request, start_configured_agent_run},
@@ -41,6 +42,7 @@ pub async fn create(
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
     super::super::assert_agent_use(&auth, &agent, pool).await?;
+    super::super::assert_agent_runnable(&agent)?;
     let prompt = input
         .prompt
         .clone()
@@ -48,7 +50,32 @@ pub async fn create(
         .or_else(|| agent.prompt.clone())
         .filter(|prompt| !prompt.trim().is_empty())
         .unwrap_or_else(|| "Proceed with your task.".to_owned());
-    let run = repository::create(pool, &agent_id, agent.session_id.clone(), input).await?;
+    let task = tasks_repository::create(
+        pool,
+        NewTask {
+            agent_id: &agent_id,
+            application_version: crate::http::managed_agents::tasks::application_version(
+                &agent.config,
+            ),
+            source: "api",
+            source_id: None,
+            title: &format!("{} run", agent.name),
+            input: serde_json::json!({ "prompt": prompt }),
+            created_by: &auth.user_id,
+            completion_criteria: crate::http::managed_agents::tasks::completion_criteria(
+                &agent.config,
+            ),
+        },
+    )
+    .await?;
+    let run = repository::create(
+        pool,
+        &agent_id,
+        agent.session_id.clone(),
+        Some(&task.id),
+        input,
+    )
+    .await?;
     state.agent_runs.track_run(&agent_id, &run.id);
     spawn_managed_agent_run(
         state.clone(),
@@ -72,6 +99,7 @@ pub async fn create(
             status: run.status,
             event_url: "/event".to_owned(),
             logs_url,
+            task_id: Some(task.id),
         })?),
     ))
 }

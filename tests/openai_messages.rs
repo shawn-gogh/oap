@@ -32,7 +32,6 @@ fn config_with_models(model_list: Vec<ModelEntry>) -> GatewayConfig {
             master_key: Some("sk-local".to_owned()),
             ..Default::default()
         },
-        slack: Default::default(),
         agents: Vec::new(),
     }
 }

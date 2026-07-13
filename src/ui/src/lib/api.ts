@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentRunStart,
+  AgentTask,
   AgentRuntime,
   AgentRuntimeId,
   HarnessMessage,
@@ -9,11 +10,14 @@ import type {
   OpencodeSession,
   PlatformMcp,
   Rule,
-
   Routine,
   RuntimeHarness,
   Skill,
   SpendLog,
+  TaskAcceptanceCheck,
+  TaskAttempts,
+  TaskArtifact,
+  TaskSessionAttempt,
   VaultKeyEntry,
   WorkspaceFile,
 } from "./types";
@@ -41,11 +45,9 @@ function formatApiErrorMessage(status: number, body: string): string {
 
 function htmlDocumentIndex(text: string): number {
   const sample = text.slice(0, 1000).toLowerCase();
-  const candidates = [
-    sample.indexOf("<!doctype html"),
-    sample.indexOf("<html"),
-    sample.indexOf("<body"),
-  ].filter((index) => index >= 0);
+  const candidates = [sample.indexOf("<!doctype html"), sample.indexOf("<html"), sample.indexOf("<body")].filter(
+    (index) => index >= 0,
+  );
   return candidates.length ? Math.min(...candidates) : -1;
 }
 
@@ -142,9 +144,7 @@ export function normalizeHarnessServerUrl(value: string): string {
 export function getHarnessServerUrl(): string {
   if (typeof window === "undefined") return "";
   try {
-    return normalizeHarnessServerUrl(
-      window.localStorage.getItem(HARNESS_SERVER_URL_STORAGE) ?? "",
-    );
+    return normalizeHarnessServerUrl(window.localStorage.getItem(HARNESS_SERVER_URL_STORAGE) ?? "");
   } catch {
     return "";
   }
@@ -277,24 +277,24 @@ export async function listUsers(query = ""): Promise<ManagedUser[]> {
   return data.users;
 }
 
-export async function createUser(input: {
-  id: string;
-  display_name: string;
-  email?: string;
-}): Promise<ManagedUser> {
-  return jsonOrThrow<ManagedUser>(await req("/api/users", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-  }));
+export async function createUser(input: { id: string; display_name: string; email?: string }): Promise<ManagedUser> {
+  return jsonOrThrow<ManagedUser>(
+    await req("/api/users", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
 }
 
 export async function updateUserStatus(id: string, status: "active" | "disabled"): Promise<ManagedUser> {
-  return jsonOrThrow<ManagedUser>(await req(`/api/users/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ status }),
-  }));
+  return jsonOrThrow<ManagedUser>(
+    await req(`/api/users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    }),
+  );
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -311,16 +311,10 @@ export async function listSessions(): Promise<OpencodeSession[]> {
     throw new ApiError(res.status, await res.text().catch(() => ""));
   }
   if (!res.headers.get("content-type")?.includes("application/json")) {
-    throw new ApiError(
-      res.status,
-      await res.text().catch(() => ""),
-      "Session list response was not JSON",
-    );
+    throw new ApiError(res.status, await res.text().catch(() => ""), "Session list response was not JSON");
   }
   const list = await jsonOrThrow<OpencodeSession[]>(res);
-  return [...list].sort(
-    (a, b) => (b.time?.created ?? 0) - (a.time?.created ?? 0),
-  );
+  return [...list].sort((a, b) => (b.time?.created ?? 0) - (a.time?.created ?? 0));
 }
 
 export async function createSession(
@@ -330,6 +324,7 @@ export async function createSession(
     runtime?: AgentRuntimeId;
     prompt?: string;
     environment?: Record<string, unknown>;
+    taskId?: string;
   },
 ): Promise<OpencodeSession> {
   const res = await reqHarness("/session", {
@@ -341,6 +336,7 @@ export async function createSession(
       ...(options?.runtime ? { runtime: options.runtime } : {}),
       ...(options?.prompt ? { prompt: options.prompt } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
+      ...(options?.taskId ? { task_id: options.taskId } : {}),
     }),
   });
   return jsonOrThrow<OpencodeSession>(res);
@@ -353,6 +349,7 @@ export async function createGatewaySession(
     runtime?: AgentRuntimeId;
     prompt?: string;
     environment?: Record<string, unknown>;
+    taskId?: string;
   },
 ): Promise<OpencodeSession> {
   const res = await req("/session", {
@@ -364,6 +361,7 @@ export async function createGatewaySession(
       ...(options?.runtime ? { runtime: options.runtime } : {}),
       ...(options?.prompt ? { prompt: options.prompt } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
+      ...(options?.taskId ? { task_id: options.taskId } : {}),
     }),
   });
   return jsonOrThrow<OpencodeSession>(res);
@@ -636,7 +634,9 @@ export async function renameSession(id: string, title: string): Promise<Opencode
 
 export async function deleteSession(id: string): Promise<void> {
   await jsonOrThrow<boolean>(
-    await reqHarness(`/session/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    await reqHarness(`/session/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   );
 }
 
@@ -662,10 +662,7 @@ export interface HarnessServerHealth {
   error?: string;
 }
 
-export async function testHarnessServer(
-  rawUrl?: string,
-  rawKey?: string,
-): Promise<HarnessServerHealth> {
+export async function testHarnessServer(rawUrl?: string, rawKey?: string): Promise<HarnessServerHealth> {
   const base = normalizeHarnessServerUrl(rawUrl ?? getHarnessServerUrl());
   if (!base) return { ok: true, mode: "local" };
 
@@ -722,13 +719,19 @@ export async function createGatewayApiKey(
   const res = await req("/api/keys", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label, user_id: userId || undefined, role: role || undefined }),
+    body: JSON.stringify({
+      label,
+      user_id: userId || undefined,
+      role: role || undefined,
+    }),
   });
   return jsonOrThrow<CreatedGatewayApiKey>(res);
 }
 
 export async function deleteGatewayApiKey(id: string): Promise<void> {
-  const res = await req(`/api/keys/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await req(`/api/keys/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
   if (!res.ok && res.status !== 404) {
     const body = await res.text().catch(() => "");
     throw new ApiError(res.status, body);
@@ -745,22 +748,15 @@ export async function getMessages(sid: string): Promise<HarnessMessage[]> {
   return jsonOrThrow<HarnessMessage[]>(res);
 }
 
-export async function sendMessage(opts: {
-  sessionId: string;
-  text: string;
-  model: string;
-}): Promise<void> {
-  const res = await reqHarness(
-    `/session/${encodeURIComponent(opts.sessionId)}/prompt_async`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: { providerID: "litellm", modelID: opts.model },
-        parts: [{ type: "text", text: opts.text }],
-      }),
-    },
-  );
+export async function sendMessage(opts: { sessionId: string; text: string; model: string }): Promise<void> {
+  const res = await reqHarness(`/session/${encodeURIComponent(opts.sessionId)}/prompt_async`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: { providerID: "litellm", modelID: opts.model },
+      parts: [{ type: "text", text: opts.text }],
+    }),
+  });
   if (res.status === 204) return;
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -773,7 +769,7 @@ export async function sendMessageWithRuntimeModel(opts: {
   text: string;
   model: string;
   runtime?: string;
-  apiSpec?: string | null;  // resolved api_spec; null = harnesses not yet loaded
+  apiSpec?: string | null; // resolved api_spec; null = harnesses not yet loaded
 }): Promise<void> {
   if (opts.runtime && !opts.model.trim()) {
     throw new Error("Runtime model is required.");
@@ -786,11 +782,15 @@ export async function sendMessageWithRuntimeModel(opts: {
 }
 
 export async function abortSession(id: string): Promise<void> {
-  await reqHarness(`/session/${encodeURIComponent(id)}/abort`, { method: "POST" });
+  await reqHarness(`/session/${encodeURIComponent(id)}/abort`, {
+    method: "POST",
+  });
 }
 
 export async function interruptSession(id: string): Promise<void> {
-  await reqHarness(`/session/${encodeURIComponent(id)}/interrupt`, { method: "POST" });
+  await reqHarness(`/session/${encodeURIComponent(id)}/interrupt`, {
+    method: "POST",
+  });
 }
 
 export async function listModels(runtime?: string): Promise<string[]> {
@@ -910,15 +910,27 @@ export async function draftAgentConfigWithModel(
   const text = await streamMessagesText(
     {
       model,
-      max_tokens: 2400,
+      max_tokens: 3200,
       system:
-        `You design managed agent configs for LiteLLM Agent Platform, following a production-line methodology: assess feasibility first, derive everything from the task definition, and build governance in.\n\n` +
+        `You design managed agent applications for OAP (Open Agent Platform). Start with the business contract, then compile it into the runtime configuration.\n\n` +
         `METHODOLOGY (apply in order):\n` +
-        `1. Feasibility gate. Before designing, judge four questions: is the task multi-step and hard to fully pre-specify (complexity)? Is the result worth the cost and latency (value)? Are current models capable of this task class (model_fit)? Can errors be detected and recovered (recoverable_errors)? Record honest answers in design.feasibility. If most answers are "no", still emit a config but make the system prompt the simplest viable form (single-shot instructions, no autonomous looping) and say so in the description.\n` +
-        `2. Derive, don't parrot. Infer the task distribution (what request types, with a concrete input example each), success criteria (how completion is judged), and failure boundaries from the user's request; record them in design.evaluation. The system prompt must be synthesized from these — never paste the user's request back as a generic mission.\n` +
-        `3. The system prompt MUST state: the goal and constraints (not an enumerated step list); explicit stop conditions (when the task is done, when to give up); explicit confirmation conditions (which actions require asking the human first — any write, external send, or destructive action does by default); risk boundaries (what the agent must never do); and when to state uncertainty instead of fabricating conclusions.\n` +
-        `4. Minimal tools. Select only the tools the task actually needs — do not default to the full toolset. Every write-capable tool implies the confirmation rule above. Record governance decisions in design.governance.\n\n` +
-        `OUTPUT: return only valid YAML, no markdown fence, no prose. Use these primary keys when relevant: name, description, model, runtime, system, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, design. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Recommend the model that best fits the user's agent, using ${model} only when no better available model is implied. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Do not emit provider-native toolset identifiers such as agent_toolset_20260401. If the selected runtime has no explicit LAP-managed tools, use tools: []. Do not include harness. Do not include provider-native multiagent or callable_agents. For sub-agents, only emit existing LAP agent references if the user provided exact IDs, using \`sub_agents:\` entries with \`agent_id\`. If useful helper agents are implied but no IDs are known, describe them in the system prompt as suggested roles instead of inventing IDs. Include schedule, vault_keys, skill_ids, or rule_ids only when the request clearly needs them. Attach skill_ids only from Available skills when they materially improve the agent.\n\n` +
+        `1. Define the application contract: the objective, intended audience, interaction mode, concrete inputs, reviewable outputs, explicit non-goals, completion criteria, and failure behavior. Do not put runtime IDs, model IDs, tool IDs, MCP IDs, credentials, skills, or rules in the application block.\n` +
+        `2. Assess feasibility. Judge complexity, value, model_fit, and recoverable_errors honestly in design.feasibility. If most are false, emit a simple single-shot assistant rather than pretending autonomy is useful.\n` +
+        `3. Derive the system prompt and evaluation from the application contract. The prompt must include the goal and constraints, stop conditions, confirmation conditions, risk boundaries, and when to report uncertainty.\n` +
+        `4. Select the minimum capabilities needed. Any write, destructive, arbitrary-execution, or external-send capability must be explicit and reflected in governance and non-goals.\n\n` +
+        `OUTPUT: return only valid YAML, no markdown fence, no prose. Use these primary keys when relevant: name, description, model, runtime, system, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, application, design. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Recommend the model that best fits the user's agent, using ${model} only when no better available model is implied. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Do not emit provider-native toolset identifiers such as agent_toolset_20260401. If the selected runtime has no explicit OAP-managed tools, use tools: []. Do not include harness. Do not include provider-native multiagent or callable_agents. For sub-agents, only emit existing OAP agent references if the user provided exact IDs, using \`sub_agents:\` entries with \`agent_id\`. If useful helper agents are implied but no IDs are known, describe them in the system prompt as suggested roles instead of inventing IDs. Include schedule, vault_keys, skill_ids, or rule_ids only when the request clearly needs them. Attach skill_ids only from Available skills when they materially improve the agent.\n\n` +
+        `The application key must always be present, shaped exactly like:\n` +
+        `application:\n` +
+        `  version: 1\n` +
+        `  objective: "<business outcome>"\n` +
+        `  audience: ["<who uses the result>"]\n` +
+        `  interaction_mode: conversational\n` +
+        `  inputs:\n    - type: request\n      source: conversation\n      description: "<concrete input>"\n` +
+        `  outputs:\n    - type: response\n      description: "<reviewable deliverable>"\n` +
+        `  non_goals: ["<explicitly excluded behavior>"]\n` +
+        `  completion_criteria: ["<observable completion condition>"]\n` +
+        `  failure_behavior: "<what to do when blocked>"\n` +
+        `interaction_mode is one of conversational, scheduled, event_driven, manual. The application block describes business intent only; operational IDs belong in their existing top-level fields.\n\n` +
         `The design key records the methodology artifacts and must always be present, shaped exactly like:\n` +
         `design:\n` +
         `  feasibility:\n    complexity: true\n    value: true\n    model_fit: true\n    recoverable_errors: true\n` +
@@ -950,7 +962,10 @@ async function streamMessagesText(
 ): Promise<string> {
   const res = await req("/v1/messages", {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    headers: {
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    },
     body: JSON.stringify({ ...body, stream: true }),
   });
   if (!res.ok) {
@@ -1082,13 +1097,13 @@ export async function refineAgentConfigWithModel(
   const text = await streamMessagesText(
     {
       model,
-      max_tokens: 2400,
+      max_tokens: 3200,
       system:
         `You incrementally edit an existing managed agent config for LiteLLM Agent Platform.\n\n` +
         `RULES:\n` +
-        `1. Apply ONLY the change the user asked for. Every other field — including name, description, model, runtime, system prompt wording, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, mcp_server_ids, and the whole design block — must be preserved exactly as-is unless the user's instruction requires touching it.\n` +
+        `1. Apply ONLY the change the user asked for. Every other field — including name, description, model, runtime, system prompt wording, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, mcp_server_ids, the application contract, and the whole design block — must be preserved exactly as-is unless the user's instruction requires touching it.\n` +
         `2. Never regenerate or rephrase untouched text. Copy it through verbatim.\n` +
-        `3. If the instruction changes what the agent does, update the affected parts of the system prompt and design.evaluation minimally and consistently, but keep the untouched parts verbatim.\n` +
+        `3. If the instruction changes what the application does, update the affected parts of application, system, and design.evaluation minimally and consistently, but keep untouched parts verbatim. Never copy operational IDs into application.\n` +
         `4. If the instruction is ambiguous or cannot be applied to this config, make the smallest reasonable interpretation and note it briefly in the description only if essential — do not invent unrelated changes.\n\n` +
         `OUTPUT: return only the complete updated YAML, no markdown fence, no prose. Keep the same key order as the input where possible. ${runtimeSelectionPrompt(runtimes)} The model must be one of these available model IDs: ${models.join(", ")}. Use tools as YAML list items with a type equal to a tool id available for the selected runtime, for example \`- type: bash\`. Attach skill_ids only from Available skills.\n\n` +
         runtimeToolCatalogPrompt(runtimes) +
@@ -1252,10 +1267,7 @@ export async function listApprovals(sessionId?: string): Promise<PendingApproval
   }));
 }
 
-export async function acceptApproval(
-  id: string,
-  args?: Record<string, unknown>,
-): Promise<void> {
+export async function acceptApproval(id: string, args?: Record<string, unknown>): Promise<void> {
   const res = await req(`/api/approvals/${encodeURIComponent(id)}/accept`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1277,7 +1289,7 @@ export async function rejectApproval(id: string, feedback?: string): Promise<voi
 // Unified list of human-in-the-loop approvals (kind="approval") an agent is
 // blocked on, plus informational issues an agent filed (kind="issue").
 
-export type InboxKind = "approval" | "issue";
+export type InboxKind = "approval" | "issue" | "tool_permission";
 export type InboxStatus = "pending" | "accepted" | "rejected" | "open" | "resolved";
 export type InboxFilter = "attention" | "completed" | "all";
 
@@ -1434,11 +1446,7 @@ export async function saveIntegrationKey(
   return "session";
 }
 
-export async function savePersonalVaultKey(
-  userId: string,
-  envKey: string,
-  value: string,
-): Promise<void> {
+export async function savePersonalVaultKey(userId: string, envKey: string, value: string): Promise<void> {
   await jsonOrThrow(
     await req(`/api/vault/${encodeURIComponent(userId)}`, {
       method: "POST",
@@ -1449,10 +1457,7 @@ export async function savePersonalVaultKey(
 }
 
 /** Remove a stored integration key from vault and sessionStorage. */
-export async function deleteIntegrationKey(
-  envKey: string,
-  scope: "personal" | "global" = "personal",
-): Promise<void> {
+export async function deleteIntegrationKey(envKey: string, scope: "personal" | "global" = "personal"): Promise<void> {
   try {
     const endpoint =
       scope === "global"
@@ -1490,9 +1495,7 @@ export async function listVaultKeysForUser(userId = DEFAULT_VAULT_USER): Promise
     key: k,
     scope: "personal" as const,
   }));
-  const byKey = new Map<string, VaultKeyEntry>(
-    fallback.map((e) => [`${e.scope}:${e.key}`, e]),
-  );
+  const byKey = new Map<string, VaultKeyEntry>(fallback.map((e) => [`${e.scope}:${e.key}`, e]));
   try {
     const localPersonalRes = req(`/api/vault/${DEFAULT_VAULT_USER}`).catch(() => null);
     const ownerPersonalRes =
@@ -1542,7 +1545,6 @@ export async function listPublicMcpServers(): Promise<McpServer[]> {
   return data.data ?? [];
 }
 
-
 /** Create an MCP server (admin). */
 export async function createMcpServer(input: Partial<McpServer>): Promise<McpServer> {
   const res = await req("/v1/mcp/server", {
@@ -1566,7 +1568,9 @@ export async function updateMcpServer(server_id: string, input: Partial<McpServe
 /** Delete an MCP server (admin). */
 export async function deleteMcpServer(server_id: string): Promise<void> {
   await jsonOrThrow(
-    await req(`/v1/mcp/server/${encodeURIComponent(server_id)}`, { method: "DELETE" }),
+    await req(`/v1/mcp/server/${encodeURIComponent(server_id)}`, {
+      method: "DELETE",
+    }),
   );
 }
 
@@ -1586,9 +1590,7 @@ export async function getMcpProxyBaseUrl(): Promise<McpProxyBaseUrlSetting> {
   return jsonOrThrow<McpProxyBaseUrlSetting>(res);
 }
 
-export async function saveMcpProxyBaseUrl(
-  proxyBaseUrl: string | null,
-): Promise<McpProxyBaseUrlSetting> {
+export async function saveMcpProxyBaseUrl(proxyBaseUrl: string | null): Promise<McpProxyBaseUrlSetting> {
   const res = await req("/v1/mcp/settings/proxy-base-url", {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -1615,10 +1617,7 @@ export async function listAllMcpServerTools(): Promise<Map<string, McpToolDef[]>
 }
 
 /** Test tools discovery with caller-supplied variable values (for admin test panel). */
-export async function testMcpServerTools(
-  server_id: string,
-  variables: Record<string, string>,
-): Promise<McpToolDef[]> {
+export async function testMcpServerTools(server_id: string, variables: Record<string, string>): Promise<McpToolDef[]> {
   const res = await req(`/v1/mcp/server/${encodeURIComponent(server_id)}/tools`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1663,7 +1662,9 @@ export async function startMcpOAuth(
       "content-type": "application/json",
       "x-user-id": input.userId ?? "default",
     },
-    body: JSON.stringify({ redirect_after: input.redirectAfter ?? "/integrations" }),
+    body: JSON.stringify({
+      redirect_after: input.redirectAfter ?? "/integrations",
+    }),
   });
   return jsonOrThrow<McpOAuthStartResponse>(res);
 }
@@ -1704,10 +1705,7 @@ export async function storeMcpVarCredential(
 }
 
 /** Delete a user credential for an MCP server. */
-export async function deleteMcpUserCredential(
-  server_id: string,
-  user_id = "default",
-): Promise<void> {
+export async function deleteMcpUserCredential(server_id: string, user_id = "default"): Promise<void> {
   await jsonOrThrow(
     await req(`/v1/mcp/server/${encodeURIComponent(server_id)}/user-credential`, {
       method: "DELETE",
@@ -1723,7 +1721,9 @@ export async function listMcpUserCredentials(
   const res = await req("/v1/mcp/user-credentials", {
     headers: { "x-user-id": user_id },
   });
-  const data = await jsonOrThrow<{ data: { server_id: string; updated_at?: number }[] }>(res);
+  const data = await jsonOrThrow<{
+    data: { server_id: string; updated_at?: number }[];
+  }>(res);
   return data.data ?? [];
 }
 
@@ -1737,11 +1737,7 @@ export async function listRules(): Promise<Rule[]> {
   return data.rules ?? [];
 }
 
-export async function createRule(input: {
-  name: string;
-  content: string;
-  description?: string | null;
-}): Promise<Rule> {
+export async function createRule(input: { name: string; content: string; description?: string | null }): Promise<Rule> {
   const res = await req("/api/rules", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1889,9 +1885,7 @@ export async function listRuntimeEvents(sessionId: string): Promise<RuntimeAgent
         return [];
       } else {
         const data = (await res.json().catch(() => null)) as
-          | { data?: RuntimeAgentEvent[] }
-          | RuntimeAgentEvent[]
-          | null;
+          { data?: RuntimeAgentEvent[] } | RuntimeAgentEvent[] | null;
         if (Array.isArray(data)) return data;
         return Array.isArray(data?.data) ? data.data : [];
       }
@@ -2043,7 +2037,11 @@ export function harnessEventSourceUrl(): string {
 
 // ── Agent CRUD (/api/agents) ────────────────────────────────────────────────
 export async function createAgent(
-  input: { name: string; owner_id?: string; schedule?: { cron: string; timezone?: string } | null } & Partial<Agent>,
+  input: {
+    name: string;
+    owner_id?: string;
+    schedule?: { cron: string; timezone?: string } | null;
+  } & Partial<Agent>,
 ): Promise<Agent> {
   const res = await req("/api/agents", {
     method: "POST",
@@ -2056,6 +2054,32 @@ export async function createAgent(
 export async function getAgent(id: string): Promise<Agent> {
   const res = await req(`/api/agents/${encodeURIComponent(id)}`);
   return jsonOrThrow<Agent>(res);
+}
+
+export interface AgentPreflightCheck {
+  id: string;
+  label: string;
+  verdict: "verified" | "exists_only" | "unverified" | "failed";
+  detail: string;
+}
+
+export interface AgentPreflightReport {
+  agent_id: string;
+  status: string;
+  can_activate: boolean;
+  checks: AgentPreflightCheck[];
+}
+
+export async function preflightAgent(id: string): Promise<AgentPreflightReport> {
+  const res = await req(`/api/agents/${encodeURIComponent(id)}/preflight`);
+  return jsonOrThrow<AgentPreflightReport>(res);
+}
+
+export async function activateAgent(id: string): Promise<{ id: string; status: string }> {
+  const res = await req(`/api/agents/${encodeURIComponent(id)}/activate`, {
+    method: "POST",
+  });
+  return jsonOrThrow<{ id: string; status: string }>(res);
 }
 
 export async function runAgent(agentId: string, prompt: string): Promise<AgentRunStart> {
@@ -2083,9 +2107,131 @@ export async function listRoutines(agentId?: string): Promise<Routine[]> {
   return data.routines ?? [];
 }
 
+export async function listAgentTasks(agentId: string): Promise<AgentTask[]> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/tasks`);
+  const data = await jsonOrThrow<{ tasks: AgentTask[] }>(res);
+  return data.tasks ?? [];
+}
+
+export async function createAgentTask(
+  agentId: string,
+  input: {
+    title?: string;
+    input?: Record<string, unknown>;
+    source?: "manual" | "api" | "test";
+  },
+): Promise<AgentTask> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/tasks`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<AgentTask>(res);
+}
+
+export async function listTaskArtifacts(
+  agentId: string,
+  taskId: string,
+): Promise<TaskArtifact[]> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/artifacts`,
+  );
+  const data = await jsonOrThrow<{ artifacts: TaskArtifact[] }>(res);
+  return data.artifacts ?? [];
+}
+
+export async function listTaskAcceptance(
+  agentId: string,
+  taskId: string,
+): Promise<TaskAcceptanceCheck[]> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/acceptance`,
+  );
+  const data = await jsonOrThrow<{ checks: TaskAcceptanceCheck[] }>(res);
+  return data.checks ?? [];
+}
+
+export async function updateTaskAcceptance(
+  agentId: string,
+  taskId: string,
+  input: {
+    criterion_index: number;
+    verdict: "passed" | "failed";
+    evidence?: string;
+    criterion?: string;
+  },
+): Promise<{ task: AgentTask; checks: TaskAcceptanceCheck[] }> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/acceptance`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  return jsonOrThrow<{ task: AgentTask; checks: TaskAcceptanceCheck[] }>(res);
+}
+
+export async function resumeAgentTask(
+  agentId: string,
+  taskId: string,
+  input: Record<string, unknown>,
+): Promise<{ task: AgentTask; session_id: string }> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/resume`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input }),
+    },
+  );
+  return jsonOrThrow<{ task: AgentTask; session_id: string }>(res);
+}
+
+export async function listTaskAttempts(
+  agentId: string,
+  taskId: string,
+): Promise<TaskAttempts> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/attempts`,
+  );
+  return jsonOrThrow<TaskAttempts>(res);
+}
+
+export async function retryAgentTask(
+  agentId: string,
+  taskId: string,
+  runtime?: string,
+): Promise<{ task: AgentTask; session: TaskSessionAttempt }> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(runtime ? { runtime } : {}),
+    },
+  );
+  return jsonOrThrow<{ task: AgentTask; session: TaskSessionAttempt }>(res);
+}
+
+export async function cancelAgentTask(
+  agentId: string,
+  taskId: string,
+): Promise<{
+  task: AgentTask;
+  session_id?: string | null;
+  run_id?: string | null;
+  interruption: "provider_interrupted" | "sandbox_terminated" | "cooperative" | "not_running";
+}> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/cancel`,
+    { method: "POST" },
+  );
+  return jsonOrThrow(res);
+}
+
 export async function createRoutine(
-  input: Pick<Routine, "agent_id" | "name" | "cron"> &
-    Partial<Pick<Routine, "prompt" | "timezone" | "status">>,
+  input: Pick<Routine, "agent_id" | "name" | "cron"> & Partial<Pick<Routine, "prompt" | "timezone" | "status">>,
 ): Promise<Routine> {
   const res = await req("/api/routines", {
     method: "POST",
@@ -2119,9 +2265,7 @@ export async function triggerRoutine(id: string): Promise<AgentRunStart> {
 }
 
 export async function getAgentRunLogs(agentId: string, runId: string): Promise<string> {
-  const res = await req(
-    `/api/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/logs`,
-  );
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/logs`);
   if (!res.ok) {
     throw new ApiError(res.status, await res.text().catch(() => ""));
   }
@@ -2192,11 +2336,7 @@ export async function listAgentGrants(agentId: string): Promise<AgentGrant[]> {
   return data.grants ?? [];
 }
 
-export async function createAgentGrant(
-  agentId: string,
-  userId: string,
-  permission: string,
-): Promise<AgentGrant> {
+export async function createAgentGrant(agentId: string, userId: string, permission: string): Promise<AgentGrant> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/grants`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2206,10 +2346,9 @@ export async function createAgentGrant(
 }
 
 export async function deleteAgentGrant(agentId: string, granteeUserId: string): Promise<void> {
-  const res = await req(
-    `/api/agents/${encodeURIComponent(agentId)}/grants/${encodeURIComponent(granteeUserId)}`,
-    { method: "DELETE" },
-  );
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/grants/${encodeURIComponent(granteeUserId)}`, {
+    method: "DELETE",
+  });
   await jsonOrThrow<boolean>(res);
 }
 
@@ -2259,19 +2398,23 @@ export async function listGroups(query = ""): Promise<ManagedGroup[]> {
 }
 
 export async function createGroup(input: { name: string; description?: string }): Promise<ManagedGroup> {
-  return jsonOrThrow<ManagedGroup>(await req("/api/groups", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-  }));
+  return jsonOrThrow<ManagedGroup>(
+    await req("/api/groups", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
 }
 
 export async function updateGroupStatus(id: string, status: "active" | "disabled"): Promise<ManagedGroup> {
-  return jsonOrThrow<ManagedGroup>(await req(`/api/groups/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ status }),
-  }));
+  return jsonOrThrow<ManagedGroup>(
+    await req(`/api/groups/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    }),
+  );
 }
 
 export async function listGroupMembers(groupId: string): Promise<GroupMember[]> {
@@ -2281,23 +2424,20 @@ export async function listGroupMembers(groupId: string): Promise<GroupMember[]> 
   return data.members;
 }
 
-export async function addGroupMember(
-  groupId: string,
-  userId: string,
-  memberRole = "member",
-): Promise<GroupMember> {
-  return jsonOrThrow<GroupMember>(await req(`/api/groups/${encodeURIComponent(groupId)}/members`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ user_id: userId, member_role: memberRole }),
-  }));
+export async function addGroupMember(groupId: string, userId: string, memberRole = "member"): Promise<GroupMember> {
+  return jsonOrThrow<GroupMember>(
+    await req(`/api/groups/${encodeURIComponent(groupId)}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: userId, member_role: memberRole }),
+    }),
+  );
 }
 
 export async function deleteGroupMember(groupId: string, userId: string): Promise<void> {
-  await jsonOrThrow<boolean>(await req(
-    `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
-    { method: "DELETE" },
-  ));
+  await jsonOrThrow<boolean>(
+    await req(`/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  );
 }
 
 export async function listAgentGroupGrants(agentId: string): Promise<AgentGroupGrant[]> {
@@ -2312,18 +2452,21 @@ export async function createAgentGroupGrant(
   groupId: string,
   permission: string,
 ): Promise<AgentGroupGrant> {
-  return jsonOrThrow<AgentGroupGrant>(await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ group_id: groupId, permission }),
-  }));
+  return jsonOrThrow<AgentGroupGrant>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ group_id: groupId, permission }),
+    }),
+  );
 }
 
 export async function deleteAgentGroupGrant(agentId: string, groupId: string): Promise<void> {
-  await jsonOrThrow<boolean>(await req(
-    `/api/agents/${encodeURIComponent(agentId)}/group-grants/${encodeURIComponent(groupId)}`,
-    { method: "DELETE" },
-  ));
+  await jsonOrThrow<boolean>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+    }),
+  );
 }
 
 export async function listGrantableGroups(agentId: string, query = ""): Promise<ManagedGroup[]> {
@@ -2352,18 +2495,12 @@ export async function listAgentFiles(agentId: string): Promise<WorkspaceFile[]> 
   return jsonOrThrow<WorkspaceFile[]>(res);
 }
 
-export async function requestAgentUploadUrl(
-  agentId: string,
-  path: string,
-): Promise<{ url: string; path: string }> {
-  const res = await req(
-    `/api/agents/${encodeURIComponent(agentId)}/workspace/files/upload-url`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    },
-  );
+export async function requestAgentUploadUrl(agentId: string, path: string): Promise<{ url: string; path: string }> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/workspace/files/upload-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
   return jsonOrThrow<{ url: string; path: string }>(res);
 }
 
@@ -2384,10 +2521,9 @@ export async function agentFileDownloadUrl(agentId: string, path: string): Promi
 }
 
 export async function deleteAgentFile(agentId: string, path: string): Promise<void> {
-  const res = await req(
-    `/api/agents/${encodeURIComponent(agentId)}/workspace/files?path=${encodeURIComponent(path)}`,
-    { method: "DELETE" },
-  );
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/workspace/files?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+  });
   await jsonOrThrow<boolean>(res);
 }
 
@@ -2404,14 +2540,11 @@ export async function requestWorkspaceUploadUrl(
   sessionId: string,
   path: string,
 ): Promise<{ url: string; path: string }> {
-  const res = await reqHarness(
-    `/session/${encodeURIComponent(sessionId)}/workspace/files/upload-url`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path }),
-    },
-  );
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/files/upload-url`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
   return jsonOrThrow(res);
 }
 
@@ -2433,10 +2566,9 @@ export async function uploadWorkspaceFile(sessionId: string, file: File, path: s
 }
 
 export async function deleteWorkspaceFile(sessionId: string, path: string): Promise<void> {
-  await reqHarness(
-    `/session/${encodeURIComponent(sessionId)}/workspace/files?path=${encodeURIComponent(path)}`,
-    { method: "DELETE" },
-  );
+  await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/files?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Skills list (DB-backed, /api/skills) ──────────────────────────────────────
@@ -2455,23 +2587,19 @@ export async function listMemory(agentId: string): Promise<Memory[]> {
   return data.memories ?? [];
 }
 
-export async function storeMemory(
-  agentId: string,
-  key: string,
-  value: string,
-  alwaysOn?: boolean,
-): Promise<Memory> {
+export async function storeMemory(agentId: string, key: string, value: string, alwaysOn?: boolean): Promise<Memory> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/memory`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key, value, ...(typeof alwaysOn === "boolean" ? { always_on: alwaysOn } : {}) }),
+    body: JSON.stringify({
+      key,
+      value,
+      ...(typeof alwaysOn === "boolean" ? { always_on: alwaysOn } : {}),
+    }),
   });
   return jsonOrThrow<Memory>(res);
 }
 
 export async function deleteMemory(agentId: string, key: string): Promise<void> {
-  await req(
-    `/api/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(key)}`,
-    { method: "DELETE" },
-  );
+  await req(`/api/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
 }

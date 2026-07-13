@@ -15,6 +15,8 @@ pub struct AgentRunRow {
     pub config_overrides: Value,
     pub sandbox_id: Option<String>,
     pub logs: String,
+    pub task_id: Option<String>,
+    pub attempt_number: i32,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,4 +1,4 @@
-import type { AgentDraft } from "@/lib/agent-builder";
+import { applicationGatePassed, type AgentDraft } from "@/lib/agent-builder";
 import type { FieldChange } from "@/lib/agent-draft-diff";
 import type { AgentRuntime, RuntimeHarness } from "@/lib/types";
 
@@ -48,6 +48,9 @@ export function validateDraftForCreate(draft: AgentDraft): string[] {
   if (!draft.model.trim()) problems.push("未选择模型（Model）");
   if (!draft.runtime.trim()) problems.push("未选择运行时（Runtime）");
   if (!draft.system.trim()) problems.push("System prompt 为空");
+  if (!applicationGatePassed(draft.application)) {
+    problems.push("应用蓝图需要业务目标、至少一个输入、一个输出和一项完成条件");
+  }
   const badVaultKeys = draft.vault_keys.filter((key) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
   if (badVaultKeys.length > 0) {
     problems.push(`保险库密钥名不合法：${badVaultKeys.join(", ")}（只能包含字母、数字、下划线且不能以数字开头）`);

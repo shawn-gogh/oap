@@ -5,10 +5,7 @@ use axum::{
     Router,
 };
 
-use crate::{
-    channels::{google_chat, webhook},
-    proxy::state::AppState,
-};
+use crate::{channels::webhook, proxy::state::AppState};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -18,9 +15,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(routine_routes())
         .merge(skill_routes())
         .merge(inbox_routes())
-        .merge(slack_routes())
-        .merge(teams_routes())
-        .merge(google_chat_routes())
         .merge(webhook_routes())
 }
 
@@ -43,6 +37,46 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/resume",
             post(super::registry::resume::resume),
+        )
+        .route(
+            "/api/agents/{agent_id}/preflight",
+            get(super::registry::preflight::preflight),
+        )
+        .route(
+            "/api/agents/{agent_id}/activate",
+            post(super::registry::preflight::activate),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks",
+            get(super::tasks::list).post(super::tasks::create),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}",
+            get(super::tasks::get),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/artifacts",
+            get(super::tasks::list_artifacts).post(super::tasks::create_artifact),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/acceptance",
+            get(super::tasks::list_acceptance).post(super::tasks::update_acceptance),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/resume",
+            post(super::tasks::resume),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/attempts",
+            get(super::tasks::list_attempts),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/retry",
+            post(super::tasks::retry),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/cancel",
+            post(super::tasks::cancel),
         )
         .route(
             "/api/agents/{agent_id}/revisions",
@@ -193,40 +227,7 @@ fn inbox_routes() -> Router<Arc<AppState>> {
             "/api/approvals/{item_id}/reject",
             post(super::inbox::approvals::reject),
         )
-}
-
-fn slack_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route(
-            "/api/agents/{agent_id}/slack/events",
-            post(super::slack::events),
-        )
-        .route(
-            "/api/agents/{agent_id}/slack/interactivity",
-            post(super::slack::interactivity),
-        )
-        .route(
-            "/api/agents/{agent_id}/slack/oauth-state",
-            post(super::slack::oauth_state),
-        )
-        .route(
-            "/host-oauth-callback/{provider_id}",
-            get(super::slack::oauth_callback),
-        )
-}
-
-fn teams_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/api/agents/{agent_id}/teams/messages",
-        post(super::teams::messages),
-    )
-}
-
-fn google_chat_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/api/agents/{agent_id}/google-chat/events",
-        post(google_chat::events),
-    )
+        .route("/api/tool-approvals", post(super::tool_approvals::asked))
 }
 
 fn webhook_routes() -> Router<Arc<AppState>> {

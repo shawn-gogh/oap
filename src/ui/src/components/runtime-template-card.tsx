@@ -11,9 +11,7 @@ import {
 } from "@/lib/runtime-templates";
 
 const SPEC_LABELS: Record<string, string> = {
-  claude_managed_agents: "Claude Managed Agents",
-  cursor: "Cursor",
-  gemini_antigravity: "Gemini Antigravity",
+  claude_managed_agents: "自托管开放 Harness",
   opencode: "OpenCode",
 };
 

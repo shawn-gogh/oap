@@ -25,6 +25,11 @@ pub async fn resume(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_edit(&auth, &existing, pool).await?;
+    if existing.status == "draft" {
+        return Err(GatewayError::BadRequest(format!(
+            "草稿智能体不能直接恢复运行：请先通过预检并激活（POST /api/agents/{agent_id}/activate）"
+        )));
+    }
     repository::set_status(pool, &agent_id, "active")
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;

@@ -59,18 +59,22 @@ pub async fn accept(
 ) -> Result<Json<DecisionResponse>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
-    owned_approval(&pool, &auth, &item_id).await?;
+    let existing = owned_approval(&pool, &auth, &item_id).await?;
     let live =
         repository::decide_approval(&pool, &item_id, "accept", None, input.arguments).await?;
-    if live {
-        crate::http::managed_agents::improvements::apply_if_improvement(
-            state.clone(),
-            pool.clone(),
-            &item_id,
-        )
-        .await;
+    if existing.kind == "tool_permission" {
+        reply_tool_permission(&state, &pool, &item_id).await;
+    } else {
+        if live {
+            crate::http::managed_agents::improvements::apply_if_improvement(
+                state.clone(),
+                pool.clone(),
+                &item_id,
+            )
+            .await;
+        }
+        resume_linked_session(state, pool, &item_id).await;
     }
-    resume_linked_session(state, pool, &item_id).await;
     Ok(Json(DecisionResponse { ok: true, live }))
 }
 
@@ -82,10 +86,23 @@ pub async fn reject(
 ) -> Result<Json<DecisionResponse>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
-    owned_approval(&pool, &auth, &item_id).await?;
+    let existing = owned_approval(&pool, &auth, &item_id).await?;
     let live = repository::decide_approval(&pool, &item_id, "reject", input.feedback, None).await?;
-    resume_linked_session(state, pool, &item_id).await;
+    if existing.kind == "tool_permission" {
+        reply_tool_permission(&state, &pool, &item_id).await;
+    } else {
+        resume_linked_session(state, pool, &item_id).await;
+    }
     Ok(Json(DecisionResponse { ok: true, live }))
+}
+
+/// tool_permission items resolve by replying to opencode's own permission
+/// request, not by resuming the chat with a new prompt — the tool call is
+/// paused at the protocol level, not waiting on the next user message.
+async fn reply_tool_permission(state: &Arc<AppState>, pool: &sqlx::PgPool, item_id: &str) {
+    if let Ok(Some(item)) = repository::get(pool, item_id).await {
+        crate::http::managed_agents::tool_approvals::reply(state, pool, &item).await;
+    }
 }
 
 async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str) {
