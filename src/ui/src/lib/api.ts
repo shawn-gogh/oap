@@ -2058,6 +2058,30 @@ export async function getAgent(id: string): Promise<Agent> {
   return jsonOrThrow<Agent>(res);
 }
 
+export interface AgentPreflightCheck {
+  id: string;
+  label: string;
+  verdict: "verified" | "exists_only" | "unverified" | "failed";
+  detail: string;
+}
+
+export interface AgentPreflightReport {
+  agent_id: string;
+  status: string;
+  can_activate: boolean;
+  checks: AgentPreflightCheck[];
+}
+
+export async function preflightAgent(id: string): Promise<AgentPreflightReport> {
+  const res = await req(`/api/agents/${encodeURIComponent(id)}/preflight`);
+  return jsonOrThrow<AgentPreflightReport>(res);
+}
+
+export async function activateAgent(id: string): Promise<{ id: string; status: string }> {
+  const res = await req(`/api/agents/${encodeURIComponent(id)}/activate`, { method: "POST" });
+  return jsonOrThrow<{ id: string; status: string }>(res);
+}
+
 export async function runAgent(agentId: string, prompt: string): Promise<AgentRunStart> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/run`, {
     method: "POST",

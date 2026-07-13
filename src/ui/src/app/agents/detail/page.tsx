@@ -54,7 +54,11 @@ import {
   deleteAgent,
   deleteAgentFile,
   deleteMemory,
+  activateAgent,
+  apiErrorMessage,
   getAgent,
+  preflightAgent,
+  type AgentPreflightReport,
   listAgentFiles,
   uploadAgentFile,
   listMemory,
@@ -687,6 +691,13 @@ function AgentDetail() {
                     </p>
                   )}
                 </div>
+
+                {agent.status === "draft" && (
+                  <DraftPreflightPanel
+                    agentId={agent.id}
+                    onActivated={() => setAgent({ ...agent, status: "active" })}
+                  />
+                )}
 
                 <section>
                   <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1433,5 +1444,107 @@ export default function AgentDetailPage() {
     <Suspense>
       <AgentDetail />
     </Suspense>
+  );
+}
+
+const PREFLIGHT_VERDICT_META: Record<string, { label: string; className: string }> = {
+  verified: { label: "已验证", className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  exists_only: { label: "仅存在性", className: "bg-muted text-muted-foreground" },
+  unverified: { label: "未验证", className: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
+  failed: { label: "失败", className: "bg-destructive/10 text-destructive" },
+};
+
+function DraftPreflightPanel({
+  agentId,
+  onActivated,
+}: {
+  agentId: string;
+  onActivated: () => void;
+}) {
+  const [report, setReport] = useState<AgentPreflightReport | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [panelError, setPanelError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setChecking(true);
+    setPanelError(null);
+    try {
+      setReport(await preflightAgent(agentId));
+    } catch (e) {
+      setPanelError(apiErrorMessage(e, "预检失败"));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId]);
+
+  const activate = async () => {
+    setActivating(true);
+    setPanelError(null);
+    try {
+      await activateAgent(agentId);
+      toast.success("智能体已激活");
+      onActivated();
+    } catch (e) {
+      setPanelError(apiErrorMessage(e, "激活失败"));
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  return (
+    <Card className="border-amber-500/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">
+            草稿状态
+            <span className="ml-2 rounded bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+              未激活
+            </span>
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            草稿智能体可编辑、可在对话中测试，但不能手动运行或被定时任务触发。通过预检后即可激活。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={checking} onClick={() => void refresh()}>
+            {checking ? "检查中..." : "重新预检"}
+          </Button>
+          <Button
+            size="sm"
+            disabled={activating || !report?.can_activate}
+            onClick={() => void activate()}
+          >
+            {activating ? "激活中..." : "激活"}
+          </Button>
+        </div>
+      </div>
+      {panelError && (
+        <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{panelError}</p>
+      )}
+      {report && (
+        <ul className="mt-3 grid gap-1.5">
+          {report.checks.map((check, index) => {
+            const meta = PREFLIGHT_VERDICT_META[check.verdict] ?? PREFLIGHT_VERDICT_META.unverified;
+            return (
+              <li key={`${check.id}-${index}`} className="flex items-start gap-2 text-xs">
+                <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium ${meta.className}`}>
+                  {meta.label}
+                </span>
+                <span>
+                  <span className="font-medium">{check.label}</span>
+                  <span className="ml-1 text-muted-foreground">{check.detail}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }

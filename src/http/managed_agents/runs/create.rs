@@ -41,6 +41,7 @@ pub async fn create(
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
     super::super::assert_agent_use(&auth, &agent, pool).await?;
+    super::super::assert_agent_runnable(&agent)?;
     let prompt = input
         .prompt
         .clone()

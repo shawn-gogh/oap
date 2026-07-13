@@ -51,6 +51,7 @@ pub(crate) async fn trigger_routine_run(
     let agent = registry::repository::get(&pool, &routine.agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
+    crate::http::managed_agents::assert_agent_runnable(&agent)?;
     let prompt = routine_prompt(&routine, &agent);
     if let Some(runtime) = runtime_from_agent(&agent) {
         return trigger_runtime_session(state, pool, routine, agent, prompt, runtime).await;

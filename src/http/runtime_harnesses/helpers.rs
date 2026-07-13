@@ -2,7 +2,8 @@ use crate::{
     db::{credentials, managed_agents::harnesses},
     errors::GatewayError,
     http::{
-        agent_runtime_tools::{approval_enforcement, runtime_tools}, agent_runtimes::load_credential,
+        agent_runtime_tools::{approval_enforcement, runtime_tools},
+        agent_runtimes::load_credential,
         managed_agents::import::import_runtime_providers,
         runtime_resolution::harness_credential_name,
     },

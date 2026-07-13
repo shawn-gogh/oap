@@ -3,6 +3,7 @@ pub mod delete;
 pub mod get;
 pub mod list;
 pub mod pause;
+pub mod preflight;
 pub mod resume;
 pub mod revisions;
 pub mod types;
