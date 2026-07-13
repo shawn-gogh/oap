@@ -33,6 +33,7 @@ pub struct HarnessResponse {
     pub connected: bool,
     pub masked_api_key: Option<String>,
     pub tools: Vec<RuntimeTool>,
+    pub approval_enforcement: &'static str,
 }
 
 #[derive(Debug, Serialize)]

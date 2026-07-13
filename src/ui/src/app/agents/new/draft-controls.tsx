@@ -61,6 +61,9 @@ export function AgentDraftControls({
   const toolOptions = runtimeTools.length > 0
     ? runtimeTools.map((tool) => tool.id).filter(Boolean)
     : draft.tools.map((tool) => tool.type).filter(Boolean);
+  const toolRisk = new Map(
+    runtimeTools.filter((tool) => tool.risk).map((tool) => [tool.id, tool.risk as string]),
+  );
   const selectedTools = new Set(draft.tools.map((tool) => tool.type).filter(Boolean));
   const selectedSubAgents = new Set(draft.sub_agents.map((agent) => agent.agent_id));
   const [vaultKeyInput, setVaultKeyInput] = useState("");
@@ -314,20 +317,30 @@ export function AgentDraftControls({
             </span>
           </div>
           <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
-            {toolOptions.map((toolId) => (
-              <label
-                key={toolId}
-                className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md border border-white/10 bg-white/5 px-2.5 py-2 text-xs hover:bg-white/10"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedTools.has(toolId)}
-                  onChange={(event) => setTool(toolId, event.target.checked)}
-                  className="size-3.5 shrink-0"
-                />
-                <span className="min-w-0 truncate font-mono">{toolId}</span>
-              </label>
-            ))}
+            {toolOptions.map((toolId) => {
+              const risk = toolRisk.get(toolId);
+              return (
+                <label
+                  key={toolId}
+                  className="flex min-w-0 cursor-pointer items-start gap-2 rounded-md border border-white/10 bg-white/5 px-2.5 py-2 text-xs hover:bg-white/10"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedTools.has(toolId)}
+                    onChange={(event) => setTool(toolId, event.target.checked)}
+                    className="mt-0.5 size-3.5 shrink-0"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono">{toolId}</span>
+                    {risk && (
+                      <span className="mt-0.5 block text-[11px] leading-snug text-amber-500/90">
+                        {risk}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </div>
 

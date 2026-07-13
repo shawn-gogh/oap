@@ -16,6 +16,7 @@ import { ConfigPreview } from "./config-preview";
 
 export function ReviewStep({
   draft,
+  approvalEnforcement,
   error,
   canCreate,
   saving,
@@ -25,6 +26,7 @@ export function ReviewStep({
   onCreate,
 }: {
   draft: AgentDraft;
+  approvalEnforcement: "enforced" | "advisory";
   error: string | null;
   canCreate: boolean;
   saving: boolean;
@@ -61,9 +63,12 @@ export function ReviewStep({
     },
     {
       ok: governance.write_requires_approval,
-      label: "写操作需要人工确认",
+      label:
+        approvalEnforcement === "enforced" ? "写操作需要人工确认（平台强制）" : "写操作审批（提示性）",
       detail: governance.write_requires_approval
-        ? "将挂载审批 MCP；写/破坏性操作会暂停等待人工确认。"
+        ? approvalEnforcement === "enforced"
+          ? "平台在工具执行边界强制拦截：无有效审批时写/破坏性操作不会执行。"
+          : "将挂载审批 MCP，提示模型在写/破坏性操作前请求确认。注意：当前运行时的原生工具（如 bash/write）在运行时环境内执行，平台无法强制拦截，模型可能不经审批直接执行。"
         : "写操作将无人值守执行。仅只读智能体建议关闭。",
     },
     {
@@ -126,7 +131,7 @@ export function ReviewStep({
                 checked={governance.write_requires_approval}
                 onChange={(e) => setGovernance({ write_requires_approval: e.target.checked })}
               />
-              写操作需要人工确认
+              写操作需要人工确认{approvalEnforcement === "advisory" ? "（提示性，非平台强制）" : ""}
             </label>
             <div className="flex items-center gap-2">
               <Label className="text-xs text-muted-foreground">超时（分钟）</Label>
@@ -277,16 +282,21 @@ function PreCreateTestRun({ draft }: { draft: AgentDraft }) {
                       className={cn(
                         "flex items-start gap-2 rounded-md px-3 py-2 text-xs",
                         outcome.result.pass
-                          ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
+                          ? "bg-muted text-foreground"
                           : "bg-destructive/10 text-destructive",
                       )}
                     >
                       {outcome.result.pass ? (
-                        <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
+                        <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                       ) : (
                         <XCircle className="mt-0.5 size-3.5 shrink-0" />
                       )}
-                      <span className="leading-5">{outcome.result.verdict}</span>
+                      <span className="leading-5">
+                        {outcome.result.pass && (
+                          <span className="font-medium">提示词测试通过（未验证工具与真实数据）：</span>
+                        )}
+                        {outcome.result.verdict}
+                      </span>
                     </div>
                     <details className="rounded-md border border-border bg-muted/30 px-3 py-2">
                       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">

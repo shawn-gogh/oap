@@ -555,6 +555,11 @@ export default function NewAgentPage() {
           ) : step === "review" ? (
             <ReviewStep
               draft={draft}
+              approvalEnforcement={
+                harnesses.find((entry) => entry.alias === draft.runtime)?.approval_enforcement ??
+                runtimes.find((entry) => entry.id === draft.runtime)?.approval_enforcement ??
+                "advisory"
+              }
               error={error}
               canCreate={canCreate}
               saving={saving}

@@ -74,26 +74,24 @@ export interface ParsedAgentDraft {
 const DEFAULT_RUNTIME = "local-opencode";
 const DEFAULT_OWNER = "local";
 const DEFAULT_FAILURE = "pause_and_notify";
+// Least-privilege fallback: read-only tools only. High-risk tools
+// (bash/write/edit/web_fetch) must be opted into explicitly, either by the
+// user or by a template that declares why it needs them.
 const DEFAULT_TOOLS: AgentTool[] = [
-  { type: "bash" },
   { type: "read" },
-  { type: "write" },
-  { type: "edit" },
   { type: "glob" },
   { type: "grep" },
-  { type: "web_fetch" },
-  { type: "web_search" },
 ];
 
 function baseDraft(): AgentDraft {
   return {
     name: "Untitled Agent",
-    description: "A blank starting point with the core toolset.",
+    description: "A blank starting point with a read-only toolset.",
     model: "",
     runtime: DEFAULT_RUNTIME,
     owner_id: DEFAULT_OWNER,
     system:
-      "You are a general-purpose agent. Research, write, run commands, and use connected tools to complete the user's task end to end. State assumptions clearly, keep progress visible, and ask for missing credentials only when blocked.",
+      "You are a general-purpose agent. Research, analyze, and use the tools you have been granted to complete the user's task end to end. State assumptions clearly, keep progress visible, and ask for missing credentials only when blocked.",
     tools: DEFAULT_TOOLS.map((tool) => ({ ...tool })),
     cron: "",
     timezone: DEFAULT_TIMEZONE,
@@ -178,7 +176,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   {
     id: "blank",
     title: "Blank agent config",
-    description: "A neutral base agent with the core toolset.",
+    description: "A neutral base agent with a read-only toolset.",
     tags: ["core"],
     draft: withDraft({
       design: designPreset({

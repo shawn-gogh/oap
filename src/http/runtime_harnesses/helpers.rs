@@ -2,7 +2,7 @@ use crate::{
     db::{credentials, managed_agents::harnesses},
     errors::GatewayError,
     http::{
-        agent_runtime_tools::runtime_tools, agent_runtimes::load_credential,
+        agent_runtime_tools::{approval_enforcement, runtime_tools}, agent_runtimes::load_credential,
         managed_agents::import::import_runtime_providers,
         runtime_resolution::harness_credential_name,
     },
@@ -42,6 +42,7 @@ async fn default_harnesses(state: &AppState) -> Result<Vec<HarnessResponse>, Gat
             connected: credential.is_some(),
             masked_api_key: credential.map(|c| mask_api_key(&c.api_key)),
             tools: runtime_tools(entry.id).to_vec(),
+            approval_enforcement: approval_enforcement(entry.id),
         });
     }
     Ok(result)
@@ -77,6 +78,7 @@ async fn custom_harnesses(
             connected,
             masked_api_key,
             tools: runtime_tools(&harness.api_spec).to_vec(),
+            approval_enforcement: approval_enforcement(&harness.api_spec),
         });
     }
     Ok(result)
@@ -99,6 +101,7 @@ fn append_import_providers(result: &mut Vec<HarnessResponse>) {
             connected: false,
             masked_api_key: None,
             tools: runtime_tools(provider.api_spec).to_vec(),
+            approval_enforcement: approval_enforcement(provider.api_spec),
         });
     }
 }
@@ -152,6 +155,7 @@ mod tests {
             connected: false,
             masked_api_key: None,
             tools: Vec::new(),
+            approval_enforcement: "advisory",
         };
         let mut harnesses = vec![
             builtin("elastic_agent_builder", "http://localhost:5601"),

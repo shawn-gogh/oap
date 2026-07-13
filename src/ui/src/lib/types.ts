@@ -29,6 +29,7 @@ export interface AgentRuntimeTool {
   name: string;
   description: string;
   enabled_by_default: boolean;
+  risk?: string | null;
 }
 
 export interface AgentRuntime {
@@ -38,6 +39,7 @@ export interface AgentRuntime {
   credential_provider_id: string;
   credential_provider_name: string;
   tools: AgentRuntimeTool[];
+  approval_enforcement?: "enforced" | "advisory";
   connected: boolean;
   api_base?: string | null;
   masked_api_key?: string | null;
@@ -52,6 +54,7 @@ export interface RuntimeHarness {
   connected: boolean;
   masked_api_key?: string | null;
   tools: AgentRuntimeTool[];
+  approval_enforcement?: "enforced" | "advisory";
 }
 
 export function resolveApiSpec(

@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-use super::agent_runtime_tools::{runtime_tools, RuntimeTool};
+use super::agent_runtime_tools::{approval_enforcement, runtime_tools, RuntimeTool};
 
 /// Opaque credential loaded from the DB for a runtime.
 #[derive(Debug, Clone)]
@@ -46,6 +46,7 @@ pub struct RuntimeResponse {
     pub credential_provider_id: String,
     pub credential_provider_name: String,
     pub tools: Vec<RuntimeTool>,
+    pub approval_enforcement: &'static str,
     pub connected: bool,
     pub api_base: Option<String>,
     pub masked_api_key: Option<String>,
@@ -188,6 +189,7 @@ async fn runtime_values(state: &AppState) -> Result<Vec<RuntimeResponse>, Gatewa
             credential_provider_id: provider.id.to_owned(),
             credential_provider_name: provider.name.to_owned(),
             tools: runtime_tools(entry.id).to_vec(),
+            approval_enforcement: approval_enforcement(entry.id),
             connected: credential.is_some(),
             api_base: credential.as_ref().map(|c| c.api_base.clone()),
             masked_api_key: credential.map(|c| provider_credentials::mask_api_key(&c.api_key)),

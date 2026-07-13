@@ -7,7 +7,7 @@ const BUILDER_STEPS: Array<{ index: 1 | 2 | 3 | 4; step: BuilderStep; label: str
   { index: 1, step: "create", label: "定位 Fit" },
   { index: 2, step: "eval", label: "评估 Eval" },
   { index: 3, step: "config", label: "设计 Design" },
-  { index: 4, step: "review", label: "复核 Review", suffix: "POST /v1/agents" },
+  { index: 4, step: "review", label: "复核 Review", suffix: "POST /api/agents" },
 ];
 
 export function PlatformSteps({
