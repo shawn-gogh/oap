@@ -84,6 +84,7 @@ export default function NewAgentPage() {
   const [view, setView] = useState<BuilderView>("edit");
   const [drafting, setDrafting] = useState(false);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
+  const [modelSuggestion, setModelSuggestion] = useState<{ suggested: string; current: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -336,9 +337,21 @@ export default function NewAgentPage() {
       );
       const generatedDraft = parseAgentDraftConfig(generated);
       if (generatedDraft.error) throw new Error(generatedDraft.error);
+      // Keep the user's explicit model choice, but don't silently discard a
+      // differing recommendation: surface it as an inline suggestion the
+      // user can accept or dismiss (only when it's actually selectable).
+      const recommendedModel = generatedDraft.draft.model?.trim() ?? "";
       const nextDraft = selectedModel
         ? { ...generatedDraft.draft, model: selectedModel }
         : generatedDraft.draft;
+      setModelSuggestion(
+        selectedModel &&
+          recommendedModel &&
+          recommendedModel !== selectedModel &&
+          models.includes(recommendedModel)
+          ? { suggested: recommendedModel, current: selectedModel }
+          : null,
+      );
       openConfig(nextDraft, templateId, {
         request: trimmed,
         summary: "已根据描述生成初始配置：",
@@ -601,6 +614,13 @@ export default function NewAgentPage() {
               copied={copied}
               draft={draft}
               draftNotice={draftNotice}
+              modelSuggestion={modelSuggestion}
+              onModelSuggestion={(accept) => {
+                if (accept && modelSuggestion) {
+                  updateDraft({ ...draft, model: modelSuggestion.suggested });
+                }
+                setModelSuggestion(null);
+              }}
               drafting={drafting}
               draftProgress={draftProgress}
               error={error}

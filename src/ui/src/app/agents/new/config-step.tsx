@@ -34,6 +34,8 @@ export function ConfigStep({
   copied,
   draft,
   draftNotice,
+  modelSuggestion,
+  onModelSuggestion,
   drafting,
   draftProgress,
   error,
@@ -66,6 +68,8 @@ export function ConfigStep({
   copied: boolean;
   draft: AgentDraft;
   draftNotice: string | null;
+  modelSuggestion: { suggested: string; current: string } | null;
+  onModelSuggestion: (accept: boolean) => void;
   drafting: boolean;
   draftProgress: string | null;
   error: string | null;
@@ -133,6 +137,30 @@ export function ConfigStep({
                 继续调整
               </Button>
             </div>
+            {modelSuggestion && (
+              <div className="mt-4 flex max-w-xl flex-wrap items-center gap-2 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-sm text-sky-800 dark:text-sky-300">
+                <span className="min-w-0">
+                  AI 建议将模型从 <span className="font-mono text-xs">{modelSuggestion.current}</span> 改为{" "}
+                  <span className="font-mono text-xs">{modelSuggestion.suggested}</span>（当前保留了你的选择）
+                </span>
+                <span className="ml-auto flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-sky-500/40 px-2 py-0.5 text-xs hover:bg-sky-500/20"
+                    onClick={() => onModelSuggestion(true)}
+                  >
+                    使用建议
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                    onClick={() => onModelSuggestion(false)}
+                  >
+                    保留当前
+                  </button>
+                </span>
+              </div>
+            )}
             {draftNotice && (
               <div className="mt-4 max-w-xl rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
                 {draftNotice}
