@@ -311,7 +311,9 @@ pub async fn test_connection(
                 .unwrap_or_default();
         }
     }
-    Ok(Json(json!({ "ok": true, "detail": "连接正常", "models": models })))
+    Ok(Json(
+        json!({ "ok": true, "detail": "连接正常", "models": models }),
+    ))
 }
 
 fn validate_alias(alias: &str) -> Result<(), GatewayError> {

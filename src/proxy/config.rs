@@ -98,7 +98,8 @@ fn expand_env(config: &mut GatewayConfig) -> Result<(), GatewayError> {
         config.general_settings.minio_endpoint = Some(expand_env_value(minio_endpoint)?);
     }
     if let Some(minio_public_endpoint) = config.general_settings.minio_public_endpoint.as_deref() {
-        config.general_settings.minio_public_endpoint = Some(expand_env_value(minio_public_endpoint)?);
+        config.general_settings.minio_public_endpoint =
+            Some(expand_env_value(minio_public_endpoint)?);
     }
     if let Some(minio_access_key) = config.general_settings.minio_access_key.as_deref() {
         config.general_settings.minio_access_key = Some(expand_env_value(minio_access_key)?);

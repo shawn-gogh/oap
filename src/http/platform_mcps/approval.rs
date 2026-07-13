@@ -24,7 +24,10 @@ pub async fn request_human_approval(
         .await?
         .ok_or_else(|| GatewayError::UnknownAgent(agent_id.to_owned()))?;
 
-    let mut approval_args = arguments.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let mut approval_args = arguments
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     if let Some(options) = arguments.get("options") {
         if let Some(obj) = approval_args.as_object_mut() {
             obj.insert("options".to_owned(), options.clone());

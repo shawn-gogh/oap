@@ -15,7 +15,7 @@ pub async fn append(
     event: Value,
 ) -> Result<RuntimeEventRow, GatewayError> {
     let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
-    
+
     // Acquire a row lock on the session to serialize concurrent appends for this session ID
     let _: Option<String> = sqlx::query_scalar(
         r#"

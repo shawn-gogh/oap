@@ -21,7 +21,10 @@ pub async fn responses(
     )?;
 
     let body: Value = serde_json::from_slice(&body).map_err(GatewayError::InvalidJson)?;
-    tracing::info!("Received responses request body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+    tracing::info!(
+        "Received responses request body: {}",
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
     let model = body
         .get("model")
         .and_then(Value::as_str)

@@ -38,9 +38,7 @@ pub(crate) use runtime_events_api::runtime_event_stream_for_session;
 pub use runtime_events_api::{runtime_event_list, runtime_events};
 pub(crate) use runtime_sdk::lap_from_credential;
 use runtime_sdk::{register_runtime_session, runtime_sdk_client};
-use storage::{
-    auth_db, db, owned_session, persist_message, resolve_session_request, session,
-};
+use storage::{auth_db, db, owned_session, persist_message, resolve_session_request, session};
 pub use types::{CreateSessionRequest, MessageResponse, PromptRequest, SessionResponse};
 pub use workspace_api::{create_upload_url, delete_file, download_url, list_files};
 
@@ -138,7 +136,9 @@ pub async fn rename(
     owned_session(pool, &auth, &session_id).await?;
     let title = input.title.trim();
     if title.is_empty() {
-        return Err(GatewayError::InvalidConfig("title must not be empty".to_owned()));
+        return Err(GatewayError::InvalidConfig(
+            "title must not be empty".to_owned(),
+        ));
     }
     sessions::repository::set_title(pool, &session_id, title).await?;
     let row = sessions::repository::get(pool, &session_id)
@@ -162,11 +162,9 @@ pub async fn delete(
     }
     // Pending approvals for a deleted session can never be decided into a
     // live turn; expire them so the inbox doesn't accumulate zombies.
-    let _ = crate::db::managed_agents::inbox::repository::expire_pending_for_session(
-        pool,
-        &session_id,
-    )
-    .await;
+    let _ =
+        crate::db::managed_agents::inbox::repository::expire_pending_for_session(pool, &session_id)
+            .await;
     Ok(Json(sessions::repository::delete(pool, &session_id).await?))
 }
 

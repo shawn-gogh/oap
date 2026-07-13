@@ -250,11 +250,7 @@ async fn create_runtime_session_row(
             provider_run_id: None,
             // Channel/routine-originated sessions carry no caller identity;
             // they inherit the agent's owner (or "system" for legacy agents).
-            owner_id: Some(
-                owner
-                    .or(agent.owner_id.as_deref())
-                    .unwrap_or("system"),
-            ),
+            owner_id: Some(owner.or(agent.owner_id.as_deref()).unwrap_or("system")),
         },
     )
     .await?;

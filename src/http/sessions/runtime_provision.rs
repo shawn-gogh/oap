@@ -48,8 +48,12 @@ pub(super) async fn provision_runtime_session(
         .is_custom_harness
         .then_some(state.config.general_settings.master_key.as_deref())
         .flatten();
-    let provider_mcp_servers =
-        mcp_servers(state, &created.agent, Some(&created.row.id), inline_auth_token)?;
+    let provider_mcp_servers = mcp_servers(
+        state,
+        &created.agent,
+        Some(&created.row.id),
+        inline_auth_token,
+    )?;
     let provider_agent = match gemini::reusable_provider_agent(pool, sdk_rt, created).await? {
         Some(agent) => agent,
         None => {

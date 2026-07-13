@@ -16,10 +16,7 @@ use crate::{
     db::managed_agents::registry::repository,
     errors::GatewayError,
     object_storage::ObjectStorageClient,
-    proxy::{
-        auth::master_key::authenticate,
-        state::AppState,
-    },
+    proxy::{auth::master_key::authenticate, state::AppState},
 };
 
 const PRESIGN_TTL: Duration = Duration::from_secs(15 * 60);
@@ -65,10 +62,9 @@ async fn agent_workspace_bucket(
     } else {
         assert_agent_use(&auth, &agent, pool).await?;
     }
-    let storage = state
-        .object_storage
-        .clone()
-        .ok_or_else(|| GatewayError::InvalidConfig("object storage is not configured".to_owned()))?;
+    let storage = state.object_storage.clone().ok_or_else(|| {
+        GatewayError::InvalidConfig("object storage is not configured".to_owned())
+    })?;
     Ok((ObjectStorageClient::agent_bucket_name(agent_id), storage))
 }
 
@@ -135,10 +131,14 @@ pub async fn delete_file(
 fn normalize_path(path: &str) -> Result<String, GatewayError> {
     let trimmed = path.trim().trim_start_matches('/');
     if trimmed.is_empty() {
-        return Err(GatewayError::InvalidConfig("path must not be empty".to_owned()));
+        return Err(GatewayError::InvalidConfig(
+            "path must not be empty".to_owned(),
+        ));
     }
     if trimmed.split('/').any(|segment| segment == "..") {
-        return Err(GatewayError::InvalidConfig("path must not contain '..'".to_owned()));
+        return Err(GatewayError::InvalidConfig(
+            "path must not contain '..'".to_owned(),
+        ));
     }
     Ok(trimmed.to_owned())
 }

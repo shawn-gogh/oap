@@ -29,11 +29,7 @@ pub async fn create(
     }
     let row = repository::create(pool, input).await?;
     // Best-effort: a failed snapshot must not fail the create itself.
-    let _ = crate::db::managed_agents::registry::revisions::record(
-        pool,
-        &row,
-        Some(&auth.user_id),
-    )
-    .await;
+    let _ = crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))
+        .await;
     Ok((StatusCode::CREATED, Json(row)))
 }

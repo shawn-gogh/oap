@@ -47,13 +47,12 @@ async fn workspace_bucket(
 ) -> Result<(String, ObjectStorageClient), GatewayError> {
     let (pool, auth) = auth_db(state, headers).await?;
     let row = owned_session(pool, &auth, session_id).await?;
-    let bucket = row.workspace_bucket.ok_or_else(|| {
-        GatewayError::NotFound(format!("session {session_id} has no workspace"))
+    let bucket = row
+        .workspace_bucket
+        .ok_or_else(|| GatewayError::NotFound(format!("session {session_id} has no workspace")))?;
+    let storage = state.object_storage.clone().ok_or_else(|| {
+        GatewayError::InvalidConfig("object storage is not configured".to_owned())
     })?;
-    let storage = state
-        .object_storage
-        .clone()
-        .ok_or_else(|| GatewayError::InvalidConfig("object storage is not configured".to_owned()))?;
     Ok((bucket, storage))
 }
 
@@ -81,7 +80,10 @@ pub async fn list_files(
 /// also carries opencode's own bookkeeping (a `git init`'d repo, its agent
 /// config) — implementation detail the user never uploaded, not their content.
 fn is_internal_path(path: &str) -> bool {
-    path.starts_with(".git/") || path == ".git" || path.starts_with(".opencode/") || path == "opencode.json"
+    path.starts_with(".git/")
+        || path == ".git"
+        || path.starts_with(".opencode/")
+        || path == "opencode.json"
 }
 
 pub async fn create_upload_url(
@@ -127,10 +129,14 @@ pub async fn delete_file(
 fn normalize_path(path: &str) -> Result<String, GatewayError> {
     let trimmed = path.trim().trim_start_matches('/');
     if trimmed.is_empty() {
-        return Err(GatewayError::InvalidConfig("path must not be empty".to_owned()));
+        return Err(GatewayError::InvalidConfig(
+            "path must not be empty".to_owned(),
+        ));
     }
     if trimmed.split('/').any(|segment| segment == "..") {
-        return Err(GatewayError::InvalidConfig("path must not contain '..'".to_owned()));
+        return Err(GatewayError::InvalidConfig(
+            "path must not contain '..'".to_owned(),
+        ));
     }
     Ok(trimmed.to_owned())
 }
