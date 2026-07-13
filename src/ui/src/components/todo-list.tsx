@@ -77,7 +77,7 @@ export function TodoList({ items }: { items: TodoItem[] }) {
             style={{ width: total > 0 ? `${(done / total) * 100}%` : "0%" }}
           />
         </div>
-        <span className="mono shrink-0 text-[10.5px] text-muted-foreground">
+        <span className="mono shrink-0 text-[11px] text-muted-foreground">
           {done}/{total}
         </span>
       </div>

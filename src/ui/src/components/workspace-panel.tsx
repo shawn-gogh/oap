@@ -173,11 +173,11 @@ export function WorkspacePanel({
 
       <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
         {loading && files.length === 0 ? (
-          <div className="p-4 text-[12px] text-muted-foreground">Loading…</div>
+          <div className="p-4 text-xs text-muted-foreground">Loading…</div>
         ) : files.length === 0 ? (
           <div className="flex flex-col items-center gap-2 p-8 text-center">
             <FolderOpen className="size-6 text-muted-foreground/60" />
-            <p className="text-[12px] font-medium">No files yet</p>
+            <p className="text-xs font-medium">No files yet</p>
             <p className="text-[11px] text-muted-foreground">
               Upload documents, code, or images for the agent to work with.
             </p>
@@ -186,10 +186,10 @@ export function WorkspacePanel({
           files.map((file) => (
             <div key={file.path} className="flex items-center gap-2 px-4 py-2.5">
               <div className="min-w-0 flex-1">
-                <p className="truncate font-mono text-[12px]" title={file.path}>
+                <p className="truncate font-mono text-xs" title={file.path}>
                   {file.path}
                 </p>
-                <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
                   {formatBytes(file.size_bytes)} · {formatDate(file.updated_at)}
                 </p>
               </div>
@@ -218,7 +218,7 @@ export function WorkspacePanel({
         )}
       </div>
 
-      <footer className="border-t border-border px-4 py-1.5 font-mono text-[10px] text-muted-foreground">
+      <footer className="border-t border-border px-4 py-1.5 font-mono text-[11px] text-muted-foreground">
         GET /session/{sessionId}/workspace/files
       </footer>
     </aside>

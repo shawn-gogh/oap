@@ -12,11 +12,8 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    callbacks::events::CallbackEventPayload,
-    db::managed_agents::runtime_events,
-    errors::GatewayError,
-    proxy::state::AppState,
-    sdk::agents::AgentEventStream,
+    callbacks::events::CallbackEventPayload, db::managed_agents::runtime_events,
+    errors::GatewayError, proxy::state::AppState, sdk::agents::AgentEventStream,
 };
 
 use super::{
@@ -27,8 +24,8 @@ use super::{
         event_error_message, mark_session_status, persist_runtime_event, terminal_event_status,
     },
     runtime_sdk::{
-        agent_sdk_error, agent_sdk_error_message, provider_event_line,
-        register_runtime_session, runtime_sdk_client,
+        agent_sdk_error, agent_sdk_error_message, provider_event_line, register_runtime_session,
+        runtime_sdk_client,
     },
     storage::session,
 };

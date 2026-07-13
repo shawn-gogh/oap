@@ -1,7 +1,7 @@
 use litellm_rust::db::managed_agents::{messages, sessions as db_sessions};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::support::{AppFixture, read_events_until_completed, request_json};
+use crate::support::{read_events_until_completed, request_json, AppFixture};
 
 pub async fn exercise_platform_mcps(fixture: &AppFixture, agent_id: &str) {
     assert_catalog(fixture).await;

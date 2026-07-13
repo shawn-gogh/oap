@@ -246,7 +246,7 @@ function PreCreateTestRun({ draft }: { draft: AgentDraft }) {
               <li key={testCase.key} className="rounded-md border border-border p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <Badge variant="outline" className="h-5 rounded-md text-[10px]">
+                    <Badge variant="outline" className="h-5 rounded-md text-[11px]">
                       {testCase.categoryLabel}
                     </Badge>
                     <p className="mt-1.5 text-sm leading-6">{testCase.input}</p>

@@ -85,7 +85,7 @@ export default function RulesPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <FileText className="size-4" />
-            <span className="text-sm font-semibold">Rules</span>
+            <span className="text-sm font-semibold">规则</span>
           </div>
           <ThemeToggle />
         </header>
@@ -94,7 +94,7 @@ export default function RulesPage() {
           <div className="mx-auto w-full max-w-4xl px-6 py-6">
             <div className="mb-6 flex items-start justify-between gap-4">
               <div>
-                <h1 className="text-xl font-semibold tracking-tight">Rules</h1>
+                <h1 className="text-xl font-semibold tracking-tight">规则</h1>
                 <p className="text-sm text-muted-foreground">
                   Language models do not retain memory between completions.
                   Rules provide persistent, reusable context at the prompt
@@ -151,7 +151,7 @@ export default function RulesPage() {
             {rules?.length === 0 && (
               <div className="rounded-xl border border-dashed border-border py-16 text-center">
                 <FileText className="mx-auto mb-3 size-7 text-muted-foreground" />
-                <h2 className="text-base font-semibold tracking-tight">No rules yet</h2>
+                <h2 className="text-base font-semibold tracking-tight">还没有规则</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Upload a <code>.md</code> file or create one manually.
                 </p>
@@ -176,12 +176,12 @@ export default function RulesPage() {
                       type="button"
                       onClick={() => setEditor({ rule })}
                       className="group min-w-0 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                      title="Open to view / edit"
+                      title="打开查看 / 编辑"
                     >
                       <div className="font-medium leading-none group-hover:underline">
                         {rule.name}
                       </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
                         {rule.id}
                       </div>
                     </button>
@@ -362,7 +362,7 @@ function RuleEditorDialog({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Name</label>
+            <label className="text-xs text-muted-foreground">名称</label>
             <Input
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -370,21 +370,21 @@ function RuleEditorDialog({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Description</label>
+            <label className="text-xs text-muted-foreground">描述</label>
             <Input
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="Instructions this agent should always follow"
+              placeholder="智能体应始终遵循的指令"
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Content</label>
+            <label className="text-xs text-muted-foreground">内容</label>
             <Textarea
               value={content}
               onChange={(event) => setContent(event.target.value)}
               rows={14}
               className="font-mono text-xs"
-              placeholder="Always validate inputs before writing to the database."
+              placeholder="例如：写入数据库前必须校验输入。"
             />
           </div>
           {error && <p className="text-xs text-destructive">{error}</p>}

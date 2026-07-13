@@ -46,16 +46,38 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  --color-editor-surface: var(--editor-surface);
+  --color-editor-surface-raised: var(--editor-surface-raised);
+  --color-editor-border: var(--editor-border);
+  --color-editor-foreground: var(--editor-foreground);
+  --color-editor-muted: var(--editor-muted);
+  --color-editor-faint: var(--editor-faint);
+  --color-editor-accent: var(--editor-accent);
+  --color-editor-inverse: var(--editor-inverse);
 }
 
 :root {
+  /* Editor panel palette: the config editor is intentionally dark in both
+     themes (code-editor affordance). Keep every editor color here — never
+     hardcode these hexes in components. */
+  --editor-surface: #2b2a28;
+  --editor-surface-raised: #242321;
+  --editor-border: #343330;
+  --editor-foreground: #f7f2e8;
+  --editor-muted: #c9c0b1;
+  --editor-faint: #9d9384;
+  --editor-accent: #e8b28c;
+  --editor-inverse: #1b1b1a;
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.145 0 0);
+  /* Brand accent: the platform blue, promoted from the sessions landing
+     background to the system primary. */
+  --primary: oklch(0.546 0.245 262.881);
   --primary-foreground: #ffffff;
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -66,7 +88,7 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.205 0 0);
+  --ring: oklch(0.623 0.214 259.815);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -92,8 +114,8 @@
   --popover-foreground: #ededed;
   /* Primary stays neutral (white-on-black). Green is reserved for status
      indicators (ready dots, success-only accents) — not for chrome. */
-  --primary: #ededed;
-  --primary-foreground: #0a0a0a;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
   --secondary: #1a1a1a;
   --secondary-foreground: #ededed;
   --muted: #161616;
@@ -104,7 +126,7 @@
   --destructive-foreground: #ffffff;
   --border: #1f1f1f;
   --input: #1f1f1f;
-  --ring: #2a2a2a;
+  --ring: #3b82f6;
   --chart-1: #ededed;
   --chart-2: #2563eb;
   --chart-3: #f59e0b;

@@ -59,13 +59,20 @@ pub(crate) async fn complete_text(
     if !status.is_success() {
         return Err(GatewayError::SandboxError(format!(
             "model call failed ({status}): {}",
-            String::from_utf8_lossy(&raw).chars().take(300).collect::<String>()
+            String::from_utf8_lossy(&raw)
+                .chars()
+                .take(300)
+                .collect::<String>()
         )));
     }
     let raw = if route.handler.transforms_messages_response_body() {
-        route
-            .handler
-            .transform_messages_response_body(raw, status, false, &route.deployment, None)?
+        route.handler.transform_messages_response_body(
+            raw,
+            status,
+            false,
+            &route.deployment,
+            None,
+        )?
     } else {
         raw
     };
@@ -210,8 +217,8 @@ pub(crate) async fn start_eval_run(
                 "verdict": verdict,
             }));
         }
-        let _ = eval_runs::repository::complete(&pool, &run_id, passed, &Value::Array(results))
-            .await;
+        let _ =
+            eval_runs::repository::complete(&pool, &run_id, passed, &Value::Array(results)).await;
     });
 
     Ok(run)
@@ -229,7 +236,10 @@ pub async fn create(
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::assert_agent_edit(&auth, &agent, pool).await?;
     let run = start_eval_run(state.clone(), pool, agent, &auth.user_id).await?;
-    Ok((StatusCode::ACCEPTED, Json(serde_json::to_value(run).unwrap_or_default())))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::to_value(run).unwrap_or_default()),
+    ))
 }
 
 pub async fn list(

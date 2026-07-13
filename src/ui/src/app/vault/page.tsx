@@ -73,7 +73,7 @@ export default function VaultPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <KeyRound className="size-4 text-muted-foreground" />
-            <h1 className="text-sm font-semibold">Vault</h1>
+            <h1 className="text-sm font-semibold">凭证保险库</h1>
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
@@ -97,7 +97,7 @@ export default function VaultPage() {
           {keys !== null && empty && (
             <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
               <KeyRound className="size-10 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground">No secrets stored yet.</p>
+              <p className="text-sm text-muted-foreground">还没有保存任何密钥。</p>
               <Button size="sm" onClick={() => setEditor({ mode: "add", defaultScope: "personal" })}>
                 <Plus className="size-4" />
                 Add your first secret
@@ -251,13 +251,13 @@ function SecretRow({
           <span className="font-mono tracking-widest">••••••••</span>
           {hasTimestamp && <span>· updated {timeAgo(entry.updated_at)}</span>}
           {isEnv && (
-            <span className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide">
+            <span className="rounded bg-muted px-1 py-0.5 text-[11px] uppercase tracking-wide">
               env
             </span>
           )}
           {!isEnv && (
             <span
-              className={`rounded px-1 py-0.5 text-[10px] uppercase tracking-wide ${
+              className={`rounded px-1 py-0.5 text-[11px] uppercase tracking-wide ${
                 entry.scope === "global"
                   ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
                   : "bg-muted text-muted-foreground"

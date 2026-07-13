@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/theme-provider";
+import { ConfirmDialogProvider } from "@/components/confirm-dialog";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -58,8 +59,8 @@ export default function RootLayout({
           >
             Skip to content
           </a>
-          {children}
-          <Toaster />
+          <ConfirmDialogProvider>{children}</ConfirmDialogProvider>
+          <Toaster richColors position="top-center" />
         </ThemeProvider>
       </body>
     </html>

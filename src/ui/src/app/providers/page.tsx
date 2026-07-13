@@ -14,7 +14,7 @@ export default function ProvidersPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <ServerCog className="size-4 text-muted-foreground" />
-            <h1 className="text-sm font-semibold">LLM Providers</h1>
+            <h1 className="text-sm font-semibold">LLM 提供方</h1>
           </div>
           <ThemeToggle />
         </header>

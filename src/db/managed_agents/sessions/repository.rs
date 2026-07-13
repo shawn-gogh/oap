@@ -156,11 +156,7 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     Ok(())
 }
 
-pub async fn set_title(
-    pool: &PgPool,
-    session_id: &str,
-    title: &str,
-) -> Result<bool, GatewayError> {
+pub async fn set_title(pool: &PgPool, session_id: &str, title: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(
         r#"
         UPDATE "LiteLLM_ManagedAgentSessionsTable"

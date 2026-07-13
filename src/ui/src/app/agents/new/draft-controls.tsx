@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ExternalLink, KeyRound, Plug, Plus, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { EditorChip } from "@/components/editor-chip";
 import { BrandIcon } from "@/components/brand-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,10 +105,10 @@ export function AgentDraftControls({
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-[#2b2a28] px-5 py-4 text-[#f7f2e8]">
+    <div className="min-h-0 flex-1 overflow-y-auto bg-editor-surface px-5 py-4 text-editor-foreground">
       <div className="mx-auto grid max-w-3xl gap-4">
         <div className="grid gap-1.5">
-          <Label htmlFor="draft-name" className="text-[#c9c0b1]">
+          <Label htmlFor="draft-name" className="text-editor-muted">
             Name
           </Label>
           <Input
@@ -115,12 +116,12 @@ export function AgentDraftControls({
             value={draft.name}
             onChange={(event) => update({ name: event.target.value })}
             placeholder="security-reviewer"
-            className="border-white/10 bg-[#242321] text-[#f7f2e8] placeholder:text-[#9d9384]"
+            className="border-white/10 bg-editor-surface-raised text-editor-foreground placeholder:text-editor-faint"
           />
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="draft-description" className="text-[#c9c0b1]">
+          <Label htmlFor="draft-description" className="text-editor-muted">
             Description
           </Label>
           <Input
@@ -128,13 +129,13 @@ export function AgentDraftControls({
             value={draft.description}
             onChange={(event) => update({ description: event.target.value })}
             placeholder="这个智能体做什么"
-            className="border-white/10 bg-[#242321] text-[#f7f2e8] placeholder:text-[#9d9384]"
+            className="border-white/10 bg-editor-surface-raised text-editor-foreground placeholder:text-editor-faint"
           />
         </div>
 
         <div className="grid gap-1.5">
-          <Label className="text-[#c9c0b1]">Model</Label>
-          <div className="[&_button]:border-white/10 [&_button]:bg-[#242321] [&_button]:text-[#f7f2e8] [&_svg]:text-[#9d9384]">
+          <Label className="text-editor-muted">Model</Label>
+          <div className="[&_button]:border-white/10 [&_button]:bg-editor-surface-raised [&_button]:text-editor-foreground [&_svg]:text-editor-faint">
             <ModelSelect
               value={draft.model}
               models={availableModels}
@@ -142,7 +143,7 @@ export function AgentDraftControls({
             />
           </div>
           {modelsLoading && (
-            <p className="text-xs text-[#9d9384]">正在加载可用模型...</p>
+            <p className="text-xs text-editor-faint">正在加载可用模型...</p>
           )}
           {modelsError && (
             <p className="text-xs text-red-300">{modelsError}</p>
@@ -151,8 +152,8 @@ export function AgentDraftControls({
 
         {harnesses.length === 0 && (
           <div className="grid gap-1.5">
-            <Label className="text-[#c9c0b1]">Runtime</Label>
-            <div className="rounded-md border border-white/10 bg-white/5 px-3 py-3 text-xs text-[#9d9384]">
+            <Label className="text-editor-muted">Runtime</Label>
+            <div className="rounded-md border border-white/10 bg-white/5 px-3 py-3 text-xs text-editor-faint">
               <p>没有已连接的运行时 harness，当前使用默认运行时 {runtimeLabel(draft.runtime)}。</p>
               <Button
                 type="button"
@@ -161,7 +162,7 @@ export function AgentDraftControls({
                 onClick={() => {
                   window.location.href = "/runtimes/";
                 }}
-                className="mt-2 border-white/10 bg-white/5 text-[#f7f2e8] hover:bg-white/10 hover:text-white"
+                className="mt-2 border-white/10 bg-white/5 text-editor-foreground hover:bg-white/10 hover:text-white"
               >
                 <ExternalLink className="size-3.5" />
                 去连接运行时
@@ -171,7 +172,7 @@ export function AgentDraftControls({
         )}
         {harnesses.length >= 1 && (
           <div className="grid gap-1.5">
-            <Label className="text-[#c9c0b1]">Runtime</Label>
+            <Label className="text-editor-muted">Runtime</Label>
             <Select
               value={draft.runtime || "claude_managed_agents"}
               onValueChange={(v) => {
@@ -183,7 +184,7 @@ export function AgentDraftControls({
                 });
               }}
             >
-              <SelectTrigger className="h-11 w-full max-w-sm overflow-hidden border-white/10 bg-[#242321] px-3 text-[#f7f2e8]">
+              <SelectTrigger className="h-11 w-full max-w-sm overflow-hidden border-white/10 bg-editor-surface-raised px-3 text-editor-foreground">
                 <RuntimeSelectOption
                   alias={draft.runtime || "claude_managed_agents"}
                   displayName={selectedHarness?.display_name ?? runtime?.name ?? runtimeLabel(draft.runtime)}
@@ -192,12 +193,12 @@ export function AgentDraftControls({
                   compact
                 />
               </SelectTrigger>
-              <SelectContent className="w-[360px] border-white/10 bg-[#242321] text-[#f7f2e8]">
+              <SelectContent className="w-[360px] border-white/10 bg-editor-surface-raised text-editor-foreground">
                 {harnesses.map((h) => (
                   <SelectItem
                     key={h.alias}
                     value={h.alias}
-                    className="py-3 focus:bg-white/10 focus:text-[#f7f2e8] data-highlighted:bg-white/10 data-highlighted:text-[#f7f2e8] [&_span]:!text-[#f7f2e8] [&_.runtime-option-muted]:!text-[#c9c0b1] [&_svg]:!text-[#f7f2e8]"
+                    className="py-3 focus:bg-white/10 focus:text-editor-foreground data-highlighted:bg-white/10 data-highlighted:text-editor-foreground [&_span]:!text-editor-foreground [&_.runtime-option-muted]:!text-editor-muted [&_svg]:!text-editor-foreground"
                   >
                     <RuntimeSelectOption
                       alias={h.alias}
@@ -209,26 +210,26 @@ export function AgentDraftControls({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-[#9d9384]">
+            <p className="text-xs text-editor-faint">
               切换运行时会把已选工具重置为该运行时的默认工具集，并重新加载可用模型。
             </p>
           </div>
         )}
 
         <div className="grid gap-1.5">
-          <Label htmlFor="draft-system" className="text-[#c9c0b1]">
+          <Label htmlFor="draft-system" className="text-editor-muted">
             System prompt
           </Label>
           <Textarea
             id="draft-system"
             value={draft.system}
             onChange={(event) => update({ system: event.target.value })}
-            className="min-h-[280px] resize-y border-white/10 bg-[#242321] font-mono text-xs text-[#f7f2e8] placeholder:text-[#9d9384]"
+            className="min-h-[280px] resize-y border-white/10 bg-editor-surface-raised font-mono text-xs text-editor-foreground placeholder:text-editor-faint"
             placeholder="You are a meticulous security reviewer..."
           />
         </div>
 
-        <div className="[&_button]:border-white/10 [&_button]:bg-[#242321] [&_button]:text-[#f7f2e8] [&_input]:border-white/10 [&_input]:bg-[#242321] [&_input]:text-[#f7f2e8] [&_label]:text-[#c9c0b1] [&_section]:border-white/10 [&_section]:bg-black/10 [&_svg]:text-[#9d9384]">
+        <div className="[&_button]:border-white/10 [&_button]:bg-editor-surface-raised [&_button]:text-editor-foreground [&_input]:border-white/10 [&_input]:bg-editor-surface-raised [&_input]:text-editor-foreground [&_label]:text-editor-muted [&_section]:border-white/10 [&_section]:bg-black/10 [&_svg]:text-editor-faint">
           <ScheduleEditor
             cron={draft.cron}
             timezone={draft.timezone}
@@ -240,11 +241,11 @@ export function AgentDraftControls({
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1">
               <Label className="text-sm font-medium">Vault Credentials</Label>
-              <p className="max-w-xl text-xs leading-5 text-muted-foreground">
+              <p className="max-w-xl text-xs leading-5 text-editor-faint">
                 先登记密钥名称，创建后在智能体详情页填写密钥值。
               </p>
             </div>
-            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+            <span className="shrink-0 font-mono text-xs text-editor-faint">
               {draft.vault_keys.length} 已挂载
             </span>
           </div>
@@ -279,7 +280,7 @@ export function AgentDraftControls({
           </div>
           {vaultKeyError && <p className="text-xs text-red-300">{vaultKeyError}</p>}
           {draft.vault_keys.length === 0 ? (
-            <p className="text-xs text-muted-foreground">尚未挂载保险库凭证。</p>
+            <p className="text-xs text-editor-faint">尚未挂载保险库凭证。</p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {draft.vault_keys.map((key) => (
@@ -287,11 +288,11 @@ export function AgentDraftControls({
                   key={key}
                   className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/10 bg-white/5 px-2 py-1"
                 >
-                  <KeyRound className="size-3 shrink-0 text-muted-foreground" />
+                  <KeyRound className="size-3 shrink-0 text-editor-faint" />
                   <span className="truncate font-mono text-xs">{key}</span>
                   <button
                     type="button"
-                    className="rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="rounded text-editor-faint hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                     onClick={() =>
                       update({ vault_keys: draft.vault_keys.filter((value) => value !== key) })
                     }
@@ -305,10 +306,10 @@ export function AgentDraftControls({
           )}
         </div>
 
-        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-[#f7f2e8]">
+        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Tools</Label>
-            <span className="font-mono text-xs text-[#9d9384]">
+            <span className="font-mono text-xs text-editor-faint">
               {draft.tools.length} 已选
             </span>
           </div>
@@ -330,15 +331,15 @@ export function AgentDraftControls({
           </div>
         </div>
 
-        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-[#f7f2e8]">
+        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Skills</Label>
-            <span className="font-mono text-xs text-[#9d9384]">
+            <span className="font-mono text-xs text-editor-faint">
               {draft.skill_ids.length} 已挂载
             </span>
           </div>
           {skills.length === 0 ? (
-            <p className="text-xs text-[#9d9384]">暂无可用技能。</p>
+            <p className="text-xs text-editor-faint">暂无可用技能。</p>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
               {skills.map((skill) => {
@@ -357,9 +358,9 @@ export function AgentDraftControls({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{skill.name}</span>
-                        <span className="truncate font-mono text-[#9d9384]">{skill.id}</span>
+                        <span className="truncate font-mono text-editor-faint">{skill.id}</span>
                       </div>
-                      <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
+                      <div className="mt-0.5 line-clamp-2 text-editor-faint">
                         {skill.description || "暂无描述。"}
                       </div>
                     </div>
@@ -370,15 +371,15 @@ export function AgentDraftControls({
           )}
         </div>
 
-        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-[#f7f2e8]">
+        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
             <div className="grid gap-1">
               <Label className="text-sm font-medium">MCP integrations</Label>
-              <p className="max-w-xl text-xs leading-5 text-muted-foreground">
+              <p className="max-w-xl text-xs leading-5 text-editor-faint">
                 从注册表挂载托管 MCP 服务器。创建智能体时会根据这些 ID 重建工具集。
               </p>
             </div>
-            <span className="font-mono text-xs text-[#9d9384]">
+            <span className="font-mono text-xs text-editor-faint">
               {draft.mcp_server_ids.length} 已挂载
             </span>
           </div>
@@ -401,9 +402,9 @@ export function AgentDraftControls({
             </div>
           ) : mcpIntegrations.length === 0 ? (
             <div className="rounded-md border border-white/10 bg-white/5 px-3 py-4 text-center">
-              <Plug className="mx-auto size-6 text-muted-foreground" />
+              <Plug className="mx-auto size-6 text-editor-faint" />
               <p className="mt-2 text-xs font-medium">暂无可用的 MCP 服务器</p>
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="mt-1 text-xs text-editor-faint">
                 先到 MCP 注册表添加服务器，再回到这里挂载。
               </p>
             </div>
@@ -434,26 +435,26 @@ export function AgentDraftControls({
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{integration.name}</span>
-                        <span className="truncate font-mono text-muted-foreground">{integration.id}</span>
-                        <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[10px] text-[#c9c0b1]">
+                        <span className="truncate font-mono text-editor-faint">{integration.id}</span>
+                        <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[11px] text-editor-muted">
                           {integration.source === "registry" ? "注册表" : "目录"}
                         </Badge>
                         {integration.connected ? (
-                          <Badge variant="secondary" className="h-5 rounded-md text-[10px]">
+                          <Badge variant="secondary" className="h-5 rounded-md text-[11px]">
                             <KeyRound className="size-3" />
                             已连接
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[10px] text-[#c9c0b1]">
+                          <Badge variant="outline" className="h-5 rounded-md border-white/10 bg-white/5 text-[11px] text-editor-muted">
                             <KeyRound className="size-3" />
                             待配置凭证
                           </Badge>
                         )}
                       </div>
-                      <div className="mt-1 line-clamp-2 text-muted-foreground">
+                      <div className="mt-1 line-clamp-2 text-editor-faint">
                         {integration.description}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-editor-faint">
                         <span className="inline-flex items-center gap-1">
                           <KeyRound className="size-3" />
                           {integration.envKey}
@@ -468,17 +469,10 @@ export function AgentDraftControls({
                       {(enabled || availableTools.length > 0) && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {previewTools.map((tool) => (
-                            <span
-                              key={tool}
-                              className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-[#c9c0b1]"
-                            >
-                              {tool}
-                            </span>
+                            <EditorChip key={tool}>{tool}</EditorChip>
                           ))}
                           {remainingTools > 0 && (
-                            <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-[#c9c0b1]">
-                              +{remainingTools} more
-                            </span>
+                            <EditorChip>+{remainingTools} more</EditorChip>
                           )}
                         </div>
                       )}
@@ -500,27 +494,27 @@ export function AgentDraftControls({
             onClick={() => {
               window.location.href = "/mcp-servers/";
             }}
-            className="justify-self-start border-white/10 bg-white/5 text-[#f7f2e8] hover:bg-white/10 hover:text-white"
+            className="justify-self-start border-white/10 bg-white/5 text-editor-foreground hover:bg-white/10 hover:text-white"
           >
             <ExternalLink className="size-3.5" />
             管理 MCP 服务器
           </Button>
         </div>
 
-        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-[#f7f2e8]">
+        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1">
               <Label className="text-sm font-medium">Rules</Label>
-              <p className="max-w-xl text-xs leading-5 text-[#9d9384]">
+              <p className="max-w-xl text-xs leading-5 text-editor-faint">
                 规则是持久的 prompt 级指令。挂载后其 Markdown 内容会在模型运行前注入智能体上下文。
               </p>
             </div>
-            <span className="shrink-0 font-mono text-xs text-[#9d9384]">
+            <span className="shrink-0 font-mono text-xs text-editor-faint">
               {draft.rule_ids.length} 已挂载
             </span>
           </div>
           {rules.length === 0 ? (
-            <p className="text-xs text-[#9d9384]">暂无可用规则。</p>
+            <p className="text-xs text-editor-faint">暂无可用规则。</p>
           ) : (
             <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1">
               {rules.map((rule) => {
@@ -539,9 +533,9 @@ export function AgentDraftControls({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{rule.name}</span>
-                        <span className="truncate font-mono text-[#9d9384]">{rule.id}</span>
+                        <span className="truncate font-mono text-editor-faint">{rule.id}</span>
                       </div>
-                      <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
+                      <div className="mt-0.5 line-clamp-2 text-editor-faint">
                         {rule.description || "暂无描述。"}
                       </div>
                     </div>
@@ -552,15 +546,15 @@ export function AgentDraftControls({
           )}
         </div>
 
-        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-[#f7f2e8]">
+        <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
             <Label className="text-sm font-medium">Sub-agents</Label>
-            <span className="font-mono text-xs text-[#9d9384]">
+            <span className="font-mono text-xs text-editor-faint">
               {draft.sub_agents.length} 已挂载
             </span>
           </div>
           {agents.length === 0 ? (
-            <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-[#9d9384]">
+            <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-editor-faint">
               请先创建辅助智能体，再回到这里挂载。
             </div>
           ) : (
@@ -587,9 +581,9 @@ export function AgentDraftControls({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="truncate font-medium">{agent.name}</span>
-                        <span className="truncate font-mono text-[#9d9384]">{agent.id}</span>
+                        <span className="truncate font-mono text-editor-faint">{agent.id}</span>
                       </div>
-                      <div className="mt-0.5 line-clamp-2 text-[#9d9384]">
+                      <div className="mt-0.5 line-clamp-2 text-editor-faint">
                         {agent.description || agent.model || "已保存的 LAP 智能体"}
                       </div>
                     </div>
@@ -629,14 +623,14 @@ function RuntimeSelectOption({
       </span>
       <span className="min-w-0">
         <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium !text-[#f7f2e8]">{displayName}</span>
+          <span className="truncate text-sm font-medium !text-editor-foreground">{displayName}</span>
           {isDefault && !compact && (
-            <span className="runtime-option-muted rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] !text-[#c9c0b1]">
+            <span className="runtime-option-muted rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[11px] !text-editor-muted">
               Default
             </span>
           )}
         </span>
-        <span className="runtime-option-muted mt-0.5 block truncate font-mono text-[11px] !text-[#c9c0b1]">
+        <span className="runtime-option-muted mt-0.5 block truncate font-mono text-[11px] !text-editor-muted">
           {compact ? runtimeSubtitle(apiSpec || alias) : `${runtimeLabel(apiSpec || alias)} · ${alias}`}
         </span>
       </span>

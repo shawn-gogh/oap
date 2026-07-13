@@ -91,7 +91,7 @@ function EventRow({ frame }: { frame: Frame }) {
         </span>
       </button>
       {open && (
-        <pre className="px-3 pb-2 pl-8 font-mono text-[10.5px] text-muted-foreground whitespace-pre-wrap break-words max-h-80 overflow-auto">
+        <pre className="px-3 pb-2 pl-8 font-mono text-[11px] text-muted-foreground whitespace-pre-wrap break-words max-h-80 overflow-auto">
           {JSON.stringify(frame.ev, null, 2)}
         </pre>
       )}
@@ -207,7 +207,7 @@ export function InspectorPanel({
         )}
       </div>
 
-      <footer className="px-4 py-1.5 border-t border-border text-[10px] text-muted-foreground font-mono">
+      <footer className="px-4 py-1.5 border-t border-border text-[11px] text-muted-foreground font-mono">
         GET /session/{sessionId}/runtime_events
       </footer>
     </aside>

@@ -75,22 +75,23 @@ fn sse_split_utf8_boundary() {
     // Let's send the first 2 bytes in chunk 1, and the 3rd byte in chunk 2.
     // The SSE format: data: {"type":"agent.message","content":[{"type":"text","text":"哈"}]}\n\n
     // Let's split it exactly in the middle of '哈'.
-    let first_part = "data: {\"type\":\"agent.message\",\"content\":[{\"type\":\"text\",\"text\":\"".as_bytes();
+    let first_part =
+        "data: {\"type\":\"agent.message\",\"content\":[{\"type\":\"text\",\"text\":\"".as_bytes();
     let utf8_char = [0xe5, 0x93, 0x88];
     let last_part = "\"}]}\n\n".as_bytes();
-    
+
     let mut chunk1 = first_part.to_vec();
     chunk1.extend_from_slice(&utf8_char[..2]); // first 2 bytes of '哈'
-    
+
     let mut chunk2 = vec![utf8_char[2]]; // 3rd byte of '哈'
     chunk2.extend_from_slice(last_part);
-    
+
     let mut events = parser.push(&chunk1).unwrap();
     assert!(events.is_empty());
-    
+
     events.extend(parser.push(&chunk2).unwrap());
     assert_eq!(events.len(), 1);
-    
+
     assert_eq!(
         serde_json::to_value(&events[0]).unwrap(),
         json!({

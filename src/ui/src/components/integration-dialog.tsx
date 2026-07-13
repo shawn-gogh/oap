@@ -263,7 +263,7 @@ export function IntegrationDialog({
                     {testResult.tools.length > 0 && (
                       <div className="flex flex-wrap gap-1">
                         {testResult.tools.map((t) => (
-                          <Badge key={t} variant="outline" className="font-mono text-[10px]">{t}</Badge>
+                          <Badge key={t} variant="outline" className="font-mono text-[11px]">{t}</Badge>
                         ))}
                         {testResult.count > 8 && <span className="text-xs text-muted-foreground">+{testResult.count - 8} more</span>}
                       </div>

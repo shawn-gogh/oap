@@ -97,7 +97,8 @@ pub async fn sweep_once(state: Arc<AppState>) -> Result<usize, crate::errors::Ga
 
         // Latest run is completed and recent; propose only on failures, and
         // only if no proposal for this agent is already awaiting a decision.
-        let has_failures = latest.is_some_and(|run| run.status == "completed" && run.passed < run.total);
+        let has_failures =
+            latest.is_some_and(|run| run.status == "completed" && run.passed < run.total);
         if !has_failures {
             continue;
         }
@@ -118,7 +119,9 @@ pub async fn sweep_once(state: Arc<AppState>) -> Result<usize, crate::errors::Ga
                 actions += 1;
                 tracing::info!(proposal_id = %item.id, agent_id = %agent.id, "evolution sweep filed improvement proposal");
             }
-            Err(error) => tracing::warn!(agent_id = %agent.id, %error, "evolution sweep proposal failed"),
+            Err(error) => {
+                tracing::warn!(agent_id = %agent.id, %error, "evolution sweep proposal failed")
+            }
         }
     }
     Ok(actions)
