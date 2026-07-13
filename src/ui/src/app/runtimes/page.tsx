@@ -47,7 +47,6 @@ import {
   updateRuntimeHarness,
 } from "@/lib/api";
 import {
-  fetchRuntimeTemplates,
   RUNTIME_TEMPLATES,
   runtimeTemplateById,
   runtimeTemplateIconId,
@@ -711,29 +710,12 @@ export default function RuntimesPage() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    setTemplatesLoading(true);
+    // OAP is self-contained: no runtime fetch of a remote template manifest.
+    // The bundled RUNTIME_TEMPLATES list (src/lib/runtime-templates.ts) is
+    // the only source, always.
+    setRuntimeTemplates(RUNTIME_TEMPLATES);
     setTemplatesError(null);
-    fetchRuntimeTemplates()
-      .then((templates) => {
-        if (cancelled) return;
-        setRuntimeTemplates(templates);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        const message =
-          err instanceof Error && err.message.trim()
-            ? err.message
-            : "Remote runtime template manifest unavailable";
-        setRuntimeTemplates(RUNTIME_TEMPLATES);
-        setTemplatesError(`${message}. Using bundled templates.`);
-      })
-      .finally(() => {
-        if (!cancelled) setTemplatesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    setTemplatesLoading(false);
   }, []);
 
   useEffect(() => {

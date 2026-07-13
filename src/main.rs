@@ -85,7 +85,7 @@ async fn serve_gateway(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>
 
     let model_router = Router::from_config(&config, &providers)?;
     let http = AppState::build_http_client()?;
-    let model_cost_map = model_prices::load(&http).await;
+    let model_cost_map = model_prices::load();
     let db = build_managed_agents_pool(&config).await?;
     let state = Arc::new(AppState::new(
         config.clone(),
