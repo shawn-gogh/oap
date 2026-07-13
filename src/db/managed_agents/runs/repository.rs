@@ -12,13 +12,20 @@ pub async fn create(
     pool: &PgPool,
     agent_id: &str,
     session_id: Option<String>,
+    task_id: Option<&str>,
     input: CreateRun,
 ) -> Result<AgentRunRow, GatewayError> {
     sqlx::query_as::<_, AgentRunRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentRunsTable"
-          (id, agent_id, session_id, status, started_at, config_overrides)
-        VALUES ($1, $2, $3, 'starting', $4, $5)
+          (id, agent_id, session_id, status, started_at, config_overrides, task_id, attempt_number)
+        VALUES (
+          $1, $2, $3, 'starting', $4, $5, $6,
+          CASE
+            WHEN $6::TEXT IS NULL THEN 1
+            ELSE (SELECT current_attempt_number FROM "LiteLLM_ManagedAgentTasksTable" WHERE id = $6)
+          END
+        )
         RETURNING *
         "#,
     )
@@ -27,6 +34,7 @@ pub async fn create(
     .bind(input.session_id.or(session_id).unwrap_or_default())
     .bind(now_ms())
     .bind(input.config_overrides.unwrap_or_else(|| json!({})))
+    .bind(task_id)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -53,6 +61,21 @@ pub async fn list(
     .map_err(GatewayError::Database)
 }
 
+pub async fn list_for_task(pool: &PgPool, task_id: &str) -> Result<Vec<AgentRunRow>, GatewayError> {
+    sqlx::query_as::<_, AgentRunRow>(
+        r#"
+        SELECT *
+        FROM "LiteLLM_ManagedAgentRunsTable"
+        WHERE task_id = $1
+        ORDER BY attempt_number DESC, started_at DESC
+        "#,
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn set_running(
     pool: &PgPool,
     run_id: &str,
@@ -63,7 +86,7 @@ pub async fn set_running(
         UPDATE "LiteLLM_ManagedAgentRunsTable"
         SET status = 'running',
             sandbox_id = COALESCE($2, sandbox_id)
-        WHERE id = $1
+        WHERE id = $1 AND status NOT IN ('completed', 'failed', 'cancelled', 'timed_out')
         "#,
     )
     .bind(run_id)
@@ -80,7 +103,7 @@ pub async fn complete(pool: &PgPool, run_id: &str) -> Result<(), GatewayError> {
         UPDATE "LiteLLM_ManagedAgentRunsTable"
         SET status = 'completed',
             finished_at = $2
-        WHERE id = $1
+        WHERE id = $1 AND status NOT IN ('failed', 'cancelled', 'timed_out')
         "#,
     )
     .bind(run_id)
@@ -98,7 +121,7 @@ pub async fn fail(pool: &PgPool, run_id: &str, error: &str) -> Result<(), Gatewa
         SET status = 'failed',
             finished_at = $2,
             error = $3
-        WHERE id = $1
+        WHERE id = $1 AND status NOT IN ('cancelled', 'timed_out')
         "#,
     )
     .bind(run_id)

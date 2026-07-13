@@ -163,6 +163,16 @@ impl SandboxRunner {
             _ => Ok(()),
         }
     }
+
+    pub async fn terminate_by_id(&self, sandbox_id: &str) -> Result<bool, GatewayError> {
+        match self {
+            Self::E2b(client) => {
+                client.terminate(sandbox_id).await?;
+                Ok(true)
+            }
+            Self::Local(_) => Ok(false),
+        }
+    }
 }
 
 fn selected_provider(settings: &GeneralSettings) -> &str {

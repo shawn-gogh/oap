@@ -53,6 +53,38 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::registry::preflight::activate),
         )
         .route(
+            "/api/agents/{agent_id}/tasks",
+            get(super::tasks::list).post(super::tasks::create),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}",
+            get(super::tasks::get),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/artifacts",
+            get(super::tasks::list_artifacts).post(super::tasks::create_artifact),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/acceptance",
+            get(super::tasks::list_acceptance).post(super::tasks::update_acceptance),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/resume",
+            post(super::tasks::resume),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/attempts",
+            get(super::tasks::list_attempts),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/retry",
+            post(super::tasks::retry),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/cancel",
+            post(super::tasks::cancel),
+        )
+        .route(
             "/api/agents/{agent_id}/revisions",
             get(super::registry::revisions::list),
         )

@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     runtime_lifecycle::{
-        drain_provider_stream, mark_session_error, mark_session_idle, persist_send_response_events,
+        drain_provider_stream, mark_session_error, persist_send_response_events,
         provider_run_status, update_agent_run_status,
     },
     runtime_provision::provision_runtime_session,
@@ -70,17 +70,58 @@ pub(super) async fn create_runtime_session(
     let mut row = match provision_runtime_session(&state, pool, &created).await {
         Ok(row) => row,
         Err(error) => {
-            let _ = sessions::repository::delete(pool, &created.row.id).await;
+            if created.row.task_id.is_some() {
+                let _ = sessions::repository::set_status(pool, &created.row.id, "error").await;
+                let _ = crate::db::managed_agents::tasks::repository::fail_for_session(
+                    pool,
+                    &created.row.id,
+                    &error.to_string(),
+                )
+                .await;
+            } else {
+                let _ = sessions::repository::delete(pool, &created.row.id).await;
+            }
             return Err(error);
         }
     };
     state.agent_runs.track_run(&created.agent.id, &row.id);
+    if let Some(task_id) = row.task_id.as_deref() {
+        match row.status.as_str() {
+            "idle" => {
+                crate::db::managed_agents::tasks::repository::mark_verifying_for_session(
+                    pool, &row.id,
+                )
+                .await?;
+            }
+            "error" => {
+                crate::db::managed_agents::tasks::repository::fail_for_session(
+                    pool,
+                    &row.id,
+                    "runtime session provisioning failed",
+                )
+                .await?;
+            }
+            _ if created.initial_user_prompt.is_some() => {
+                crate::db::managed_agents::tasks::repository::mark_running_for_session(
+                    pool, &row.id,
+                )
+                .await?;
+            }
+            _ => {
+                crate::db::managed_agents::tasks::repository::mark_waiting_input(pool, task_id)
+                    .await?;
+            }
+        }
+    }
     if row.provider_run_id.is_none() {
         if let Some(prompt) = created.initial_user_prompt.as_deref() {
             execute_runtime_prompt(state.clone(), pool, row.clone(), prompt.to_owned(), None)
                 .await?;
         } else {
-            mark_session_idle(&state, pool, &row.id).await?;
+            sessions::repository::set_status(pool, &row.id, "idle").await?;
+            state
+                .agent_runs
+                .update_status(&row.id, crate::agents::runs::AgentRunStatus::Completed);
             row.status = "idle".to_owned();
         }
     }
@@ -114,11 +155,16 @@ async fn create_generic_chat_session(
             provider_session_id: None,
             provider_run_id: None,
             owner_id: Some(owner.or(agent.owner_id.as_deref()).unwrap_or("system")),
+            task_id: input.task_id.as_deref(),
         },
     )
     .await?;
     state.agent_runs.track_run(&agent.id, &row.id);
     if let Some(prompt) = prompt {
+        if row.task_id.is_some() {
+            crate::db::managed_agents::tasks::repository::mark_running_for_session(pool, &row.id)
+                .await?;
+        }
         persist_message(pool, &row.id, "user", &prompt, None).await?;
         let state = state.clone();
         let pool_bg = pool.clone();
@@ -135,6 +181,9 @@ async fn create_generic_chat_session(
         return Ok(SessionResponse::from(row));
     }
     sessions::repository::set_status(pool, &row.id, "idle").await?;
+    if let Some(task_id) = row.task_id.as_deref() {
+        crate::db::managed_agents::tasks::repository::mark_waiting_input(pool, task_id).await?;
+    }
     let mut row = row;
     row.status = "idle".to_owned();
     Ok(SessionResponse::from(row))
@@ -157,6 +206,7 @@ pub(crate) async fn create_runtime_session_for_agent(
         title,
         Some(prompt),
         environment,
+        None,
     )
     .await
 }
@@ -169,8 +219,70 @@ pub(crate) async fn create_runtime_session_for_agent_without_prompt(
     title: String,
     environment: Value,
 ) -> Result<String, GatewayError> {
-    create_runtime_session_for_agent_input(state, pool, agent_id, runtime, title, None, environment)
-        .await
+    create_runtime_session_for_agent_input(
+        state,
+        pool,
+        agent_id,
+        runtime,
+        title,
+        None,
+        environment,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn create_runtime_session_for_agent_task(
+    state: Arc<AppState>,
+    pool: &PgPool,
+    agent_id: String,
+    runtime: String,
+    title: String,
+    environment: Value,
+    task_id: String,
+) -> Result<String, GatewayError> {
+    create_runtime_session_for_agent_input(
+        state,
+        pool,
+        agent_id,
+        runtime,
+        title,
+        None,
+        environment,
+        Some(task_id),
+    )
+    .await
+}
+
+pub(crate) async fn create_runtime_session_for_agent_task_with_prompt(
+    state: Arc<AppState>,
+    pool: &PgPool,
+    agent_id: String,
+    runtime: String,
+    title: String,
+    prompt: String,
+    environment: Value,
+    task_id: String,
+) -> Result<String, GatewayError> {
+    let response = create_runtime_session(
+        state,
+        pool,
+        CreateSessionRequest {
+            title: Some(title),
+            harness: None,
+            agent: Some(agent_id.clone()),
+            agent_id: Some(agent_id),
+            runtime: Some(runtime),
+            prompt: Some(prompt),
+            environment: Some(environment),
+            timezone: None,
+            tz: None,
+            task_id: Some(task_id),
+        },
+        None,
+    )
+    .await?;
+    Ok(response.id().to_owned())
 }
 
 async fn create_runtime_session_for_agent_input(
@@ -181,6 +293,7 @@ async fn create_runtime_session_for_agent_input(
     title: String,
     prompt: Option<String>,
     environment: Value,
+    task_id: Option<String>,
 ) -> Result<String, GatewayError> {
     let runtime = registry::repository::get(pool, &agent_id)
         .await?
@@ -199,6 +312,7 @@ async fn create_runtime_session_for_agent_input(
             environment: Some(environment),
             timezone: None,
             tz: None,
+            task_id,
         },
         None,
     )
@@ -251,6 +365,7 @@ async fn create_runtime_session_row(
             // Channel/routine-originated sessions carry no caller identity;
             // they inherit the agent's owner (or "system" for legacy agents).
             owner_id: Some(owner.or(agent.owner_id.as_deref()).unwrap_or("system")),
+            task_id: input.task_id.as_deref(),
         },
     )
     .await?;

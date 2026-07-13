@@ -20,4 +20,6 @@ pub struct SessionRow {
     pub status: String,
     pub workspace_bucket: Option<String>,
     pub owner_id: Option<String>,
+    pub task_id: Option<String>,
+    pub attempt_number: i32,
 }

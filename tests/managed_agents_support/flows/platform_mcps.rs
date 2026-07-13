@@ -237,6 +237,7 @@ async fn seed_session_message(fixture: &AppFixture, agent_id: &str) -> String {
         "platform mcp test",
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -257,6 +258,7 @@ async fn seed_empty_session(fixture: &AppFixture, agent_id: &str) -> String {
         "claude-code",
         Some(agent_id),
         "platform mcp send test",
+        None,
         None,
         None,
     )

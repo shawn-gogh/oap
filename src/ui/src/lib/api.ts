@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentRunStart,
+  AgentTask,
   AgentRuntime,
   AgentRuntimeId,
   HarnessMessage,
@@ -13,6 +14,10 @@ import type {
   RuntimeHarness,
   Skill,
   SpendLog,
+  TaskAcceptanceCheck,
+  TaskAttempts,
+  TaskArtifact,
+  TaskSessionAttempt,
   VaultKeyEntry,
   WorkspaceFile,
 } from "./types";
@@ -319,6 +324,7 @@ export async function createSession(
     runtime?: AgentRuntimeId;
     prompt?: string;
     environment?: Record<string, unknown>;
+    taskId?: string;
   },
 ): Promise<OpencodeSession> {
   const res = await reqHarness("/session", {
@@ -330,6 +336,7 @@ export async function createSession(
       ...(options?.runtime ? { runtime: options.runtime } : {}),
       ...(options?.prompt ? { prompt: options.prompt } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
+      ...(options?.taskId ? { task_id: options.taskId } : {}),
     }),
   });
   return jsonOrThrow<OpencodeSession>(res);
@@ -342,6 +349,7 @@ export async function createGatewaySession(
     runtime?: AgentRuntimeId;
     prompt?: string;
     environment?: Record<string, unknown>;
+    taskId?: string;
   },
 ): Promise<OpencodeSession> {
   const res = await req("/session", {
@@ -353,6 +361,7 @@ export async function createGatewaySession(
       ...(options?.runtime ? { runtime: options.runtime } : {}),
       ...(options?.prompt ? { prompt: options.prompt } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
+      ...(options?.taskId ? { task_id: options.taskId } : {}),
     }),
   });
   return jsonOrThrow<OpencodeSession>(res);
@@ -2096,6 +2105,129 @@ export async function listRoutines(agentId?: string): Promise<Routine[]> {
   const res = await req(`/api/routines${query}`);
   const data = await jsonOrThrow<{ routines: Routine[] }>(res);
   return data.routines ?? [];
+}
+
+export async function listAgentTasks(agentId: string): Promise<AgentTask[]> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/tasks`);
+  const data = await jsonOrThrow<{ tasks: AgentTask[] }>(res);
+  return data.tasks ?? [];
+}
+
+export async function createAgentTask(
+  agentId: string,
+  input: {
+    title?: string;
+    input?: Record<string, unknown>;
+    source?: "manual" | "api" | "test";
+  },
+): Promise<AgentTask> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/tasks`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<AgentTask>(res);
+}
+
+export async function listTaskArtifacts(
+  agentId: string,
+  taskId: string,
+): Promise<TaskArtifact[]> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/artifacts`,
+  );
+  const data = await jsonOrThrow<{ artifacts: TaskArtifact[] }>(res);
+  return data.artifacts ?? [];
+}
+
+export async function listTaskAcceptance(
+  agentId: string,
+  taskId: string,
+): Promise<TaskAcceptanceCheck[]> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/acceptance`,
+  );
+  const data = await jsonOrThrow<{ checks: TaskAcceptanceCheck[] }>(res);
+  return data.checks ?? [];
+}
+
+export async function updateTaskAcceptance(
+  agentId: string,
+  taskId: string,
+  input: {
+    criterion_index: number;
+    verdict: "passed" | "failed";
+    evidence?: string;
+    criterion?: string;
+  },
+): Promise<{ task: AgentTask; checks: TaskAcceptanceCheck[] }> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/acceptance`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  return jsonOrThrow<{ task: AgentTask; checks: TaskAcceptanceCheck[] }>(res);
+}
+
+export async function resumeAgentTask(
+  agentId: string,
+  taskId: string,
+  input: Record<string, unknown>,
+): Promise<{ task: AgentTask; session_id: string }> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/resume`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input }),
+    },
+  );
+  return jsonOrThrow<{ task: AgentTask; session_id: string }>(res);
+}
+
+export async function listTaskAttempts(
+  agentId: string,
+  taskId: string,
+): Promise<TaskAttempts> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/attempts`,
+  );
+  return jsonOrThrow<TaskAttempts>(res);
+}
+
+export async function retryAgentTask(
+  agentId: string,
+  taskId: string,
+  runtime?: string,
+): Promise<{ task: AgentTask; session: TaskSessionAttempt }> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(runtime ? { runtime } : {}),
+    },
+  );
+  return jsonOrThrow<{ task: AgentTask; session: TaskSessionAttempt }>(res);
+}
+
+export async function cancelAgentTask(
+  agentId: string,
+  taskId: string,
+): Promise<{
+  task: AgentTask;
+  session_id?: string | null;
+  run_id?: string | null;
+  interruption: "provider_interrupted" | "sandbox_terminated" | "cooperative" | "not_running";
+}> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/cancel`,
+    { method: "POST" },
+  );
+  return jsonOrThrow(res);
 }
 
 export async function createRoutine(

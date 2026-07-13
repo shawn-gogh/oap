@@ -11,6 +11,8 @@ export interface OpencodeSession {
   status?: string;
   workspace_bucket?: string;
   owner_id?: string;
+  task_id?: string;
+  attempt_number?: number;
   environment?: Record<string, unknown>;
   /** @deprecated use agent */
   harness?: string;
@@ -155,6 +157,90 @@ export interface Routine {
   last_run_at?: number | null;
   created_at: number;
   updated_at: number;
+}
+
+export type AgentTaskStatus =
+  | "draft"
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "verifying"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface AgentTask {
+  id: string;
+  agent_id: string;
+  application_version: number;
+  source: "manual" | "routine" | "api" | "event" | "test" | string;
+  source_id?: string | null;
+  title: string;
+  input_json: Record<string, unknown>;
+  status: AgentTaskStatus | string;
+  created_by: string;
+  created_at: number;
+  started_at?: number | null;
+  completed_at?: number | null;
+  failure_reason?: string | null;
+  failure_code?: string | null;
+  deadline_at?: number | null;
+  current_attempt_number: number;
+}
+
+export interface TaskArtifact {
+  id: string;
+  task_id: string;
+  session_id?: string | null;
+  run_id?: string | null;
+  attempt_number: number;
+  artifact_type: string;
+  name: string;
+  content_json?: unknown;
+  location?: string | null;
+  created_by: string;
+  created_at: number;
+}
+
+export interface TaskAcceptanceCheck {
+  id: string;
+  task_id: string;
+  attempt_number: number;
+  criterion_index: number;
+  criterion: string;
+  verdict: "pending" | "passed" | "failed";
+  evidence?: string | null;
+  checked_by?: string | null;
+  checked_at?: number | null;
+}
+
+export interface TaskSessionAttempt {
+  id: string;
+  harness: string;
+  runtime?: string | null;
+  status: string;
+  created_at: number;
+  updated_at?: number | null;
+  attempt_number: number;
+  environment_json: Record<string, unknown>;
+}
+
+export interface TaskRunAttempt {
+  id: string;
+  session_id?: string | null;
+  status: string;
+  started_at: number;
+  finished_at?: number | null;
+  error?: string | null;
+  attempt_number: number;
+}
+
+export interface TaskAttempts {
+  sessions: TaskSessionAttempt[];
+  runs: TaskRunAttempt[];
+  artifacts: TaskArtifact[];
+  acceptance_checks: TaskAcceptanceCheck[];
+  max_attempts: number;
 }
 
 export interface AgentFile {

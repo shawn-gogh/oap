@@ -17,6 +17,7 @@ pub struct CreateSessionRequest {
     pub(super) environment: Option<Value>,
     pub(super) timezone: Option<String>,
     pub(super) tz: Option<String>,
+    pub(super) task_id: Option<String>,
 }
 
 impl CreateSessionRequest {
@@ -127,6 +128,9 @@ pub struct SessionResponse {
     workspace_bucket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    attempt_number: i32,
     status: String,
     environment: Value,
     time: SessionTime,
@@ -152,6 +156,8 @@ impl From<SessionRow> for SessionResponse {
             provider_run_id: row.provider_run_id,
             workspace_bucket: row.workspace_bucket,
             owner_id: row.owner_id,
+            task_id: row.task_id,
+            attempt_number: row.attempt_number,
             status: row.status,
             environment: row.environment_json,
             time: SessionTime {

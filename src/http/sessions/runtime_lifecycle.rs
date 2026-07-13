@@ -12,14 +12,6 @@ use crate::{
 
 use super::runtime_sdk::agent_sdk_error;
 
-pub(super) async fn mark_session_idle(
-    state: &AppState,
-    pool: &PgPool,
-    session_id: &str,
-) -> Result<(), GatewayError> {
-    mark_session_status(state, pool, session_id, "idle", None).await
-}
-
 pub(super) async fn mark_session_error(
     state: &AppState,
     pool: &PgPool,
@@ -38,13 +30,25 @@ pub(super) async fn mark_session_status(
 ) -> Result<(), GatewayError> {
     sessions::repository::set_status(pool, session_id, status).await?;
     match status {
-        "idle" => state
-            .agent_runs
-            .update_status(session_id, AgentRunStatus::Completed),
-        "error" => state.agent_runs.set_error(
-            session_id,
-            error.unwrap_or_else(|| "managed agent interaction failed".to_owned()),
-        ),
+        "idle" => {
+            state
+                .agent_runs
+                .update_status(session_id, AgentRunStatus::Completed);
+            crate::db::managed_agents::tasks::artifacts::capture_session_output(pool, session_id)
+                .await?;
+            crate::db::managed_agents::tasks::repository::mark_verifying_for_session(
+                pool, session_id,
+            )
+            .await?;
+        }
+        "error" => {
+            let message = error.unwrap_or_else(|| "managed agent interaction failed".to_owned());
+            state.agent_runs.set_error(session_id, message.clone());
+            crate::db::managed_agents::tasks::repository::fail_for_session(
+                pool, session_id, &message,
+            )
+            .await?;
+        }
         _ => {}
     }
     Ok(())

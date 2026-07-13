@@ -156,6 +156,69 @@ pub async fn exercise_files(fixture: &AppFixture, agent_id: &str) {
 }
 
 pub async fn exercise_runs(fixture: &AppFixture, agent_id: &str) {
+    let queued_task = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/tasks"),
+        Some(json!({
+            "title": "Review release",
+            "source": "manual",
+            "input": {"repository": "example/repo"}
+        })),
+    )
+    .await;
+    let queued_task_id = queued_task["id"].as_str().unwrap();
+    assert_eq!(queued_task["status"], "queued");
+    let fetched_task = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/agents/{agent_id}/tasks/{queued_task_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(fetched_task["input_json"]["repository"], "example/repo");
+    let waiting_session = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/session",
+        Some(json!({
+            "agent": agent_id,
+            "agent_id": agent_id,
+            "harness": agent_id,
+            "title": "waiting task session",
+            "task_id": queued_task_id
+        })),
+    )
+    .await;
+    let waiting_session_id = waiting_session["id"].as_str().unwrap().to_owned();
+    let waiting_task = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/agents/{agent_id}/tasks/{queued_task_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(waiting_task["status"], "waiting_input");
+    let resumed = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/tasks/{queued_task_id}/resume"),
+        Some(json!({"input": {"request": "Continue the review"}})),
+    )
+    .await;
+    assert_eq!(resumed["session_id"], waiting_session_id);
+    assert_eq!(resumed["task"]["status"], "running");
+    read_events_until_completed(fixture.app.clone(), "/event", &waiting_session_id).await;
+    let resumed_task = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/agents/{agent_id}/tasks/{queued_task_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(resumed_task["status"], "verifying");
+    assert_eq!(resumed_task["input_json"]["request"], "Continue the review");
+
     let run = request_json(
         fixture.app.clone(),
         "POST",
@@ -164,6 +227,7 @@ pub async fn exercise_runs(fixture: &AppFixture, agent_id: &str) {
     )
     .await;
     let run_id = run["run_id"].as_str().unwrap().to_owned();
+    let task_id = run["task_id"].as_str().unwrap().to_owned();
     assert_eq!(run["event_url"], "/event");
     assert!(run["logs_url"]
         .as_str()
@@ -190,6 +254,53 @@ pub async fn exercise_runs(fixture: &AppFixture, agent_id: &str) {
         .unwrap();
     assert_eq!(run_row["status"], "completed");
     assert_eq!(run_row["sandbox_id"], "sbx_managed_test");
+    assert_eq!(run_row["task_id"], task_id);
+    assert_eq!(run_row["attempt_number"], 1);
+
+    let tasks = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/agents/{agent_id}/tasks"),
+        None,
+    )
+    .await;
+    let task = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == task_id)
+        .unwrap();
+    assert_eq!(task["status"], "verifying");
+    assert_eq!(task["source"], "api");
+    assert_eq!(task["input_json"]["prompt"], "say hello");
+
+    let artifacts = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/agents/{agent_id}/tasks/{task_id}/artifacts"),
+        None,
+    )
+    .await;
+    assert_eq!(artifacts["artifacts"].as_array().unwrap().len(), 1);
+    assert!(artifacts["artifacts"][0]["content_json"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("hello from managed agent"));
+
+    let acceptance = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/tasks/{task_id}/acceptance"),
+        Some(json!({
+            "criterion_index": 0,
+            "criterion": "A reviewable response was produced",
+            "verdict": "passed",
+            "evidence": "Captured run output contains the response"
+        })),
+    )
+    .await;
+    assert_eq!(acceptance["task"]["status"], "succeeded");
+    assert_eq!(acceptance["checks"][0]["verdict"], "passed");
 
     let logs = request_raw(
         fixture.app.clone(),

@@ -14,11 +14,12 @@ use crate::{
         routines::{self, schema::RoutineRow},
         runs::{repository as runs_repository, schema::CreateRun},
         skills::compose::compose_agent_system_prompt,
+        tasks::{repository as tasks_repository, schema::NewTask},
     },
     errors::GatewayError,
     http::{
         managed_agents::runs::{execution::spawn_managed_agent_run, types::RunCreateResponse},
-        sessions::{create_runtime_session_for_agent_without_prompt, enqueue_prompt_text},
+        sessions::{create_runtime_session_for_agent_task, enqueue_prompt_text},
     },
     proxy::state::AppState,
 };
@@ -53,10 +54,43 @@ pub(crate) async fn trigger_routine_run(
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
     crate::http::managed_agents::assert_agent_runnable(&agent)?;
     let prompt = routine_prompt(&routine, &agent);
-    if let Some(runtime) = runtime_from_agent(&agent) {
-        return trigger_runtime_session(state, pool, routine, agent, prompt, runtime).await;
+    let task = tasks_repository::create(
+        &pool,
+        NewTask {
+            agent_id: &agent.id,
+            application_version: crate::http::managed_agents::tasks::application_version(
+                &agent.config,
+            ),
+            source: "routine",
+            source_id: Some(&routine.id),
+            title: &format!("{} run", routine.name),
+            input: serde_json::json!({ "prompt": prompt }),
+            created_by: agent.owner_id.as_deref().unwrap_or("system"),
+            completion_criteria: crate::http::managed_agents::tasks::completion_criteria(
+                &agent.config,
+            ),
+        },
+    )
+    .await?;
+    let task_id = task.id.clone();
+    let result = if let Some(runtime) = runtime_from_agent(&agent) {
+        trigger_runtime_session(
+            state,
+            pool.clone(),
+            routine,
+            agent,
+            prompt,
+            runtime,
+            task.id,
+        )
+        .await
+    } else {
+        trigger_legacy_run(state, pool.clone(), routine, agent, prompt, host, task.id).await
+    };
+    if let Err(error) = &result {
+        let _ = tasks_repository::fail(&pool, &task_id, &error.to_string()).await;
     }
-    trigger_legacy_run(state, pool, routine, agent, prompt, host).await
+    result
 }
 
 async fn trigger_runtime_session(
@@ -66,14 +100,16 @@ async fn trigger_runtime_session(
     agent: registry::schema::ManagedAgentRow,
     prompt: String,
     runtime: String,
+    task_id: String,
 ) -> Result<RunCreateResponse, GatewayError> {
-    let session_id = create_runtime_session_for_agent_without_prompt(
+    let session_id = create_runtime_session_for_agent_task(
         state.clone(),
         &pool,
         routine.agent_id.clone(),
         runtime,
         format!("{} run", routine.name),
         serde_json::json!({}),
+        task_id.clone(),
     )
     .await?;
     routines::repository::mark_session_triggered(&pool, &routine.id, &session_id).await?;
@@ -98,6 +134,7 @@ async fn trigger_runtime_session(
         status: "starting".to_owned(),
         event_url: format!("/v1/sessions/{session_id}/events/stream"),
         logs_url: String::new(),
+        task_id: Some(task_id),
     })
 }
 
@@ -108,8 +145,9 @@ async fn trigger_legacy_run(
     agent: registry::schema::ManagedAgentRow,
     prompt: String,
     host: &str,
+    task_id: String,
 ) -> Result<RunCreateResponse, GatewayError> {
-    let run = create_run(&pool, &routine, &agent, &prompt).await?;
+    let run = create_run(&pool, &routine, &agent, &prompt, &task_id).await?;
     routines::repository::mark_triggered(&pool, &routine.id, &run.id).await?;
     state.agent_runs.track_run(&routine.agent_id, &run.id);
     spawn_managed_agent_run(
@@ -131,6 +169,7 @@ async fn trigger_legacy_run(
         status: run.status,
         event_url: "/event".to_owned(),
         logs_url,
+        task_id: Some(task_id),
     })
 }
 
@@ -168,11 +207,13 @@ async fn create_run(
     routine: &RoutineRow,
     agent: &registry::schema::ManagedAgentRow,
     prompt: &str,
+    task_id: &str,
 ) -> Result<crate::db::managed_agents::runs::schema::AgentRunRow, GatewayError> {
     runs_repository::create(
         pool,
         &routine.agent_id,
         agent.session_id.clone(),
+        Some(task_id),
         CreateRun {
             session_id: None,
             config_overrides: None,

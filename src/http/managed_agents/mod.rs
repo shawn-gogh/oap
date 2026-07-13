@@ -14,6 +14,7 @@ pub mod rules;
 pub mod runs;
 pub mod skills;
 pub mod slack;
+pub mod tasks;
 pub mod teams;
 pub mod tool_approvals;
 pub mod workspace;

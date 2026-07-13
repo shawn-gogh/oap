@@ -55,6 +55,9 @@ pub(super) async fn execute_prompt(
     state
         .agent_runs
         .update_status(&row.id, AgentRunStatus::Completed);
+    crate::db::managed_agents::tasks::artifacts::capture_session_output(&pool, &row.id).await?;
+    crate::db::managed_agents::tasks::repository::mark_verifying_for_session(&pool, &row.id)
+        .await?;
     push_events(&state, &row.id, harness_run.events.complete(&context));
     Ok(())
 }

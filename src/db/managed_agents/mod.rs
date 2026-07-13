@@ -21,6 +21,7 @@ pub mod settings;
 pub mod skills;
 pub mod slack;
 pub mod spend_logs;
+pub mod tasks;
 pub mod teams;
 pub mod users;
 
