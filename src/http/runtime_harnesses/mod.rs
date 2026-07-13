@@ -84,8 +84,9 @@ pub async fn create(
     // Validate alias
     validate_alias(&input.alias)?;
 
-    // Validate api_spec is a known runtime id
-    let valid_spec = {
+    // Validate api_spec is a known runtime id (or the built-in generic_chat
+    // spec, which is served by the gateway itself rather than an SDK adapter)
+    let valid_spec = input.api_spec == "generic_chat" || {
         let registry = crate::sdk::providers::runtime_registry();
         registry.validate_id(&input.api_spec)
     };
@@ -241,6 +242,78 @@ pub async fn delete_harness(
 
 async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayError> {
     require_any_gateway_key(headers, state).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestHarnessRequest {
+    pub api_spec: String,
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Pre-registration connectivity probe: generic_chat endpoints are checked
+/// via GET /models (OpenAI-compatible, returns a model preview); managed
+/// agents providers via GET /health. Never persists anything.
+pub async fn test_connection(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<TestHarnessRequest>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    require_admin(&state, &headers).await?;
+    let base = input.api_base.trim().trim_end_matches('/').to_owned();
+    if base.is_empty() {
+        return Err(GatewayError::InvalidJsonMessage(
+            "api_base is required".to_owned(),
+        ));
+    }
+    let key = input.api_key.trim();
+
+    let (url, is_generic) = if input.api_spec == "generic_chat" {
+        (format!("{base}/models"), true)
+    } else {
+        (format!("{base}/health"), false)
+    };
+    let mut request = state.http.get(&url);
+    if !key.is_empty() {
+        request = request.bearer_auth(key).header("x-api-key", key);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(Json(json!({
+                "ok": false,
+                "detail": format!("无法连接 {url}：{error}"),
+            })))
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        return Ok(Json(json!({
+            "ok": false,
+            "detail": format!("{url} 返回 {status}"),
+        })));
+    }
+    let mut models: Vec<String> = Vec::new();
+    if is_generic {
+        if let Ok(body) = response.json::<serde_json::Value>().await {
+            models = body
+                .get("data")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+                        .take(20)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+    }
+    Ok(Json(
+        json!({ "ok": true, "detail": "连接正常", "models": models }),
+    ))
 }
 
 fn validate_alias(alias: &str) -> Result<(), GatewayError> {

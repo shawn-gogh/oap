@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import {
   Activity,
   Bot,
@@ -20,6 +21,7 @@ import {
   Zap,
   Trash2,
   Users,
+  LogOut,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
@@ -30,7 +32,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { apiErrorMessage, deleteSession, listSessions, listInbox } from "@/lib/api";
+import {
+  apiErrorMessage,
+  clearStoredMasterKey,
+  deleteSession,
+  getCurrentUser,
+  listSessions,
+  listInbox,
+  type CurrentUser,
+} from "@/lib/api";
 import type { OpencodeSession } from "@/lib/types";
 
 type NavItem = {
@@ -39,6 +49,9 @@ type NavItem = {
   icon: LucideIcon;
   active: (pathname: string) => boolean;
   badge?: number;
+  /** Sub-group header; a heading renders whenever it changes from the
+   *  previous item's group. */
+  group?: string;
 };
 
 type NavSection = {
@@ -73,6 +86,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const [sessions, setSessions] = useState<OpencodeSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const load = async () => {
     try {
       const list = await listSessions();
@@ -88,7 +102,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 15000);
     return () => clearInterval(t);
   }, []);
 
@@ -99,9 +113,17 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         .then((items) => setInboxCount(items.length))
         .catch(() => {});
     loadCount();
-    const t = setInterval(loadCount, 5000);
+    const t = setInterval(loadCount, 15000);
     return () => clearInterval(t);
   }, [pathname]);
+
+  useEffect(() => {
+    getCurrentUser().then(setCurrentUser).catch(() => setCurrentUser(null));
+  }, []);
+
+  // Undo-window delete: the session leaves the list immediately, but the
+  // backend delete only fires after the toast expires. 撤销 cancels it.
+  const pendingDeleteTimers = useRef(new Map<string, number>());
 
   if (embedded) return null;
 
@@ -109,127 +131,173 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
     router.push("/chat/");
   };
 
-  const onDelete = async (e: React.MouseEvent, id: string) => {
+  const onDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    const previousSessions = sessions;
+    const removed = sessions?.find((s) => s.id === id);
     setSessions((prev) => prev?.filter((s) => s.id !== id) ?? null);
-    try {
-      await deleteSession(id);
-      setError(null);
-      if (id === activeId) router.push("/chat/");
-    } catch (err) {
-      setSessions(previousSessions);
-      setError(apiErrorMessage(err, "Failed to delete session"));
-    }
+    if (id === activeId) router.push("/chat/");
+
+    const timer = window.setTimeout(() => {
+      pendingDeleteTimers.current.delete(id);
+      deleteSession(id).catch((err) => {
+        setSessions((prev) => (removed && prev ? [removed, ...prev] : prev));
+        toast.error(apiErrorMessage(err, "删除会话失败"));
+      });
+    }, 5000);
+    pendingDeleteTimers.current.set(id, timer);
+
+    toast(`已删除会话「${removed?.title?.trim() || id.slice(0, 12)}」`, {
+      duration: 5000,
+      action: {
+        label: "撤销",
+        onClick: () => {
+          const pending = pendingDeleteTimers.current.get(id);
+          if (pending !== undefined) {
+            window.clearTimeout(pending);
+            pendingDeleteTimers.current.delete(id);
+          }
+          setSessions((prev) => (removed && prev ? [removed, ...prev] : prev));
+        },
+      },
+    });
   };
 
   const currentPath = pathname ?? "";
   const sections: NavSection[] = [
-    {
+    ...(currentUser?.is_admin ? [{
       label: "AI Gateway",
       icon: ShieldCheck,
       home: "/providers/",
-      description: "Keys, teams, logs, providers, and runtimes",
+      description: "密钥、团队、日志、模型提供方与运行时",
       items: [
         {
-          label: "Keys",
+          label: "密钥 Keys",
           href: "/keys/",
           icon: KeyRound,
-          active: (path) => path.startsWith("/keys"),
+          active: (path: string) => path.startsWith("/keys"),
+          group: "访问控制",
         },
         {
-          label: "Teams",
+          label: "用户管理",
+          href: "/users/",
+          icon: Users,
+          active: (path: string) => path.startsWith("/users"),
+          group: "访问控制",
+        },
+        {
+          label: "用户组",
+          href: "/groups/",
+          icon: Users,
+          active: (path: string) => path.startsWith("/groups"),
+          group: "访问控制",
+        },
+        {
+          label: "团队 Teams",
           href: "/teams/",
           icon: Users,
-          active: (path) => path.startsWith("/teams"),
+          active: (path: string) => path.startsWith("/teams"),
+          group: "访问控制",
         },
         {
-          label: "Logs",
-          href: "/observability/logs/",
-          icon: Activity,
-          active: (path) => path.startsWith("/observability"),
-        },
-        {
-          label: "LLM Providers",
+          label: "LLM 提供方",
           href: "/providers/",
           icon: ServerCog,
-          active: (path) => path.startsWith("/providers"),
+          active: (path: string) => path.startsWith("/providers"),
+          group: "基础设施",
         },
         {
-          label: "Agent Runtimes",
+          label: "Agent 运行时",
           href: "/runtimes/",
           icon: ServerCog,
-          active: (path) => path.startsWith("/runtimes"),
+          active: (path: string) => path.startsWith("/runtimes"),
+          group: "基础设施",
         },
         {
-          label: "MCP Servers",
+          label: "MCP 服务器",
           href: "/mcp-servers/",
           icon: Server,
-          active: (path) => path.startsWith("/mcp-servers"),
+          active: (path: string) => path.startsWith("/mcp-servers"),
+          group: "基础设施",
+        },
+        {
+          label: "调用日志",
+          href: "/observability/logs/",
+          icon: Activity,
+          active: (path: string) => path.startsWith("/observability"),
+          group: "观测",
         },
       ],
-    },
+    }] : []),
     {
       label: "Agent Platform",
       icon: Bot,
       home: "/chat/",
-      description: "Agents, inbox, integrations, skills",
+      description: "智能体、收件箱、集成与技能",
       items: [
         {
-          label: "Chat",
+          label: "对话",
           href: "/chat/",
           icon: MessageCircle,
           active: (path) => path === "/" || path.startsWith("/chat") || path.startsWith("/sessions"),
+          group: "工作台",
         },
         {
-          label: "Agents",
-          href: "/agents/",
-          icon: Bot,
-          active: (path) => path.startsWith("/agents"),
-        },
-        {
-          label: "Routines",
-          href: "/routines/",
-          icon: Zap,
-          active: (path) => path.startsWith("/routines"),
-        },
-        {
-          label: "Inbox",
+          label: "收件箱",
           href: "/inbox/",
           icon: Inbox,
           active: (path) => path.startsWith("/inbox"),
           badge: inboxCount,
+          group: "工作台",
         },
         {
-          label: "Integrations",
-          href: "/integrations/",
-          icon: Puzzle,
-          active: (path) => path.startsWith("/integrations"),
+          label: "定时任务",
+          href: "/routines/",
+          icon: Zap,
+          active: (path) => path.startsWith("/routines"),
+          group: "工作台",
         },
         {
-          label: "Skills",
+          label: "智能体",
+          href: "/agents/",
+          icon: Bot,
+          active: (path) => path.startsWith("/agents"),
+          group: "构建",
+        },
+        {
+          label: "技能",
           href: "/skills/",
           icon: FileText,
           active: (path) => path.startsWith("/skills"),
+          group: "构建",
         },
         {
-          label: "Rules",
+          label: "规则",
           href: "/rules/",
           icon: ScrollText,
           active: (path) => path.startsWith("/rules"),
+          group: "构建",
         },
         {
-          label: "Vault",
+          label: "集成",
+          href: "/integrations/",
+          icon: Puzzle,
+          active: (path) => path.startsWith("/integrations"),
+          group: "构建",
+        },
+        {
+          label: "凭证保险库",
           href: "/vault/",
           icon: KeyRound,
           active: (path) => path.startsWith("/vault"),
+          group: "构建",
         },
       ],
     },
   ];
   const currentSection =
     sections.find((section) => section.items.some((item) => item.active(currentPath))) ??
-    sections[1];
+    sections.find((section) => section.label === "Agent Platform") ??
+    sections[0];
   const isAgentPlatform = currentSection.label === "Agent Platform";
 
   return (
@@ -248,22 +316,32 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
             onClick={onNew}
             className="relative w-full justify-center sm:justify-start"
             size="sm"
-            aria-label="New session"
+            aria-label="新建会话"
           >
             <Plus className="size-4" />
-            <span className="hidden sm:inline">New session</span>
+            <span className="hidden sm:inline">新建会话</span>
           </Button>
         )}
         <div className="space-y-1">
-          {currentSection.items.map((item) => {
+          {currentSection.items.map((item, index) => {
             const Icon = item.icon;
             const badge = item.badge ?? 0;
+            const previousGroup = currentSection.items[index - 1]?.group;
+            const showGroupHeader = Boolean(item.group) && item.group !== previousGroup;
+            const active = item.active(currentPath);
             return (
+              <div key={item.href}>
+              {showGroupHeader && (
+                <div className="hidden px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:block">
+                  {item.group}
+                </div>
+              )}
               <Button
-                key={item.href}
                 onClick={() => router.push(item.href)}
-                variant={item.active(currentPath) ? "secondary" : "ghost"}
-                className="relative w-full justify-center sm:justify-start"
+                variant="ghost"
+                className={`relative w-full justify-center sm:justify-start ${
+                  active ? "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary" : ""
+                }`}
                 size="sm"
                 aria-label={item.label}
                 title={item.label}
@@ -271,11 +349,12 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 <Icon className="size-4" />
                 <span className="hidden sm:inline">{item.label}</span>
                 {badge > 0 && (
-                  <span className="absolute ml-7 mt-[-18px] flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white sm:static sm:ml-auto sm:mt-0 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-[11px]">
+                  <span className="absolute ml-7 mt-[-18px] flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-semibold text-white sm:static sm:ml-auto sm:mt-0 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-[11px]">
                     {badge}
                   </span>
                 )}
               </Button>
+              </div>
             );
           })}
         </div>
@@ -285,17 +364,17 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         {isAgentPlatform && (
           <>
             <div className="px-4 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Agent Sessions
+              会话历史
             </div>
             {error && (
               <div className="px-3 py-2 text-xs text-destructive">{error}</div>
             )}
             {!sessions && !error && (
-              <div className="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
+              <div className="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
             )}
             {sessions && sessions.length === 0 && (
               <div className="px-3 py-2 text-xs text-muted-foreground">
-                No sessions yet.
+                还没有会话。
               </div>
             )}
             {sessions?.map((s) => {
@@ -314,14 +393,14 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium">{title}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground truncate">
+                    <div className="font-mono text-[11px] text-muted-foreground truncate">
                       {(s.agent ?? s.harness) === "claude-code" ? "cc" : (s.agent ?? s.harness) === "github-copilot" ? "gh" : "oc"} · {short} · {timeAgo(s.time?.created)}
                     </div>
                   </div>
                   <button
                     onClick={(e) => onDelete(e, s.id)}
                     className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-background rounded focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                    aria-label="Delete session"
+                    aria-label="删除会话"
                   >
                     <Trash2 className="size-3" />
                   </button>
@@ -333,6 +412,30 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
       </div>
 
       <div className="border-t border-border p-2 sm:p-3">
+        <DropdownMenu>
+          <DropdownMenuTrigger className="mb-1 flex h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-sm hover:bg-muted sm:justify-start">
+            <Users className="size-4" />
+            <span className="hidden min-w-0 flex-1 truncate text-left sm:inline">
+              {currentUser?.display_name || "账户"}
+            </span>
+            <ChevronDown className="hidden size-3.5 sm:inline" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">
+              <div className="truncate font-medium text-foreground">{currentUser?.display_name || "账户"}</div>
+              <div className="truncate font-mono">{currentUser?.id}</div>
+            </div>
+            <DropdownMenuItem
+              onClick={() => {
+                clearStoredMasterKey();
+                router.replace("/login/");
+              }}
+            >
+              <LogOut className="size-4" />
+              退出登录
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           onClick={() => router.push("/settings/")}
           variant={pathname?.startsWith("/settings") ? "secondary" : "ghost"}

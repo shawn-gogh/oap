@@ -58,6 +58,30 @@ fn agent_routes() -> Router<Arc<AppState>> {
         )
         .route("/api/evolution/sweep", post(super::evolution::sweep))
         .route(
+            "/api/agents/{agent_id}/grants",
+            get(super::grants::list).post(super::grants::create),
+        )
+        .route(
+            "/api/agents/{agent_id}/grantable-users",
+            get(super::grants::grantable_users),
+        )
+        .route(
+            "/api/agents/{agent_id}/grants/{grantee}",
+            delete(super::grants::delete),
+        )
+        .route(
+            "/api/agents/{agent_id}/group-grants",
+            get(super::grants::list_group_grants).post(super::grants::create_group_grant),
+        )
+        .route(
+            "/api/agents/{agent_id}/group-grants/{group_id}",
+            delete(super::grants::delete_group_grant),
+        )
+        .route(
+            "/api/agents/{agent_id}/grantable-groups",
+            get(super::grants::grantable_groups),
+        )
+        .route(
             "/api/agents/{agent_id}/workspace/files",
             get(super::workspace::list_files).delete(super::workspace::delete_file),
         )
@@ -93,6 +117,10 @@ fn import_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/import/opencode-files",
             post(super::import_files::import_opencode_files),
+        )
+        .route(
+            "/api/agents/import/bundle",
+            post(super::import_files::import_agent_bundle),
         )
         .route(
             "/api/agents/import/{provider_id}/discover",

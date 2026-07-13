@@ -1,6 +1,8 @@
+pub mod agent_grants;
 pub mod api_keys;
 pub mod eval_runs;
 pub mod files;
+pub mod groups;
 pub mod harnesses;
 pub mod inbox;
 pub mod loops;
@@ -20,6 +22,7 @@ pub mod skills;
 pub mod slack;
 pub mod spend_logs;
 pub mod teams;
+pub mod users;
 
 pub fn id(prefix: &str) -> String {
     format!("{prefix}_{}", uuid::Uuid::new_v4().simple())

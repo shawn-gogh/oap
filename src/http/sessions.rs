@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod execution;
+mod generic_chat;
 mod runtime;
 mod runtime_events_api;
 mod runtime_events_reconcile;
@@ -37,9 +38,7 @@ pub(crate) use runtime_events_api::runtime_event_stream_for_session;
 pub use runtime_events_api::{runtime_event_list, runtime_events};
 pub(crate) use runtime_sdk::lap_from_credential;
 use runtime_sdk::{register_runtime_session, runtime_sdk_client};
-use storage::{
-    auth_db, db, owned_session, persist_message, resolve_session_request, session,
-};
+use storage::{auth_db, db, owned_session, persist_message, resolve_session_request, session};
 pub use types::{CreateSessionRequest, MessageResponse, PromptRequest, SessionResponse};
 pub use workspace_api::{create_upload_url, delete_file, download_url, list_files};
 
@@ -60,6 +59,18 @@ pub async fn create(
 ) -> Result<Json<SessionResponse>, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     let pool = pool.clone();
+    // Using an agent requires use-level access (owner, admin, or a grant).
+    let requested_agent = input
+        .agent_id
+        .as_deref()
+        .or(input.agent.as_deref())
+        .filter(|id| id.starts_with("agent_"));
+    if let Some(agent_id) = requested_agent {
+        let agent = crate::db::managed_agents::registry::repository::get(&pool, agent_id)
+            .await?
+            .ok_or_else(|| GatewayError::UnknownAgent(agent_id.to_owned()))?;
+        crate::http::managed_agents::assert_agent_use(&auth, &agent, &pool).await?;
+    }
     if input.has_runtime() {
         return create_runtime_session(state, &pool, input, Some(&auth.user_id))
             .await
@@ -89,6 +100,53 @@ pub async fn get(
     Ok(Json(SessionResponse::from(row)))
 }
 
+/// Model the session's agent is configured for, if resolvable. Callers that
+/// enqueue prompts on behalf of a session (approval resume, platform MCP
+/// send) should prefer this over any hardcoded default.
+pub(crate) async fn agent_model_for_session(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+) -> Option<String> {
+    let session = sessions::repository::get(pool, session_id).await.ok()??;
+    let agent_id = session.agent_id.as_deref().or(
+        // Legacy rows store the agent reference in `harness`.
+        session
+            .harness
+            .starts_with("agent_")
+            .then_some(session.harness.as_str()),
+    )?;
+    let agent = crate::db::managed_agents::registry::repository::get(pool, agent_id)
+        .await
+        .ok()??;
+    (!agent.model.trim().is_empty()).then_some(agent.model)
+}
+
+#[derive(serde::Deserialize)]
+pub struct RenameSessionRequest {
+    pub title: String,
+}
+
+pub async fn rename(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(input): Json<RenameSessionRequest>,
+) -> Result<Json<SessionResponse>, GatewayError> {
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    owned_session(pool, &auth, &session_id).await?;
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err(GatewayError::InvalidConfig(
+            "title must not be empty".to_owned(),
+        ));
+    }
+    sessions::repository::set_title(pool, &session_id, title).await?;
+    let row = sessions::repository::get(pool, &session_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("session not found".to_owned()))?;
+    Ok(Json(SessionResponse::from(row)))
+}
+
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -102,6 +160,11 @@ pub async fn delete(
             let _ = storage.delete_bucket_recursive(bucket).await;
         }
     }
+    // Pending approvals for a deleted session can never be decided into a
+    // live turn; expire them so the inbox doesn't accumulate zombies.
+    let _ =
+        crate::db::managed_agents::inbox::repository::expire_pending_for_session(pool, &session_id)
+            .await;
     Ok(Json(sessions::repository::delete(pool, &session_id).await?))
 }
 

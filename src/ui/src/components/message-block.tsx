@@ -172,7 +172,7 @@ function UserPromptBlock({
           {content && <div className="whitespace-pre-wrap">{content}</div>}
         </div>
         {queued && (
-          <div className="flex items-center gap-1.5 pr-1 text-[12px] text-muted-foreground">
+          <div className="flex items-center gap-1.5 pr-1 text-xs text-muted-foreground">
             <span aria-hidden className="size-1.5 rounded-full bg-muted-foreground/40" />
             queued
             {onSendQueued && (
@@ -288,7 +288,7 @@ function AssistantBlock({
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-[14px] text-muted-foreground leading-relaxed">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground leading-relaxed">
             <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none" />
             thinking…
           </div>
@@ -321,9 +321,9 @@ function AssistantBlock({
       )}
 
       {!inProgress && !failed && (
-        <div className="mono flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground/75 transition-colors group-hover/turn:text-muted-foreground">
+        <div className="mono flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-muted-foreground/75 transition-colors group-hover/turn:text-muted-foreground">
           {msg.harness && (
-            <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-mono font-medium ${
+            <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-mono font-medium ${
               msg.harness === "github-copilot"
                 ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
                 : msg.harness === "claude-code"
@@ -545,7 +545,7 @@ function ToolCluster({ parts }: { parts: HarnessMessagePart[] }) {
     <div className="max-w-[920px] py-0.5">
       <div className="mb-1 flex items-center gap-2 pl-2">
         <span className="h-px w-5 bg-border" />
-        <span className="mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+        <span className="mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
           Activity
         </span>
       </div>
@@ -599,11 +599,11 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
         }`}
       >
         <ToolIcon tool={toolName} status={status} />
-        <span className="shrink-0 text-[14px] font-medium text-foreground">{label}</span>
+        <span className="shrink-0 text-sm font-medium text-foreground">{label}</span>
         {desc && (
-          <span className="mono min-w-0 max-w-[min(38rem,42vw)] truncate text-[12px] text-muted-foreground">{desc}</span>
+          <span className="mono min-w-0 max-w-[min(38rem,42vw)] truncate text-xs text-muted-foreground">{desc}</span>
         )}
-        <span className={`mono inline-flex shrink-0 items-center gap-1 rounded-full border border-current/15 px-2 py-0.5 text-[10.5px] ${statusColor}`}>
+        <span className={`mono inline-flex shrink-0 items-center gap-1 rounded-full border border-current/15 px-2 py-0.5 text-[11px] ${statusColor}`}>
           <StatusIcon
             className={`size-3 shrink-0 ${status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`}
           />
@@ -640,7 +640,7 @@ function ToolKv({ label, value }: { label: string; value: unknown }) {
   const text = isString ? (value as string) : JSON.stringify(value, null, 2);
   return (
     <div className="flex flex-col gap-1">
-      <span className="mono text-[10px] uppercase tracking-wide text-muted-foreground">
+      <span className="mono text-[11px] uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
       <HighlightedCode code={text} lang={isString ? "text" : "json"} />

@@ -31,11 +31,7 @@ pub async fn update(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     // Best-effort: a failed snapshot must not fail the update itself.
-    let _ = crate::db::managed_agents::registry::revisions::record(
-        pool,
-        &row,
-        Some(&auth.user_id),
-    )
-    .await;
+    let _ = crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))
+        .await;
     Ok(Json(row))
 }

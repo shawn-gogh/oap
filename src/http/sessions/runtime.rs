@@ -40,6 +40,13 @@ pub(super) async fn create_runtime_session(
     input: CreateSessionRequest,
     owner: Option<&str>,
 ) -> Result<SessionResponse, GatewayError> {
+    // generic_chat harnesses have no managed-agents provider to provision
+    // against; the gateway itself is the runtime.
+    if let Some(alias) = input.runtime.as_deref() {
+        if super::generic_chat::is_generic_chat(pool, alias).await? {
+            return create_generic_chat_session(state, pool, input, owner).await;
+        }
+    }
     let mut created = create_runtime_session_row(&state, pool, input, owner).await?;
     // Workspaces are opt-in per runtime — only local-opencode's per-session
     // process model (see runtime_provision.rs) can actually mount one today.
@@ -77,6 +84,59 @@ pub(super) async fn create_runtime_session(
             row.status = "idle".to_owned();
         }
     }
+    Ok(SessionResponse::from(row))
+}
+
+async fn create_generic_chat_session(
+    state: Arc<AppState>,
+    pool: &PgPool,
+    input: CreateSessionRequest,
+    owner: Option<&str>,
+) -> Result<SessionResponse, GatewayError> {
+    let alias = input.runtime.clone().unwrap_or_default();
+    let agent = load_agent(pool, &input).await?;
+    let title = input.title.clone().unwrap_or_else(|| agent.name.clone());
+    let prompt = input
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(str::to_owned);
+    let row = sessions::repository::create_runtime(
+        pool,
+        sessions::repository::CreateRuntimeSession {
+            runtime: &alias,
+            agent_id: &agent.id,
+            title: &title,
+            timezone: input.timezone.as_deref().or(input.tz.as_deref()),
+            runtime_agent_ref_id: None,
+            environment: input.environment.clone().unwrap_or_else(|| json!({})),
+            provider_session_id: None,
+            provider_run_id: None,
+            owner_id: Some(owner.or(agent.owner_id.as_deref()).unwrap_or("system")),
+        },
+    )
+    .await?;
+    state.agent_runs.track_run(&agent.id, &row.id);
+    if let Some(prompt) = prompt {
+        persist_message(pool, &row.id, "user", &prompt, None).await?;
+        let state = state.clone();
+        let pool_bg = pool.clone();
+        let row_bg = row.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                super::generic_chat::execute_prompt(state, &pool_bg, &row_bg, &prompt).await
+            {
+                tracing::warn!(session_id = %row_bg.id, %error, "generic chat prompt failed");
+            }
+        });
+        let mut row = row;
+        row.status = "running".to_owned();
+        return Ok(SessionResponse::from(row));
+    }
+    sessions::repository::set_status(pool, &row.id, "idle").await?;
+    let mut row = row;
+    row.status = "idle".to_owned();
     Ok(SessionResponse::from(row))
 }
 
@@ -190,11 +250,7 @@ async fn create_runtime_session_row(
             provider_run_id: None,
             // Channel/routine-originated sessions carry no caller identity;
             // they inherit the agent's owner (or "system" for legacy agents).
-            owner_id: Some(
-                owner
-                    .or(agent.owner_id.as_deref())
-                    .unwrap_or("system"),
-            ),
+            owner_id: Some(owner.or(agent.owner_id.as_deref()).unwrap_or("system")),
         },
     )
     .await?;
@@ -222,6 +278,9 @@ pub(super) async fn execute_runtime_prompt(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("runtime session is missing runtime".to_owned())
     })?;
+    if super::generic_chat::is_generic_chat(pool, runtime).await? {
+        return super::generic_chat::execute_prompt(state, pool, &row, &prompt).await;
+    }
     let resolved = crate::http::runtime_resolution::resolve_runtime(pool, &state, runtime).await?;
     let client = super::runtime_sdk::lap_from_credential(&resolved)?;
     if let Err(error) = register_runtime_session(&client, pool, &row, &resolved).await {

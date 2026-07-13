@@ -8,12 +8,13 @@ use axum::http::{header::AUTHORIZATION, HeaderMap};
 
 use crate::{errors::GatewayError, proxy::state::AppState};
 
+/// TTL cache of key-validation results: value None caches a rejection.
+type KeyValidationCache = Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>;
+
 // Cache litellm key validation results for 60 s to avoid a round-trip on every request.
-static LITELLM_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>> =
-    Mutex::new(None);
+static LITELLM_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 // Same TTL cache for DB-backed gateway keys, keyed by key hash.
-static GATEWAY_KEY_CACHE: Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>> =
-    Mutex::new(None);
+static GATEWAY_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Identity derived from the presented key. `user_id` is the ownership
@@ -60,6 +61,24 @@ pub async fn authenticate(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<AuthContext, GatewayError> {
+    authenticate_key(presented_key(headers), state).await
+}
+
+/// Like `authenticate`, but falls back to an explicit key (e.g. an SSE
+/// `?key=` query parameter, since EventSource can't set headers) when the
+/// request carries no auth header.
+pub async fn authenticate_with_fallback_key(
+    headers: &HeaderMap,
+    fallback_key: Option<&str>,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
+    authenticate_key(presented_key(headers).or(fallback_key), state).await
+}
+
+async fn authenticate_key(
+    presented: Option<&str>,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
     let master_key = state.config.general_settings.master_key.as_deref();
 
     // No auth configured — open mode, everyone is the admin.
@@ -67,7 +86,7 @@ pub async fn authenticate(
         return Ok(AuthContext::admin());
     };
 
-    let Some(key) = presented_key(headers) else {
+    let Some(key) = presented else {
         return Err(GatewayError::Unauthorized);
     };
 
@@ -81,17 +100,35 @@ pub async fn authenticate(
         let hash = crate::db::managed_agents::api_keys::repository::hash_key(key);
         if let Some(cached) = cache_get(&GATEWAY_KEY_CACHE, &hash) {
             if let Some(ctx) = cached {
-                return Ok(ctx);
+                if crate::db::managed_agents::users::repository::find(pool, &ctx.user_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|user| user.is_active())
+                {
+                    return Ok(ctx);
+                }
+                return Err(GatewayError::Unauthorized);
             }
         } else {
-            let found = crate::db::managed_agents::api_keys::repository::find_by_key(pool, key)
-                .await
-                .ok()
-                .flatten()
-                .map(|row| AuthContext {
-                    is_admin: row.is_admin(),
-                    user_id: row.user_id,
-                });
+            let found =
+                match crate::db::managed_agents::api_keys::repository::find_by_key(pool, key)
+                    .await
+                    .ok()
+                    .flatten()
+                {
+                    Some(row) => {
+                        crate::db::managed_agents::users::repository::ensure(pool, &row.user_id)
+                            .await
+                            .ok()
+                            .filter(|user| user.is_active())
+                            .map(|_| AuthContext {
+                                is_admin: row.is_admin(),
+                                user_id: row.user_id,
+                            })
+                    }
+                    None => None,
+                };
             cache_put(&GATEWAY_KEY_CACHE, hash, found.clone());
             if let Some(ctx) = found {
                 return Ok(ctx);
@@ -110,6 +147,13 @@ pub async fn authenticate(
     // Slow path: validate against litellm if configured. Never admin.
     if let Some(base_url) = state.config.general_settings.litellm_base_url.as_deref() {
         if let Some(ctx) = validate_with_litellm(key, base_url, &state.http).await {
+            if let Some(pool) = &state.db {
+                let user = crate::db::managed_agents::users::repository::ensure(pool, &ctx.user_id)
+                    .await?;
+                if !user.is_active() {
+                    return Err(GatewayError::Unauthorized);
+                }
+            }
             return Ok(ctx);
         }
     }
@@ -122,10 +166,7 @@ fn short_hash(key: &str) -> String {
     hash[..16].to_owned()
 }
 
-fn cache_get(
-    cache: &Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>,
-    key: &str,
-) -> Option<Option<AuthContext>> {
+fn cache_get(cache: &KeyValidationCache, key: &str) -> Option<Option<AuthContext>> {
     let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     match map.get(key) {
@@ -138,15 +179,21 @@ fn cache_get(
     }
 }
 
-fn cache_put(
-    cache: &Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>,
-    key: String,
-    ctx: Option<AuthContext>,
-) {
+fn cache_put(cache: &KeyValidationCache, key: String, ctx: Option<AuthContext>) {
     let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
     guard
         .get_or_insert_with(HashMap::new)
         .insert(key, (Instant::now(), ctx));
+}
+
+/// Evicts a DB-backed gateway key from the identity cache immediately, so a
+/// revoked/deleted key stops authenticating right away instead of staying
+/// valid for up to CACHE_TTL more seconds.
+pub fn evict_gateway_key_cache(key_hash: &str) {
+    let mut guard = GATEWAY_KEY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(map) = guard.as_mut() {
+        map.remove(key_hash);
+    }
 }
 
 /// Call litellm's /key/info to validate a foreign key and derive an identity

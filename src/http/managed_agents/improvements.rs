@@ -46,9 +46,12 @@ pub async fn create(
     let agent = registry::repository::get(pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
-    super::assert_agent_access(&auth, &agent)?;
+    super::assert_agent_edit(&auth, &agent, pool).await?;
     let item = propose(&state, pool, &agent).await?;
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(item).unwrap_or_default())))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(item).unwrap_or_default()),
+    ))
 }
 
 /// Drafts a single-variable improvement from the latest failed eval run and

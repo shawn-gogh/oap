@@ -12,7 +12,10 @@ use serde_json::json;
 use crate::{
     db::managed_agents::api_keys::repository,
     errors::GatewayError,
-    proxy::{auth::master_key::authenticate, state::AppState},
+    proxy::{
+        auth::master_key::{authenticate, evict_gateway_key_cache},
+        state::AppState,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +32,7 @@ async fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<(), Gate
     if auth.is_admin {
         Ok(())
     } else {
-        Err(GatewayError::Unauthorized)
+        Err(GatewayError::Forbidden)
     }
 }
 
@@ -76,10 +79,12 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, GatewayError> {
     require_admin(&headers, &state).await?;
     if let Some(pool) = &state.db {
-        return Ok(if repository::delete(pool, &id).await? {
-            StatusCode::NO_CONTENT
-        } else {
-            StatusCode::NOT_FOUND
+        return Ok(match repository::delete(pool, &id).await? {
+            Some(key_hash) => {
+                evict_gateway_key_cache(&key_hash);
+                StatusCode::NO_CONTENT
+            }
+            None => StatusCode::NOT_FOUND,
         });
     }
     if state.api_keys.delete(&id) {

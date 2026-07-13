@@ -115,7 +115,7 @@ export default function IntegrationsPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <Puzzle className="size-4" />
-            <span className="text-sm font-semibold">Integrations</span>
+            <span className="text-sm font-semibold">集成</span>
           </div>
           <ThemeToggle />
         </header>
@@ -123,7 +123,7 @@ export default function IntegrationsPage() {
         <main id="main-content" className="flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-4xl px-6 py-6">
             <div className="mb-6">
-              <h1 className="text-xl font-semibold tracking-tight">Connect your tools</h1>
+              <h1 className="text-xl font-semibold tracking-tight">连接你的工具</h1>
               <p className="text-sm text-muted-foreground">
                 Each integration is a managed MCP server. Connect with OAuth or a key
                 to make its tools available to your agents.
@@ -135,7 +135,7 @@ export default function IntegrationsPage() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search..."
+                placeholder="搜索..."
                 className="h-9 pl-8"
               />
             </div>

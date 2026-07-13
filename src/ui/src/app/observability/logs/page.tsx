@@ -242,7 +242,7 @@ export default function ObservabilityLogsPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <BarChart3 className="size-4 text-muted-foreground" />
-              <h1 className="truncate text-xl font-semibold tracking-tight">Request Logs</h1>
+              <h1 className="truncate text-xl font-semibold tracking-tight">请求日志</h1>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -263,8 +263,8 @@ export default function ObservabilityLogsPage() {
           <section className="flex h-full min-h-0 min-w-0 flex-col bg-card">
             <div className="border-b border-border px-4 py-3">
               <div className="flex flex-wrap items-center justify-end gap-4 text-sm text-muted-foreground">
-                <span>Showing {pageStart} - {pageEnd} of {logs.length} results</span>
-                <span>Page {currentPage} of {totalPages}</span>
+                <span>第 {pageStart} - {pageEnd} 条，共 {logs.length} 条</span>
+                <span>第 {currentPage} / {totalPages} 页</span>
                 <Button
                   variant="outline"
                   className="h-8 border-border bg-card text-sm"
@@ -299,9 +299,9 @@ export default function ObservabilityLogsPage() {
                   {error}
                 </div>
               )}
-              {loading && <div className="p-4 text-sm text-muted-foreground">Loading logs…</div>}
+              {loading && <div className="p-4 text-sm text-muted-foreground">正在加载日志...</div>}
               {!loading && logs.length === 0 && !error && (
-                <div className="p-4 text-sm text-muted-foreground">No spend logs found.</div>
+                <div className="p-4 text-sm text-muted-foreground">暂无调用日志。</div>
               )}
               <div className="min-w-[1660px]">
                 <TableHeader />
@@ -346,19 +346,19 @@ export default function ObservabilityLogsPage() {
 
 function TableHeader() {
   return (
-    <div className={`grid ${TABLE_COLUMNS} border-b border-border bg-card px-4 py-2.5 text-[12px] font-semibold text-foreground`}>
-      <div>Time</div>
-      <div>Type</div>
-      <div>Status</div>
-      <div>Session ID</div>
-      <div>Request ID</div>
-      <div>Cost</div>
-      <div>Duration (s)</div>
-      <div>TTFT (s)</div>
-      <div>Team Name</div>
-      <div>Key Hash</div>
-      <div>Key Name</div>
-      <div>Model</div>
+    <div className={`grid ${TABLE_COLUMNS} border-b border-border bg-card px-4 py-2.5 text-xs font-semibold text-foreground`}>
+      <div>时间</div>
+      <div>类型</div>
+      <div>状态</div>
+      <div>会话 ID</div>
+      <div>请求 ID</div>
+      <div>费用</div>
+      <div>耗时（秒）</div>
+      <div>首字延迟（秒）</div>
+      <div>团队</div>
+      <div>密钥哈希</div>
+      <div>密钥名称</div>
+      <div>模型</div>
       <div>Tokens</div>
     </div>
   );
@@ -559,7 +559,7 @@ function LogDetail({
 
       <InfoCard title="Cost Breakdown">
         <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Total</span>
+          <span className="text-muted-foreground">合计</span>
           <span className="font-mono text-base font-semibold text-foreground">{formatCost(log.spend)}</span>
         </div>
       </InfoCard>
@@ -604,7 +604,7 @@ function PayloadBlock({
     <div className="overflow-hidden rounded-md border border-border bg-card">
       <div className="flex items-center gap-3 border-b border-border bg-muted px-3 py-2 text-sm">
         <span className="font-semibold text-foreground">{title}</span>
-        <span className="text-muted-foreground">Tokens: {tokens.toLocaleString()}</span>
+        <span className="text-muted-foreground">Tokens：{tokens.toLocaleString()}</span>
         <Button
           variant="ghost"
           size="icon"
@@ -623,7 +623,7 @@ function PayloadBlock({
 function DetailStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 border-r border-border px-3 py-2 last:border-r-0">
-      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
       <div className="mt-1 truncate font-mono text-[13px] font-semibold text-foreground">
         {value}
       </div>
@@ -645,7 +645,7 @@ function InfoCard({
       tone === "error" ? "border-destructive/40" : "border-border"
     }`}>
       <div className="flex h-12 items-center gap-2 border-b border-border px-5">
-        <h3 className="text-[13.5px] font-semibold tracking-tight text-foreground">{title}</h3>
+        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">{title}</h3>
         {tone === "error" && (
           <span className="ml-auto rounded-md bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
             Captured on error

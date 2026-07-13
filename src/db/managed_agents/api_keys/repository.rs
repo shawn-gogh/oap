@@ -33,6 +33,11 @@ pub async fn create(
         Some("admin") => "admin",
         _ => "user",
     };
+    let user_id = user_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&id);
+    crate::db::managed_agents::users::repository::ensure(pool, user_id).await?;
     let row = sqlx::query_as::<_, GatewayApiKeyRow>(
         r#"INSERT INTO "LiteLLM_GatewayApiKeysTable"
              (id, key_hash, label, user_id, role, created_at)
@@ -42,7 +47,7 @@ pub async fn create(
     .bind(&id)
     .bind(hash_key(&key))
     .bind(label.map(str::trim).filter(|l| !l.is_empty()))
-    .bind(user_id.map(str::trim).filter(|u| !u.is_empty()).unwrap_or(&id))
+    .bind(user_id)
     .bind(role)
     .bind(now_ms())
     .fetch_one(pool)
@@ -60,13 +65,17 @@ pub async fn list(pool: &PgPool) -> Result<Vec<GatewayApiKeyRow>, GatewayError> 
     .map_err(GatewayError::Database)
 }
 
-pub async fn delete(pool: &PgPool, id: &str) -> Result<bool, GatewayError> {
-    let result = sqlx::query(r#"DELETE FROM "LiteLLM_GatewayApiKeysTable" WHERE id = $1"#)
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(GatewayError::Database)?;
-    Ok(result.rows_affected() > 0)
+/// Returns the deleted row's key_hash so the caller can evict it from the
+/// in-process auth cache immediately (otherwise a revoked key can keep
+/// authenticating for up to CACHE_TTL more seconds).
+pub async fn delete(pool: &PgPool, id: &str) -> Result<Option<String>, GatewayError> {
+    sqlx::query_scalar::<_, String>(
+        r#"DELETE FROM "LiteLLM_GatewayApiKeysTable" WHERE id = $1 RETURNING key_hash"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 /// Looks a presented key up by hash and touches `last_used_at`.

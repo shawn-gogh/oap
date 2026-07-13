@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+import { useConfirm } from "@/components/confirm-dialog";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -9,6 +11,7 @@ import {
   Clock,
   Download,
   FileText,
+  KeyRound,
   Pencil,
   Pin,
   PinOff,
@@ -18,6 +21,7 @@ import {
   Search,
   Trash2,
   Upload,
+  Users,
   X,
 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
@@ -31,7 +35,19 @@ import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
   DEFAULT_VAULT_USER,
   agentFileDownloadUrl,
+  createAgentGrant,
+  createAgentGroupGrant,
   createImprovementProposal,
+  deleteAgentGrant,
+  deleteAgentGroupGrant,
+  listAgentGrants,
+  listAgentGroupGrants,
+  listGrantableGroups,
+  listGrantableUsers,
+  type AgentGrant,
+  type AgentGroupGrant,
+  type ManagedGroup,
+  type ManagedUser,
   listEvalRuns,
   startEvalRun,
   type EvalRun,
@@ -138,6 +154,7 @@ type MemoryFilter = "all" | "always" | "standard";
 
 function AgentDetail() {
   const router = useRouter();
+  const confirmAction = useConfirm();
   const searchParams = useSearchParams();
   const id = decodeURIComponent(searchParams.get("id") ?? "");
 
@@ -151,6 +168,18 @@ function AgentDetail() {
   const [evalError, setEvalError] = useState<string | null>(null);
   const [proposing, setProposing] = useState(false);
   const [proposalNotice, setProposalNotice] = useState<string | null>(null);
+  const [grants, setGrants] = useState<AgentGrant[]>([]);
+  const [groupGrants, setGroupGrants] = useState<AgentGroupGrant[]>([]);
+  const [grantableUsers, setGrantableUsers] = useState<ManagedUser[]>([]);
+  const [grantableGroups, setGrantableGroups] = useState<ManagedGroup[]>([]);
+  const [grantUser, setGrantUser] = useState("");
+  const [grantUserQuery, setGrantUserQuery] = useState("");
+  const [grantGroup, setGrantGroup] = useState("");
+  const [grantGroupQuery, setGrantGroupQuery] = useState("");
+  const [grantPermission, setGrantPermission] = useState("use");
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [grantError, setGrantError] = useState<string | null>(null);
+  const [grantsVisible, setGrantsVisible] = useState(true);
   const [filesLoading, setFilesLoading] = useState(false);
   const [fileQuery, setFileQuery] = useState("");
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
@@ -212,6 +241,11 @@ function AgentDetail() {
         setFiles(fileRows);
         setStoredKeyEntries(keyRows);
         listEvalRuns(id).then(setEvalRuns).catch(() => {});
+        listAgentGrants(id)
+          .then(setGrants)
+          // 非 owner 看不到授权列表（404）——直接隐藏卡片。
+          .catch(() => setGrantsVisible(false));
+        listAgentGroupGrants(id).then(setGroupGrants).catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -219,6 +253,30 @@ function AgentDetail() {
       }
     })();
   }, [id]);
+
+  useEffect(() => {
+    const query = grantUserQuery.trim();
+    if (query.length < 2) {
+      setGrantableUsers([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      listGrantableUsers(id, query).then(setGrantableUsers).catch(() => setGrantableUsers([]));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [grantUserQuery, id]);
+
+  useEffect(() => {
+    const query = grantGroupQuery.trim();
+    if (query.length < 2) {
+      setGrantableGroups([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      listGrantableGroups(id, query).then(setGrantableGroups).catch(() => setGrantableGroups([]));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [grantGroupQuery, id]);
 
   const visibleFiles = useMemo(() => {
     const q = fileQuery.trim().toLowerCase();
@@ -248,12 +306,17 @@ function AgentDetail() {
 
   const handleDelete = async () => {
     if (!agent) return;
-    if (!confirm(`Delete agent "${agent.name}"?`)) return;
+    const ok = await confirmAction({
+      title: `删除智能体「${agent.name}」？`,
+      description: "其配置、评估历史和工作区文件将一并删除，且无法恢复。",
+    });
+    if (!ok) return;
     try {
       await deleteAgent(id);
+      toast.success(`已删除智能体「${agent.name}」`);
       router.push("/agents/");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -300,7 +363,11 @@ function AgentDetail() {
   };
 
   const handleDeleteFile = async (file: WorkspaceFile) => {
-    if (!confirm(`Delete "${file.path}" from the agent workspace?`)) return;
+    const ok = await confirmAction({
+      title: `删除文件 "${file.path}"？`,
+      description: "该文件将从智能体工作区中永久删除。",
+    });
+    if (!ok) return;
     setDownloadingPath(file.path);
     try {
       await deleteAgentFile(id, file.path);
@@ -355,6 +422,66 @@ function AgentDetail() {
       setAgent(updated);
     } catch (e) {
       setEvalError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const addGrant = async () => {
+    const user = grantUser.trim();
+    if (!user || grantBusy) return;
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await createAgentGrant(id, user, grantPermission);
+      setGrants(await listAgentGrants(id));
+      setGrantUser("");
+      setGrantUserQuery("");
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const removeGrant = async (granteeUserId: string) => {
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await deleteAgentGrant(id, granteeUserId);
+      setGrants(await listAgentGrants(id));
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const addGroupGrant = async () => {
+    const group = grantGroup.trim();
+    if (!group || grantBusy) return;
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await createAgentGroupGrant(id, group, grantPermission);
+      setGroupGrants(await listAgentGroupGrants(id));
+      setGrantGroup("");
+      setGrantGroupQuery("");
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
+    }
+  };
+
+  const removeGroupGrant = async (groupId: string) => {
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await deleteAgentGroupGrant(id, groupId);
+      setGroupGrants(await listAgentGroupGrants(id));
+    } catch (e) {
+      setGrantError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGrantBusy(false);
     }
   };
 
@@ -470,7 +597,10 @@ function AgentDetail() {
   const bulkDelete = async () => {
     const keys = [...selectedKeys];
     if (keys.length === 0) return;
-    if (!confirm(`Delete ${keys.length} selected memor${keys.length === 1 ? "y" : "ies"}?`)) return;
+    const ok = await confirmAction({
+      title: `删除选中的 ${keys.length} 条记忆？`,
+    });
+    if (!ok) return;
     setMemories((prev) => prev.filter((memory) => !selectedKeys.has(memory.key)));
     setSelectedKeys(new Set());
     try {
@@ -518,7 +648,7 @@ function AgentDetail() {
                   <Pencil className="size-3.5" />
                   Edit
                 </Button>
-                <Button size="sm" variant="outline" onClick={handleDelete} aria-label="Delete">
+                <Button size="sm" variant="outline" onClick={handleDelete} aria-label="删除">
                   <Trash2 className="size-3.5" />
                 </Button>
               </>
@@ -534,7 +664,7 @@ function AgentDetail() {
                 <p className="text-sm text-destructive">{error}</p>
               </Card>
             )}
-            {loading && <div className="text-sm text-muted-foreground">Loading...</div>}
+            {loading && <div className="text-sm text-muted-foreground">加载中...</div>}
 
             {agent && (
               <>
@@ -560,7 +690,7 @@ function AgentDetail() {
 
                 <section>
                   <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Configuration
+                    配置
                   </h2>
                   <Card className="p-4">
                     <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[140px_1fr]">
@@ -569,22 +699,22 @@ function AgentDetail() {
 
                       {agent.model && (
                         <>
-                          <dt className="font-medium text-muted-foreground">Model</dt>
+                          <dt className="font-medium text-muted-foreground">模型</dt>
                           <dd className="font-mono text-xs">{String(agent.model)}</dd>
                         </>
                       )}
 
                       {agent.owner_id && (
                         <>
-                          <dt className="font-medium text-muted-foreground">Owner</dt>
+                          <dt className="font-medium text-muted-foreground">属主</dt>
                           <dd className="font-mono text-xs">{String(agent.owner_id)}</dd>
                         </>
                       )}
 
-                      <dt className="font-medium text-muted-foreground">Default runtime</dt>
+                      <dt className="font-medium text-muted-foreground">默认运行时</dt>
                       <dd className="font-mono text-xs">{runtimeFromAgent(agent)}</dd>
 
-                      <dt className="font-medium text-muted-foreground">Run schedule</dt>
+                      <dt className="font-medium text-muted-foreground">运行计划</dt>
                       <dd className="flex flex-col gap-1">
                         <span className="font-mono text-xs">
                           {scheduleLabel(agent.cron, agent.timezone)}
@@ -627,6 +757,159 @@ function AgentDetail() {
                   onVaultKeysChange={updateVaultKeys}
                   onStoredKeyEntriesChange={(updater) => setStoredKeyEntries(updater)}
                 />
+
+                {grantsVisible && (
+                <section>
+                  <div className="mb-2">
+                    <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <KeyRound className="size-3.5" />
+                      使用授权
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      把该智能体授权给其他用户：use 可见并可开会话；edit 还可修改配置与工作区。
+                    </p>
+                  </div>
+                  {grantError && (
+                    <p className="mb-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{grantError}</p>
+                  )}
+                  <Card className="overflow-hidden">
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+                      <Input
+                        value={grantUserQuery}
+                        onChange={(e) => {
+                          setGrantUserQuery(e.target.value);
+                          setGrantUser("");
+                        }}
+                        placeholder="搜索姓名、邮箱或用户 ID"
+                        className="h-8 max-w-[200px] text-xs"
+                      />
+                      <select
+                        value={grantUser}
+                        onChange={(e) => setGrantUser(e.target.value)}
+                        className="h-8 max-w-[240px] rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="">从搜索结果选择用户</option>
+                        {grantableUsers.map((user) => (
+                          <option key={user.id} value={user.id} disabled={user.status !== "active"}>
+                            {user.display_name} ({user.id}){user.status !== "active" ? " · 已禁用" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={grantPermission}
+                        onChange={(e) => setGrantPermission(e.target.value)}
+                        className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="use">use（使用）</option>
+                        <option value="edit">edit（可修改）</option>
+                      </select>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => void addGrant()}
+                        disabled={grantBusy || !grantUser.trim()}
+                      >
+                        <Plus className="size-3.5" />
+                        授权
+                      </Button>
+                    </div>
+                    {grants.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-muted-foreground">
+                        尚未授权给任何用户，仅 owner 与 admin 可见。
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {grants.map((grant) => (
+                          <div key={grant.id} className="flex items-center justify-between px-3 py-2">
+                            <div className="min-w-0">
+                              <span className="font-mono text-xs">{grant.grantee_user_id}</span>
+                              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                                {grant.permission}
+                              </span>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive"
+                              onClick={() => void removeGrant(grant.grantee_user_id)}
+                              disabled={grantBusy}
+                              aria-label={`撤销 ${grant.grantee_user_id}`}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
+                )}
+
+                {grantsVisible && (
+                <section>
+                  <div className="mb-2">
+                    <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <Users className="size-3.5" />
+                      用户组授权
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      对组内全部启用用户授予 use 或 edit；停用组或移出成员后权限立即失效。
+                    </p>
+                  </div>
+                  <Card className="overflow-hidden">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
+                      <Input
+                        value={grantGroupQuery}
+                        onChange={(e) => {
+                          setGrantGroupQuery(e.target.value);
+                          setGrantGroup("");
+                        }}
+                        placeholder="搜索用户组"
+                        className="h-8 max-w-[180px] text-xs"
+                      />
+                      <select
+                        value={grantGroup}
+                        onChange={(e) => setGrantGroup(e.target.value)}
+                        className="h-8 max-w-[220px] rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="">从搜索结果选择用户组</option>
+                        {grantableGroups.map((group) => (
+                          <option key={group.id} value={group.id} disabled={group.status !== "active"}>
+                            {group.name}{group.status !== "active" ? " · 已禁用" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={grantPermission}
+                        onChange={(e) => setGrantPermission(e.target.value)}
+                        className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                      >
+                        <option value="use">use（使用）</option>
+                        <option value="edit">edit（可修改）</option>
+                      </select>
+                      <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void addGroupGrant()} disabled={grantBusy || !grantGroup.trim()}>
+                        <Plus className="size-3.5" />
+                        授权用户组
+                      </Button>
+                    </div>
+                    {groupGrants.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-muted-foreground">尚未授权给任何用户组。</div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {groupGrants.map((grant) => (
+                          <div key={grant.id} className="flex items-center justify-between px-3 py-2">
+                            <div className="min-w-0"><span className="font-mono text-xs">{grant.group_id}</span><span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{grant.permission}</span></div>
+                            <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => void removeGroupGrant(grant.group_id)} disabled={grantBusy} aria-label={`撤销用户组 ${grant.group_id}`}><Trash2 className="size-3.5" /></Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
+                )}
 
                 <section>
                   <div className="mb-2 flex items-end justify-between">
@@ -739,7 +1022,7 @@ function AgentDetail() {
                     <div>
                       <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                         <FileText className="size-3.5" />
-                        Workspace Files
+                        工作区文件
                       </h2>
                       <p className="mt-1 text-xs text-muted-foreground">
                         Knowledge files copied into every new session workspace of this agent.
@@ -751,7 +1034,7 @@ function AgentDetail() {
                         <Input
                           value={fileQuery}
                           onChange={(e) => setFileQuery(e.target.value)}
-                          placeholder="Search files"
+                          placeholder="搜索文件"
                           className="h-8 pl-8 text-xs"
                         />
                       </div>
@@ -788,22 +1071,22 @@ function AgentDetail() {
 
                   <Card className="overflow-hidden">
                     <div className="grid grid-cols-3 border-b border-border bg-muted/20 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      <span>Path</span>
-                      <span className="text-right">Size</span>
-                      <span className="text-right">Actions</span>
+                      <span>路径</span>
+                      <span className="text-right">大小</span>
+                      <span className="text-right">操作</span>
                     </div>
                     {filesLoading && files.length === 0 ? (
-                      <div className="p-6 text-sm text-muted-foreground">Loading files...</div>
+                      <div className="p-6 text-sm text-muted-foreground">正在加载文件...</div>
                     ) : visibleFiles.length === 0 ? (
                       <div className="p-8 text-center">
                         <FileText className="mx-auto mb-3 size-7 text-muted-foreground/60" />
                         <p className="text-sm font-medium">
-                          {files.length === 0 ? "No workspace files" : "No matching files"}
+                          {files.length === 0 ? "暂无工作区文件" : "没有匹配的文件"}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {files.length === 0
-                            ? "Upload files to make them available in every new session."
-                            : "Adjust the search to broaden the file list."}
+                            ? "上传文件后，每个新会话都能使用它们。"
+                            : "调整搜索条件以显示更多文件。"}
                         </p>
                       </div>
                     ) : (
@@ -862,7 +1145,7 @@ function AgentDetail() {
                     <div>
                       <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                         <Brain className="size-3.5" />
-                        Memory
+                        记忆
                       </h2>
                       <p className="mt-1 text-xs text-muted-foreground">
                         Review what this agent has learned, pin critical notes, and curate stale context.
@@ -871,15 +1154,15 @@ function AgentDetail() {
                     <div className="grid grid-cols-3 overflow-hidden rounded-md border border-border bg-muted/20 text-center sm:w-[300px]">
                       <div className="px-3 py-2">
                         <div className="text-base font-semibold">{memories.length}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Total</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">总数</div>
                       </div>
                       <div className="border-x border-border px-3 py-2">
                         <div className="text-base font-semibold">{alwaysOnCount}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Always-on</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">常驻</div>
                       </div>
                       <div className="px-3 py-2">
                         <div className="text-base font-semibold">{selectedKeys.size}</div>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Selected</div>
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">已选</div>
                       </div>
                     </div>
                   </div>
@@ -892,7 +1175,7 @@ function AgentDetail() {
                           <Input
                             value={memoryQuery}
                             onChange={(e) => setMemoryQuery(e.target.value)}
-                            placeholder="Search keys or memory text"
+                            placeholder="搜索键名或记忆内容"
                             className="h-8 pl-8 text-xs"
                           />
                         </div>
@@ -906,7 +1189,7 @@ function AgentDetail() {
                               className="h-8 capitalize"
                               onClick={() => setMemoryFilter(filter)}
                             >
-                              {filter === "always" ? "Always-on" : filter}
+                              {filter === "always" ? "常驻" : filter}
                             </Button>
                           ))}
                           <Button
@@ -956,7 +1239,7 @@ function AgentDetail() {
                         <Textarea
                           value={newMemory.value}
                           onChange={(e) => setNewMemory((m) => ({ ...m, value: e.target.value }))}
-                          placeholder="Add a durable note for this agent"
+                          placeholder="为该智能体添加一条持久备注"
                           rows={1}
                           className="min-h-9 resize-none text-xs"
                         />
@@ -985,17 +1268,17 @@ function AgentDetail() {
                     </div>
 
                     {memoryLoading && memories.length === 0 ? (
-                      <div className="p-6 text-sm text-muted-foreground">Loading memories...</div>
+                      <div className="p-6 text-sm text-muted-foreground">正在加载记忆...</div>
                     ) : visibleMemories.length === 0 ? (
                       <div className="p-8 text-center">
                         <Brain className="mx-auto mb-3 size-7 text-muted-foreground/60" />
                         <p className="text-sm font-medium">
-                          {memories.length === 0 ? "No memories yet" : "No matching memories"}
+                          {memories.length === 0 ? "还没有记忆" : "没有匹配的记忆"}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {memories.length === 0
-                            ? "The agent can add memories as it works, or you can seed one above."
-                            : "Adjust the search or filter to broaden the list."}
+                            ? "智能体会在工作中自行积累记忆，也可以在上方手动添加。"
+                            : "调整搜索或筛选条件以显示更多。"}
                         </p>
                       </div>
                     ) : (
@@ -1032,7 +1315,7 @@ function AgentDetail() {
                                     <div className="flex flex-wrap items-center gap-2">
                                       <span className="font-mono text-xs font-medium">{memory.key}</span>
                                       {isAlwaysOn(memory) && (
-                                        <Badge variant="secondary" className="gap-1 text-[10px]">
+                                        <Badge variant="secondary" className="gap-1 text-[11px]">
                                           <Pin className="size-3" />
                                           Always-on
                                         </Badge>
@@ -1056,7 +1339,7 @@ function AgentDetail() {
                                       variant={editDraft.alwaysOn ? "default" : "outline"}
                                       className="h-8"
                                       onClick={() => setEditDraft((d) => ({ ...d, alwaysOn: !d.alwaysOn }))}
-                                      aria-label="Toggle always-on"
+                                      aria-label="切换常驻"
                                     >
                                       <Pin className="size-3.5" />
                                     </Button>
@@ -1075,7 +1358,7 @@ function AgentDetail() {
                                       variant="outline"
                                       className="h-8"
                                       onClick={() => setMemoryAlwaysOn(memory, !isAlwaysOn(memory))}
-                                      aria-label={isAlwaysOn(memory) ? "Disable always-on" : "Make always-on"}
+                                      aria-label={isAlwaysOn(memory) ? "取消常驻" : "设为常驻"}
                                     >
                                       {isAlwaysOn(memory) ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
                                     </Button>
@@ -1105,7 +1388,7 @@ function AgentDetail() {
                 <section>
                   <div className="mb-2 flex items-center justify-between">
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Sessions ({sessions.length})
+                      会话（{sessions.length}）
                     </h2>
                     <Button size="sm" variant="outline" onClick={openSessionStart}>
                       <Play className="size-3" />
@@ -1113,7 +1396,7 @@ function AgentDetail() {
                     </Button>
                   </div>
                   {sessions.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No sessions yet.</p>
+                    <p className="text-sm text-muted-foreground">还没有会话。</p>
                   ) : (
                     <div className="flex flex-col gap-2">
                       {sessions.map((s) => (
@@ -1124,7 +1407,7 @@ function AgentDetail() {
                         >
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium">{s.title ?? "Untitled session"}</p>
-                            <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{s.id}</p>
+                            <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{s.id}</p>
                           </div>
                           {s.time?.created && (
                             <span className="shrink-0 text-xs text-muted-foreground">

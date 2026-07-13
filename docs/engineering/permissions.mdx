@@ -1,0 +1,55 @@
+---
+title: "权限模型"
+description: "key 即用户、资源隔离与智能体使用授权。"
+---
+
+# 权限模型
+
+## 身份：key 即用户
+
+- 网关 API key 持久化于 `LiteLLM_GatewayApiKeysTable`（只存 sha256），每个 key 绑定
+  `user_id` 与 `role`（`user` / `admin`）；master key 恒为 admin。key 管理端点仅 admin 可用。
+- 外部 LiteLLM key 经 `/key/info` 委托校验，身份取其 `user_id`，永不 admin。
+- 每个请求经 `authenticate()` 解析为 `AuthContext { user_id, is_admin }`（60s 缓存）。
+
+## 资源隔离（owner）
+
+- agents / sessions 创建时记录 `owner_id`（从鉴权 key 派生；非 admin 无法替他人创建）。
+- **sessions**：get/list/messages/prompt/abort/interrupt/workspace 全部 owner-or-admin；
+  越权一律 404（不泄露存在性）。
+- **agents**：get/list/run/runs/logs 需要"可用"级访问；update/delete/pause/resume/
+  工作区写入/评估/改进提案需要"可改"级。list 对非 admin 只返回：自己的 ∪ 被授权的 ∪
+  历史无主（legacy NULL-owner，保持可用、仅 admin 可改）。
+
+## 智能体使用授权（grants）
+
+`LiteLLM_AgentGrantsTable`（0029）：owner（或 admin）可把 agent 授权给指定用户，
+每 (agent, 用户) 一条，重复授权即改级：
+
+| 级别 | 能做什么 |
+|---|---|
+| `use` | 看到该 agent、创建会话/运行、读工作区文件、查看运行日志 |
+| `edit` | 以上 + 修改配置、暂停/恢复、上传/删除工作区文件、跑评估、发改进提案 |
+
+不含：删除 agent、管理授权（仅 owner/admin）。授权 API：
+
+```
+GET    /api/agents/{id}/grants
+POST   /api/agents/{id}/grants            {"user_id": "...", "permission": "use"|"edit"}
+DELETE /api/agents/{id}/grants/{user_id}
+```
+
+UI：agent 详情页"使用授权"卡片（仅 owner/admin 可见），添加/改级/撤销。
+
+## 校验落点（代码索引）
+
+- `src/proxy/auth/master_key.rs` — `authenticate()` / `AuthContext`
+- `src/http/managed_agents/mod.rs` — `assert_agent_access`（owner/admin）、
+  `assert_agent_edit`（+edit 授权）、`assert_agent_use`（+任意授权）
+- `src/http/sessions/storage.rs` — `assert_session_access` / `owned_session`
+- 会话创建引用 agent 时在 `src/http/sessions.rs::create` 做 use 级校验
+
+## 后续扩展
+
+分组/团队：可借 LiteLLM 的 team 体系（`/key/info` 带 `team_id`）扩展 `AuthContext`，
+grants 表的 grantee 语义可扩 `grantee_type=team`，校验落点不变。

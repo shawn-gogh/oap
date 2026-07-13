@@ -148,7 +148,7 @@ export function ProvidersPanel() {
 
       {connectedProviders.length > 0 && (
         <section className="grid gap-2">
-          <h3 className="text-[13.5px] font-semibold tracking-tight">Connected LLM providers</h3>
+          <h3 className="text-[13px] font-semibold tracking-tight">Connected LLM providers</h3>
           <Card className="grid min-w-0 gap-3 p-4">
             {connectedProviders.map((provider) => (
               <div
@@ -160,10 +160,10 @@ export function ProvidersPanel() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{provider.name}</span>
-                      <Badge variant="secondary" className="text-[10px]">
+                      <Badge variant="secondary" className="text-[11px]">
                         API key
                       </Badge>
-                      <Badge variant="outline" className="max-w-full truncate text-[10px]">
+                      <Badge variant="outline" className="max-w-full truncate text-[11px]">
                         {provider.api_base}
                       </Badge>
                     </div>
@@ -190,8 +190,8 @@ export function ProvidersPanel() {
 
       <section className="grid gap-2">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-[13.5px] font-semibold tracking-tight">Configured models</h3>
-          <Badge variant="outline" className="text-[10px]">
+          <h3 className="text-[13px] font-semibold tracking-tight">Configured models</h3>
+          <Badge variant="outline" className="text-[11px]">
             {configuredModels.length} models
           </Badge>
         </div>
@@ -216,7 +216,7 @@ export function ProvidersPanel() {
                       {providerNameById.get(model.provider_id) ?? model.provider_id}
                     </div>
                     <div>
-                      <Badge variant="secondary" className="text-[10px]">
+                      <Badge variant="secondary" className="text-[11px]">
                         {sourceLabel(model.source)}
                       </Badge>
                     </div>
@@ -233,8 +233,8 @@ export function ProvidersPanel() {
 
       <section className="grid gap-2">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-[13.5px] font-semibold tracking-tight">Available LLM providers</h3>
-          <Badge variant="outline" className="text-[10px]">
+          <h3 className="text-[13px] font-semibold tracking-tight">Available LLM providers</h3>
+          <Badge variant="outline" className="text-[11px]">
             Model routing
           </Badge>
         </div>
@@ -261,7 +261,7 @@ export function ProvidersPanel() {
                       <span className="font-medium">{provider.name}</span>
                       <Badge
                         variant={connectedProvider ? "secondary" : "outline"}
-                        className="text-[10px]"
+                        className="text-[11px]"
                       >
                         {connectedProvider ? "Connected" : "Available"}
                       </Badge>
@@ -281,7 +281,7 @@ export function ProvidersPanel() {
 
       {step !== "catalog" && selectedProvider && (
         <section className="grid gap-2">
-          <h3 className="text-[13.5px] font-semibold tracking-tight">{selectedConnectedProvider ? "Provider details" : `Connect ${selectedProvider.name}`}</h3>
+          <h3 className="text-[13px] font-semibold tracking-tight">{selectedConnectedProvider ? "Provider details" : `Connect ${selectedProvider.name}`}</h3>
           <Card className="min-w-0 p-4">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
               <div className="grid min-w-0 gap-4">

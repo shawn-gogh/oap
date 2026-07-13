@@ -61,12 +61,12 @@ export function Composer({
 
   const canSend = draft.trim().length > 0 && !sending && !disabled;
   const placeholder = sending
-    ? "Sending…"
+    ? "发送中..."
     : disabled
-      ? (disabledHint ?? "Waiting for the runtime…")
+      ? (disabledHint ?? "等待运行时就绪...")
       : busy
-        ? "Queue a follow up"
-    : "Add a follow up";
+        ? "排队追加一条消息"
+    : "输入消息...";
 
   return (
     <div className="border-t border-border bg-background/95 backdrop-blur">
@@ -97,8 +97,8 @@ export function Composer({
                     type="button"
                     onClick={onAbort}
                     className="rounded-full bg-red-600 p-1.5 text-white transition-colors hover:bg-red-700"
-                    aria-label="Stop agent"
-                    title="Stop (interrupt agent)"
+                    aria-label="停止智能体"
+                    title="停止（中断智能体）"
                   >
                     <Square className="w-3.5 h-3.5 fill-current" />
                   </button>
@@ -108,8 +108,8 @@ export function Composer({
                     onClick={() => void handleSend()}
                     disabled={!canSend}
                     className="rounded-full bg-foreground p-1.5 text-background transition-colors hover:bg-foreground/90 disabled:opacity-30 disabled:hover:bg-foreground"
-                    aria-label="Send"
-                    title="Send (Enter)"
+                    aria-label="发送"
+                    title="发送（Enter）"
                   >
                     <ArrowUp className="w-3.5 h-3.5" />
                   </button>

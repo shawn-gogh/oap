@@ -56,7 +56,25 @@ pub(crate) async fn resolve_runtime(
         GatewayError::InvalidConfig(format!("unknown api_spec: {}", harness.api_spec))
     })?;
 
-    // Load credential from credentials table
+    let credential = harness_credential(pool, state, alias).await?;
+
+    Ok(ResolvedRuntime {
+        alias: alias.to_owned(),
+        agent_runtime: entry.runtime,
+        credential,
+        adapter: entry.adapter.clone(),
+        is_custom_harness: true,
+    })
+}
+
+/// Loads and decrypts a DB-registered harness's api_base/api_key. Shared by
+/// runtime resolution and specs that don't go through the SDK adapter (e.g.
+/// generic_chat, whose "runtime" is the gateway itself).
+pub(crate) async fn harness_credential(
+    pool: &PgPool,
+    state: &AppState,
+    alias: &str,
+) -> Result<RuntimeCredential, GatewayError> {
     let cred_name = harness_credential_name(alias);
     let row = credentials::get_by_name(pool, &cred_name)
         .await?
@@ -71,14 +89,7 @@ pub(crate) async fn resolve_runtime(
     })?;
     let api_key = decrypt_field(values, "api_key", &key)?;
     let api_base = decrypt_field(values, "api_base", &key)?;
-
-    Ok(ResolvedRuntime {
-        alias: alias.to_owned(),
-        agent_runtime: entry.runtime,
-        credential: RuntimeCredential { api_key, api_base },
-        adapter: entry.adapter.clone(),
-        is_custom_harness: true,
-    })
+    Ok(RuntimeCredential { api_key, api_base })
 }
 
 pub(crate) fn harness_credential_name(alias: &str) -> String {

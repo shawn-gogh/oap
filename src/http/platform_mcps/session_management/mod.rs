@@ -68,7 +68,14 @@ pub async fn send_platform_session_message(
 ) -> Result<Value, GatewayError> {
     let session_id = required_str(&arguments, "session_id")?.to_owned();
     let text = required_str(&arguments, "text")?.to_owned();
-    let model = model_id(&arguments);
+    // Explicit model_id wins; otherwise prefer the session agent's configured
+    // model over the hardcoded default, which may not be routed at all.
+    let model = match explicit_model_id(&arguments) {
+        Some(model) => model,
+        None => crate::http::sessions::agent_model_for_session(&pool, &session_id)
+            .await
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_owned()),
+    };
     crate::http::sessions::enqueue_prompt_text(state, pool.clone(), &session_id, text, model)
         .await?;
 
@@ -83,12 +90,11 @@ pub async fn send_platform_session_message(
     }))
 }
 
-fn model_id(arguments: &Value) -> String {
+fn explicit_model_id(arguments: &Value) -> Option<String> {
     arguments
         .get("model_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("claude-sonnet-4-6")
-        .to_owned()
+        .map(str::to_owned)
 }

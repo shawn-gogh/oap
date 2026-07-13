@@ -38,19 +38,34 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
-import { getMessages, getSession, createSession, deleteSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses } from "@/lib/api";
+import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, apiErrorMessage } from "@/lib/api";
 import type { PendingApproval, RuntimeAgentEvent } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
 import type { Agent, AgentRuntimeId, HarnessMessage, RuntimeHarness } from "@/lib/types";
 import { resolveApiSpec } from "@/lib/types";
 import { defaultModelForRuntime, runtimeSupportsModelDiscovery } from "@/lib/model-options";
 import type { Frame } from "@/components/inspector-panel";
+import {
+  isRuntimeAssistantTextEvent,
+  isRuntimeThinkingEvent,
+  isRuntimeToolEvent,
+  isRuntimeTurnStartEvent,
+  makeQueuedPromptMessage,
+  mergeRuntimeEventList,
+  normalizedRuntimeEventType,
+  runtimeErrorMessage,
+  runtimeEventsToMessages,
+  runtimeSessionStatusFromMetadata,
+  runtimeStatusFromEvents,
+} from "@/lib/runtime-events";
+import type { QueuedPrompt } from "@/lib/runtime-events";
+
 import SessionsPage from "../sessions/page";
 
 const FALLBACK_MODELS = [
-  "anthropic/claude-opus-4-7",
-  "anthropic/claude-sonnet-4-5",
-  "anthropic/claude-opus-4-1",
+  "anthropic/claude-opus-4-8",
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-sonnet-5",
   "anthropic/claude-haiku-4-5",
 ];
 
@@ -86,355 +101,6 @@ function providerSessionUrl(runtime?: string, providerSessionId?: string, provid
   return null;
 }
 
-function runtimeTextValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value.map(runtimeTextValue).join("");
-  }
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  return [
-    record.text,
-    record.thinking,
-    record.content,
-    record.delta,
-    record.content_block,
-  ]
-    .map(runtimeTextValue)
-    .join("");
-}
-
-function runtimeEventText(ev: RuntimeAgentEvent): string {
-  return runtimeTextValue(ev.text ?? ev.delta ?? ev.content ?? ev.content_block);
-}
-
-function normalizedRuntimeEventType(ev: RuntimeAgentEvent): string {
-  const type = ev.type;
-  return typeof type === "string" ? type : "";
-}
-
-function runtimeEventPartKind(ev: RuntimeAgentEvent): "text" | "thinking" {
-  const part = ev.part;
-  if (part && typeof part === "object") {
-    const type = (part as { type?: unknown }).type;
-    if (type === "thinking" || type === "reasoning") return "thinking";
-  }
-  const field = ev.field;
-  if (field === "thinking" || field === "reasoning") return "thinking";
-  const type = ev.type;
-  if (type === "thinking_back" || type === "agent.thinking" || type === "agent.reasoning") {
-    return "thinking";
-  }
-  return "text";
-}
-
-function runtimeErrorMessage(ev: RuntimeAgentEvent): string {
-  const error = ev.error;
-  if (typeof error === "string") return error;
-  if (error && typeof error === "object") {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  return JSON.stringify(ev);
-}
-
-function isRuntimeAssistantTextEvent(type: string): boolean {
-  return (
-    type === "assistant_response" ||
-    type === "agent.message" ||
-    type === "content_block_start" ||
-    type === "content_block_delta" ||
-    type === "message_delta"
-  );
-}
-
-function isRuntimeThinkingEvent(type: string): boolean {
-  return type === "thinking_back" || type === "agent.thinking" || type === "agent.reasoning";
-}
-
-function isRuntimeToolEvent(type: string): boolean {
-  return (
-    type === "tool_call" ||
-    type === "tool_result" ||
-    type === "agent.tool_use" ||
-    type === "agent.tool_result"
-  );
-}
-
-function isRuntimeTurnStartEvent(type: string): boolean {
-  return (
-    type === "span.model_request_start" ||
-    type === "session.status_running" ||
-    type === "session.thread_status_running"
-  );
-}
-
-function runtimeToolId(ev: RuntimeAgentEvent): string {
-  const id = ev.tool_use_id ?? ev.id;
-  return typeof id === "string" && id ? id : `tool_${Date.now().toString(36)}`;
-}
-
-function runtimeToolStatus(ev: RuntimeAgentEvent): string {
-  if (typeof ev.status === "string") return ev.status;
-  if (ev.type === "tool_result" || ev.type === "agent.tool_result") return "completed";
-  if (ev.error) return "error";
-  return "running";
-}
-
-function runtimeEventKey(ev: RuntimeAgentEvent): string {
-  const id = ev.id;
-  if (typeof id === "string" && id) return `id:${id}`;
-  const type = typeof ev.type === "string" ? ev.type : "";
-  const createdAt = ev.created_at ?? ev.timestamp ?? ev.time;
-  if (createdAt) return `${type}:${String(createdAt)}:${runtimeEventText(ev)}`;
-  return `${type}:${JSON.stringify(ev)}`;
-}
-
-function runtimeUserText(ev: RuntimeAgentEvent): string {
-  return runtimeTextValue(ev.content ?? ev.text ?? ev.message).trim();
-}
-
-function isLocalRuntimeUserEvent(ev: RuntimeAgentEvent): boolean {
-  return ev.type === "user.message" && ev.local === true;
-}
-
-function mergeRuntimeEventList(
-  current: RuntimeAgentEvent[],
-  incoming: RuntimeAgentEvent | RuntimeAgentEvent[],
-): RuntimeAgentEvent[] {
-  const events = Array.isArray(incoming) ? incoming : [incoming];
-  let next = current;
-  const seen = new Set(current.map(runtimeEventKey));
-
-  for (const ev of events) {
-    const key = runtimeEventKey(ev);
-    if (seen.has(key)) continue;
-
-    if (ev.type === "user.message" && !isLocalRuntimeUserEvent(ev)) {
-      const text = runtimeUserText(ev);
-      if (text) {
-        next = next.filter((candidate) => (
-          !isLocalRuntimeUserEvent(candidate) || runtimeUserText(candidate) !== text
-        ));
-      }
-    }
-
-    next = [...next, ev];
-    seen.add(key);
-  }
-
-  return next;
-}
-
-function makeTextMessage(sessionId: string, role: "user" | "assistant", id: string, text: string): HarnessMessage {
-  return {
-    info: { id, role, sessionID: sessionId },
-    parts: [
-      {
-        id: `${id}_text`,
-        messageID: id,
-        sessionID: sessionId,
-        type: "text",
-        text,
-      },
-    ],
-  };
-}
-
-type QueuedPrompt = {
-  id: string;
-  text: string;
-};
-
-function makeQueuedPromptMessage(sessionId: string, prompt: QueuedPrompt): HarnessMessage {
-  return {
-    ...makeTextMessage(sessionId, "user", prompt.id, prompt.text),
-    info: { id: prompt.id, role: "user", sessionID: sessionId, status: "queued" },
-  };
-}
-
-function runtimeEventsToMessages(
-  sessionId: string,
-  events: RuntimeAgentEvent[],
-  status: "idle" | "busy",
-): HarnessMessage[] {
-  const messages: HarnessMessage[] = [];
-  let assistant: HarnessMessage | null = null;
-  let turnIndex = 0;
-
-  const ensureAssistant = (seed?: string): HarnessMessage => {
-    if (assistant && !assistant.info.finish) return assistant;
-    turnIndex += 1;
-    const messageId = `${sessionId}_runtime_turn_${seed ?? turnIndex}`;
-    assistant = {
-      info: { id: messageId, role: "assistant", sessionID: sessionId },
-      parts: [],
-    };
-    messages.push(assistant);
-    return assistant;
-  };
-
-  const appendPartText = (message: HarnessMessage, kind: "text" | "thinking", text: string) => {
-    if (!text) return;
-    const partId = `${message.info.id}_${kind}`;
-    const existing = message.parts.find((part) => part.id === partId);
-    if (existing && "text" in existing) {
-      existing.text = `${existing.text}${text}`;
-      return;
-    }
-    message.parts.push({
-      id: partId,
-      messageID: message.info.id,
-      sessionID: sessionId,
-      type: kind,
-      text,
-    });
-  };
-
-  const upsertToolPart = (message: HarnessMessage, ev: RuntimeAgentEvent) => {
-    const toolId = runtimeToolId(ev);
-    const partId = `${message.info.id}_${toolId}`;
-    const name = typeof ev.name === "string" ? ev.name : "tool";
-    const statusValue = runtimeToolStatus(ev);
-    const existing = message.parts.find((part) => part.id === partId && part.type === "tool");
-    if (existing && existing.type === "tool") {
-      existing.tool = existing.tool || name;
-      existing.state = {
-        ...existing.state,
-        status: statusValue,
-        input: existing.state.input ?? ev.input,
-        output: ev.output ?? existing.state.output,
-        error: ev.error ?? existing.state.error,
-      };
-      return;
-    }
-    message.parts.push({
-      id: partId,
-      messageID: message.info.id,
-      sessionID: sessionId,
-      type: "tool",
-      tool: name,
-      state: {
-        status: statusValue,
-        input: ev.input,
-        output: ev.output,
-        error: ev.error,
-      },
-    });
-  };
-
-  events.forEach((ev, index) => {
-    const type = normalizedRuntimeEventType(ev);
-    const seed = typeof ev.id === "string" && ev.id ? ev.id : String(index);
-
-    if (type === "user.message") {
-      const text = runtimeUserText(ev);
-      if (text) {
-        messages.push(makeTextMessage(sessionId, "user", `${sessionId}_user_${seed}`, text));
-      }
-      assistant = null;
-      return;
-    }
-
-    if (type === "session.status_idle") {
-      if (assistant) assistant.info.finish = "stop";
-      assistant = null;
-      return;
-    }
-
-    if (type === "session.status") {
-      const eventStatus = ev.status;
-      const statusType =
-        typeof eventStatus === "string"
-          ? eventStatus
-          : eventStatus && typeof eventStatus === "object"
-            ? (eventStatus as { type?: unknown }).type
-            : undefined;
-      if (statusType === "busy" || statusType === "running") {
-        ensureAssistant(seed);
-      }
-      if (statusType === "idle" && assistant) {
-        assistant.info.finish = "stop";
-        assistant = null;
-      }
-      return;
-    }
-
-    if (isRuntimeTurnStartEvent(type)) {
-      ensureAssistant(seed);
-      return;
-    }
-
-    if (type === "session.error") {
-      const message = ensureAssistant(seed);
-      appendPartText(message, "text", `Error: ${runtimeErrorMessage(ev)}`);
-      message.info.finish = "stop";
-      return;
-    }
-
-    if (isRuntimeToolEvent(type)) {
-      upsertToolPart(ensureAssistant(seed), ev);
-      return;
-    }
-
-    if (!isRuntimeAssistantTextEvent(type) && !isRuntimeThinkingEvent(type)) return;
-    const text = runtimeEventText(ev);
-    if (!text && type !== "content_block_start") return;
-    appendPartText(
-      ensureAssistant(seed),
-      isRuntimeThinkingEvent(type) ? "thinking" : runtimeEventPartKind(ev),
-      text,
-    );
-  });
-
-  if (status === "busy" && (messages.length === 0 || messages.at(-1)?.info.role === "user" || assistant === null)) {
-    ensureAssistant("pending");
-  }
-
-  if (status === "idle") {
-    const lastAssistant = messages.findLast((message) => message.info.role === "assistant" && !message.info.finish);
-    if (lastAssistant) lastAssistant.info.finish = "stop";
-  }
-  return messages;
-}
-
-function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "busy" | null {
-  let next: "idle" | "busy" | null = null;
-  for (const ev of events) {
-    const type = normalizedRuntimeEventType(ev);
-    if (isLocalRuntimeUserEvent(ev)) {
-      next = "busy";
-      continue;
-    }
-    if (isRuntimeTurnStartEvent(type)) {
-      next = "busy";
-      continue;
-    }
-    if (type === "session.status_idle" || type === "session.thread_status_idle" || type === "session.error") {
-      next = "idle";
-      continue;
-    }
-    if (type === "session.status") {
-      const status = ev.status;
-      const statusType =
-        typeof status === "string"
-          ? status
-          : status && typeof status === "object"
-            ? (status as { type?: unknown }).type
-            : undefined;
-      if (statusType === "busy" || statusType === "running") next = "busy";
-      if (statusType === "idle" || statusType === "error" || statusType === "failed") next = "idle";
-    }
-  }
-  return next;
-}
-
-function runtimeSessionStatusFromMetadata(status?: string, providerRunId?: unknown): "idle" | "busy" {
-  if (status === "starting" || status === "running" || status === "busy") return "busy";
-  if (status === "idle" || status === "error" || status === "completed" || status === "failed") return "idle";
-  if (typeof providerRunId === "string" && providerRunId.trim()) return "busy";
-  return "idle";
-}
 
 function ChatInner() {
   const sp = useSearchParams();
@@ -467,9 +133,37 @@ function ChatInner() {
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [savedAgents, setSavedAgents] = useState<Agent[]>([]);
   const [switchingAgent, setSwitchingAgent] = useState(false);
+  const [editingTitle, setEditingTitle] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  // null = follow the default (open until the conversation starts).
+  const [infoOpenManual, setInfoOpenManual] = useState<boolean | null>(null);
   const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
+  // Tombstones for approvals the user already decided: the DB write can lag
+  // the next poll, and without this the dock flashes the stale approval back.
+  const decidedApprovalsRef = useRef<Map<string, number>>(new Map());
+  const approvalsRef = useRef<PendingApproval[]>([]);
+
+  const applyApprovals = useCallback((items: PendingApproval[], sessionId: string) => {
+    const now = Date.now();
+    for (const [id, decidedAt] of decidedApprovalsRef.current) {
+      if (now - decidedAt > 60_000) decidedApprovalsRef.current.delete(id);
+    }
+    const next = items.filter(
+      (approval) =>
+        approval.sessionId === sessionId && !decidedApprovalsRef.current.has(approval.id),
+    );
+    setApprovals((prev) => {
+      const unchanged =
+        prev.length === next.length && prev.every((approval, i) => approval.id === next[i].id);
+      return unchanged ? prev : next;
+    });
+  }, []);
+
+  useEffect(() => {
+    approvalsRef.current = approvals;
+  }, [approvals]);
 
   const refetch = useCallback(async () => {
     if (!sid) return;
@@ -597,6 +291,9 @@ function ChatInner() {
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
     setSessionTitle("");
+    setEditingTitle(null);
+    setInfoOpenManual(null);
+    decidedApprovalsRef.current.clear();
     setWorkspaceBucket(undefined);
     const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
@@ -613,6 +310,9 @@ function ChatInner() {
     }).catch(() => {}).finally(() => {
       if (activeSessionRef.current === sid) setSessionLoaded(true);
     });
+    // `sp` is read once for the transient ?resumed flag; depending on it
+    // would re-reset the whole session when router.replace strips the flag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
   useEffect(() => {
@@ -637,7 +337,7 @@ function ChatInner() {
       const s = await createSession(undefined, next, options);
       router.replace(`/chat/?id=${encodeURIComponent(s.id)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to switch agent");
+      setError(apiErrorMessage(err, "切换智能体失败"));
       setSwitchingAgent(false);
     }
   }, [hasStarted, sid, sessionHarness, sessionRuntime, router]);
@@ -658,6 +358,39 @@ function ChatInner() {
     ];
 
     const type = normalizedRuntimeEventType(ev);
+
+    // Gateway-local approval events pushed through the SSE stream: update the
+    // dock immediately and skip the message-stream merge (approvals are not
+    // transcript content).
+    if (type === "approval.asked" || type === "approval.replied") {
+      const raw = ev.approval as
+        | { id?: string; title?: string; status?: string; args_json?: string | null; created_at?: number; session_id?: string | null }
+        | undefined;
+      if (!raw?.id) return;
+      if (type === "approval.replied") {
+        decidedApprovalsRef.current.set(raw.id, Date.now());
+        setApprovals((prev) => prev.filter((approval) => approval.id !== raw.id));
+        return;
+      }
+      if (decidedApprovalsRef.current.has(raw.id)) return;
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        parsedArgs = raw.args_json ? (JSON.parse(raw.args_json) as Record<string, unknown>) : {};
+      } catch {
+        parsedArgs = {};
+      }
+      const next: PendingApproval = {
+        id: raw.id,
+        tool: raw.title ?? "approval",
+        arguments: parsedArgs,
+        createdAt: raw.created_at ?? Date.now(),
+        sessionId: raw.session_id ?? null,
+      };
+      setApprovals((prev) =>
+        prev.some((approval) => approval.id === next.id) ? prev : [...prev, next],
+      );
+      return;
+    }
     if (isRuntimeTurnStartEvent(type)) {
       setSessionStatus("busy");
     } else if (type === "session.status_idle") {
@@ -715,7 +448,7 @@ function ChatInner() {
   const sendOrQueueRuntimePrompt = useCallback(async (text: string) => {
     if (!sid) return;
     if (!model.trim()) {
-      setError("No runtime models are available for this session.");
+      setError("该会话没有可用的运行时模型。");
       return;
     }
     if (sessionStatus === "busy") {
@@ -742,7 +475,7 @@ function ChatInner() {
   const interruptAndSendQueuedPrompt = useCallback(async (id: string) => {
     if (!sid || !sessionRuntime || interruptingQueuedPromptId) return;
     if (!model.trim()) {
-      setError("No runtime models are available for this session.");
+      setError("该会话没有可用的运行时模型。");
       return;
     }
     const prompt = queuedPrompts.find((item) => item.id === id);
@@ -843,21 +576,22 @@ function ChatInner() {
           setSessionStatus("idle");
         });
     }
-    listApprovals()
+    listApprovals(sid)
       .then((items) => {
         if (activeSessionRef.current !== sid) return;
-        setApprovals(items.filter((approval) => approval.sessionId === sid));
+        applyApprovals(items, sid);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
       unsub?.();
     };
-  }, [sid, sessionLoaded, refetch, appendRuntimeEvent, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
+  }, [sid, sessionLoaded, refetch, appendRuntimeEvent, applyApprovals, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
 
   useEffect(() => {
     if (!sid || !sessionRuntime) return;
     let active = true;
+    let timer: number | undefined;
     const replay = () => {
       // Re-fetching events replays (and re-persists) the session's full
       // history on the backend, which is only worth paying for while a turn
@@ -878,31 +612,43 @@ function ChatInner() {
           });
       }
 
-      listApprovals()
+      listApprovals(sid)
         .then((items) => {
           if (!active) return;
           if (activeSessionRef.current !== sid) return;
-          setApprovals(items.filter((approval) => approval.sessionId === sid));
+          applyApprovals(items, sid);
         })
         .catch(() => {});
     };
+    const schedule = () => {
+      // Poll fast only while something can actually change quickly: a busy
+      // turn or a visible approval awaiting a decision. Otherwise back off,
+      // so an idle chat tab isn't hammering the gateway every 2s.
+      const delay =
+        sessionStatus === "busy" || approvalsRef.current.length > 0 ? 2000 : 15000;
+      timer = window.setTimeout(() => {
+        replay();
+        if (active) schedule();
+      }, delay);
+    };
     replay();
-    const timer = window.setInterval(replay, 2000);
+    schedule();
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [mergeRuntimeEventsAndStatus, sessionStatus, sid, sessionRuntime]);
+  }, [applyApprovals, mergeRuntimeEventsAndStatus, sessionStatus, sid, sessionRuntime]);
 
   const onApprovalAccept = useCallback(async (id: string, args: Record<string, unknown>) => {
     setApprovalBusy(true);
     try {
       await acceptApproval(id, args);
+      decidedApprovalsRef.current.set(id, Date.now());
       setApprovals((prev) => prev.filter((a) => a.id !== id));
       setSessionStatus("busy");
       setRuntimeStreamVersion((version) => version + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(apiErrorMessage(e, "审批操作失败"));
     } finally {
       setApprovalBusy(false);
     }
@@ -912,21 +658,42 @@ function ChatInner() {
     setApprovalBusy(true);
     try {
       await rejectApproval(id, feedback);
+      decidedApprovalsRef.current.set(id, Date.now());
       setApprovals((prev) => prev.filter((a) => a.id !== id));
       setSessionStatus("busy");
       setRuntimeStreamVersion((version) => version + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(apiErrorMessage(e, "审批操作失败"));
     } finally {
       setApprovalBusy(false);
     }
   }, []);
+
+  const commitRename = useCallback(async () => {
+    if (!sid || editingTitle === null || renamingTitle) return;
+    const next = editingTitle.trim();
+    if (!next || next === sessionTitle) {
+      setEditingTitle(null);
+      return;
+    }
+    setRenamingTitle(true);
+    try {
+      await renameSession(sid, next);
+      setSessionTitle(next);
+      setEditingTitle(null);
+    } catch (err) {
+      setError(apiErrorMessage(err, "重命名会话失败"));
+    } finally {
+      setRenamingTitle(false);
+    }
+  }, [editingTitle, renamingTitle, sessionTitle, sid]);
 
   if (!sid) {
     return <SessionsPage />;
   }
 
   const shortSid = sid.length > 12 ? sid.slice(0, 12) + "…" : sid;
+  const infoOpen = infoOpenManual ?? !hasStarted;
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -934,27 +701,52 @@ function ChatInner() {
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
-          <div className="flex items-center gap-2">
-            {sessionTitle && (
-              <span className="text-sm font-medium" title={sessionTitle}>{sessionTitle}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            {editingTitle !== null ? (
+              <input
+                autoFocus
+                value={editingTitle}
+                disabled={renamingTitle}
+                onChange={(event) => setEditingTitle(event.target.value)}
+                onBlur={() => void commitRename()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void commitRename();
+                  } else if (event.key === "Escape") {
+                    setEditingTitle(null);
+                  }
+                }}
+                aria-label="会话标题"
+                className="h-7 w-[240px] rounded-md border border-border bg-background px-2 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEditingTitle(sessionTitle || "")}
+                title="点击重命名会话"
+                className="max-w-[280px] truncate rounded-md px-1 py-0.5 text-left text-sm font-medium hover:bg-muted"
+              >
+                {sessionTitle || "未命名会话"}
+              </button>
             )}
             <span className="text-xs font-mono text-muted-foreground">{shortSid}</span>
             {sessionStatus === "busy" ? (
               <button
                 onClick={() => sid && abortSession(sid).catch(() => {})}
                 className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 font-mono hover:text-red-600 dark:hover:text-red-400 transition-colors group"
-                title="Abort agent"
+                title="中止智能体"
                 aria-label="Agent busy — click to abort"
               >
                 <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none group-hover:hidden" />
                 <Square className="w-3 h-3 hidden group-hover:block fill-current" />
-                <span className="group-hover:hidden">busy</span>
-                <span className="hidden group-hover:inline">abort</span>
+                <span className="group-hover:hidden">运行中</span>
+                <span className="hidden group-hover:inline">中止</span>
               </button>
             ) : (
               <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                idle
+                空闲
               </span>
             )}
           </div>
@@ -974,14 +766,14 @@ function ChatInner() {
                   <SelectItem value="github-copilot" className="text-xs font-mono">github copilot</SelectItem>
                   {savedAgents.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-[10px] text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Saved agents</div>
+                      <div className="px-2 py-1.5 text-[11px] text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Saved agents</div>
                       {savedAgents.map(a => (
                         <SelectItem key={a.id} value={a.id} className="text-xs font-mono">{a.name}</SelectItem>
                       ))}
                     </>
                   )}
-                  <div className="px-2 py-2 text-[10px] text-muted-foreground border-t mt-1">
-                    Switching agents opens a new session.
+                  <div className="px-2 py-2 text-[11px] text-muted-foreground border-t mt-1">
+                    切换智能体会打开一个新会话。
                   </div>
                 </SelectContent>
               </Select>
@@ -999,7 +791,7 @@ function ChatInner() {
                 render={
                   <a href={providerLink} target="_blank" rel="noreferrer">
                     <ExternalLink className="size-3.5" />
-                    Open provider session
+                    打开提供方会话
                   </a>
                 }
               />
@@ -1012,7 +804,7 @@ function ChatInner() {
                 className="h-8"
               >
                 <FolderOpen className="size-3.5" />
-                Workspace
+                工作区
               </Button>
             )}
             <Button
@@ -1022,7 +814,7 @@ function ChatInner() {
               className="h-8"
             >
               <Activity className="size-3.5" />
-              Inspect
+              检查器
             </Button>
             <ThemeToggle />
           </div>
@@ -1040,6 +832,39 @@ function ChatInner() {
                 <p className="text-sm text-destructive">{error}</p>
               </Card>
             )}
+            <button
+              type="button"
+              onClick={() => setInfoOpenManual(!infoOpen)}
+              aria-expanded={infoOpen}
+              className="flex w-full items-center gap-2.5 rounded-lg border border-border/80 bg-card/80 px-3 py-2 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+                <Bot className="size-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-semibold">{activeAgentName}</span>
+                  <span className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-px font-mono text-[11px] text-muted-foreground">
+                    {baseRuntime}
+                  </span>
+                  {activePrompt ? (
+                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                      <CheckCircle2 className="size-3" />
+                      prompt 已加载
+                    </span>
+                  ) : (
+                    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="size-3" />
+                      无保存的 prompt
+                    </span>
+                  )}
+                </span>
+              </span>
+              <ChevronDown
+                className={`size-4 shrink-0 text-muted-foreground transition-transform ${infoOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+            {infoOpen && (
             <Card className="gap-0 overflow-hidden rounded-lg border border-border/80 bg-card/80 py-0 ring-0">
               <div className="grid gap-0 md:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
                 <section className="min-w-0 border-b border-border/70 p-4 md:border-b-0 md:border-r">
@@ -1051,14 +876,14 @@ function ChatInner() {
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="truncate text-base font-semibold tracking-tight leading-5">{activeAgentName}</h2>
                         {activePrompt ? (
-                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
                             <CheckCircle2 className="size-3" />
-                            prompt active
+                            prompt 已加载
                           </span>
                         ) : (
-                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                          <span className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                             <AlertTriangle className="size-3" />
-                            no saved prompt
+                            无保存的 prompt
                           </span>
                         )}
                       </div>
@@ -1068,7 +893,7 @@ function ChatInner() {
                         </p>
                       ) : (
                         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                          Session instructions and runtime context are shown before the transcript.
+                          会话指令与运行时上下文会展示在对话记录之前。
                         </p>
                       )}
                       <div className="mt-3 grid gap-1.5 text-[11px] sm:grid-cols-2">
@@ -1102,7 +927,7 @@ function ChatInner() {
                           {skills.map((skill) => (
                             <span
                               key={skill}
-                              className="inline-flex h-5 items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/10 px-1.5 font-mono text-[10px] text-sky-600 dark:text-sky-400"
+                              className="inline-flex h-5 items-center gap-1 rounded-md border border-sky-500/25 bg-sky-500/10 px-1.5 font-mono text-[11px] text-sky-600 dark:text-sky-400"
                             >
                               <Wrench className="size-3" />
                               {skill}
@@ -1111,7 +936,7 @@ function ChatInner() {
                           {vaultKeys.map((key) => (
                             <span
                               key={key}
-                              className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 font-mono text-[10px] text-amber-600 dark:text-amber-400"
+                              className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 font-mono text-[11px] text-amber-600 dark:text-amber-400"
                             >
                               <KeyRound className="size-3" />
                               {key}
@@ -1126,9 +951,9 @@ function ChatInner() {
                 <section className="min-w-0 bg-background/35 p-4">
                   <div className="flex items-center gap-2">
                     <div className="min-w-0">
-                      <h3 className="text-[13.5px] font-semibold tracking-tight">System prompt</h3>
+                      <h3 className="text-[13px] font-semibold tracking-tight">System prompt</h3>
                       <div className="text-[11px] text-muted-foreground">
-                        {activePrompt ? "Visible before the first turn runs." : "No reusable agent prompt is attached."}
+                        {activePrompt ? "首轮运行前可在此查看。" : "未挂载可复用的智能体 prompt。"}
                       </div>
                     </div>
                     <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1138,8 +963,8 @@ function ChatInner() {
                         size="icon-sm"
                         disabled={!activePrompt}
                         onClick={onCopyPrompt}
-                        aria-label="Copy system prompt"
-                        title="Copy system prompt"
+                        aria-label="复制 system prompt"
+                        title="复制 system prompt"
                       >
                         {promptCopied ? <ClipboardCheck className="size-3.5" /> : <Clipboard className="size-3.5" />}
                       </Button>
@@ -1150,9 +975,9 @@ function ChatInner() {
                         className="h-7"
                         onClick={() => setPromptOpen((v) => !v)}
                         disabled={!activePrompt}
-                        title={promptOpen ? "Collapse system prompt" : "Expand system prompt"}
+                        title={promptOpen ? "收起 system prompt" : "展开 system prompt"}
                       >
-                        <span>{promptOpen ? "Full" : "Preview"}</span>
+                        <span>{promptOpen ? "收起" : "展开"}</span>
                         <ChevronDown className={`size-3.5 transition-transform ${promptOpen ? "rotate-180" : ""}`} />
                       </Button>
                     </div>
@@ -1160,12 +985,12 @@ function ChatInner() {
                   <div className="mt-3">
                     {activePrompt ? (
                       promptOpen ? (
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-[12px] leading-relaxed text-foreground">
+                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground">
                           {activePrompt}
                         </pre>
                       ) : (
                         <div className="rounded-md border border-border bg-background p-3">
-                          <p className="line-clamp-4 font-mono text-[12px] leading-relaxed text-muted-foreground">
+                          <p className="line-clamp-4 font-mono text-xs leading-relaxed text-muted-foreground">
                             {shortPrompt(activePrompt)}
                           </p>
                         </div>
@@ -1173,24 +998,25 @@ function ChatInner() {
                     ) : (
                       <div className="rounded-md border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-600 dark:text-amber-400">
                         {activeAgent
-                          ? "This saved agent will run without a stored system prompt until one is added on the Agents page."
-                          : "This is a built-in runtime session, so there is no saved agent prompt to review."}
+                          ? "该智能体尚未保存 system prompt，可到 Agents 页面补充后再运行。"
+                          : "这是内置运行时会话，没有可查看的智能体 prompt。"}
                       </div>
                     )}
                   </div>
                   {promptCopied && (
                     <div className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400">
-                      Copied system prompt.
+                      已复制 system prompt。
                     </div>
                   )}
                 </section>
               </div>
             </Card>
+            )}
             {displayMessages && displayMessages.length === 0 && (
               <div className="flex flex-col items-center gap-3 py-16 text-center">
                 <Bot className="size-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">No messages yet.</p>
-                <p className="text-xs text-muted-foreground">Type a message below to start the conversation.</p>
+                <p className="text-sm text-muted-foreground">还没有消息。</p>
+                <p className="text-xs text-muted-foreground">在下方输入消息开始对话。</p>
               </div>
             )}
             {displayMessages?.map((m, i) => (
@@ -1224,7 +1050,7 @@ function ChatInner() {
           onAbort={sessionRuntime ? () => abortSession(sid).catch(() => {}) : undefined}
           busy={Boolean(sessionRuntime && sessionStatus === "busy")}
           disabled={sessionContentLoading || Boolean(sessionRuntime && !model.trim())}
-          disabledHint={sessionContentLoading ? "Loading conversation…" : undefined}
+          disabledHint={sessionContentLoading ? "正在加载对话..." : undefined}
         />
       </div>
 

@@ -1,7 +1,7 @@
 use litellm_rust::db::managed_agents::{messages, sessions as db_sessions};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::support::{AppFixture, request_json};
+use crate::support::{request_json, AppFixture};
 
 pub async fn assert_human_approval(fixture: &AppFixture, agent_id: &str) {
     assert_multiple_async_approvals(fixture, agent_id).await;

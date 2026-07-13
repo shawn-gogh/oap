@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+import { useConfirm } from "@/components/confirm-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -44,6 +46,7 @@ import {
   deleteRuntimeHarness,
   listRuntimeHarnesses,
   saveAgentRuntimeCredential,
+  testRuntimeHarness,
   updateRuntimeHarness,
 } from "@/lib/api";
 import {
@@ -60,12 +63,14 @@ const SPEC_DEFAULTS: Record<string, string> = {
   claude_managed_agents: "https://api.anthropic.com",
   cursor: "https://api.cursor.com",
   gemini_antigravity: "https://generativelanguage.googleapis.com",
+  generic_chat: "",
 };
 
 const SPEC_LABELS: Record<string, string> = {
   claude_managed_agents: "Claude Managed Agents",
   cursor: "Cursor",
   gemini_antigravity: "Gemini Antigravity",
+  generic_chat: "外部 Chat 智能体（OpenAI 兼容）",
 };
 
 const RUNTIME_OPTIONS = [
@@ -86,6 +91,12 @@ const RUNTIME_OPTIONS = [
     label: "Gemini Antigravity",
     apiSpec: "gemini_antigravity",
     defaultApiBase: SPEC_DEFAULTS.gemini_antigravity,
+  },
+  {
+    value: "generic_chat",
+    label: "外部 Chat 智能体（OpenAI 兼容）",
+    apiSpec: "generic_chat",
+    defaultApiBase: "",
   },
 ];
 
@@ -202,6 +213,25 @@ function AddHarnessModal({
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; detail: string; models?: string[] } | null>(null);
+
+  const handleTest = async () => {
+    if (testing) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await testRuntimeHarness({
+        api_spec: apiSpec,
+        api_base: apiBase.trim(),
+        api_key: apiKey.trim(),
+      }));
+    } catch (err) {
+      setTestResult({ ok: false, detail: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleRuntimeOptionChange = (value: string | null) => {
     const option = RUNTIME_OPTIONS.find((candidate) => candidate.value === value);
@@ -218,6 +248,7 @@ function AddHarnessModal({
     setApiSpec("claude_managed_agents");
     setApiBase(SPEC_DEFAULTS.claude_managed_agents);
     setError(null);
+    setTestResult(null);
   }, []);
 
   useEffect(() => {
@@ -353,7 +384,32 @@ function AddHarnessModal({
             </div>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {testResult && (
+            <div
+              className={`rounded-md px-3 py-2 text-xs ${
+                testResult.ok
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                  : "bg-destructive/10 text-destructive"
+              }`}
+            >
+              {testResult.ok ? "✓ " : "✗ "}
+              {testResult.detail}
+              {testResult.ok && (testResult.models?.length ?? 0) > 0 && (
+                <span className="ml-1 text-muted-foreground">
+                  可用模型：{testResult.models!.slice(0, 5).join(", ")}
+                  {testResult.models!.length > 5 ? ` 等 ${testResult.models!.length} 个` : ""}
+                </span>
+              )}
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-1">
+            <Button
+              variant="outline"
+              onClick={() => void handleTest()}
+              disabled={testing || !apiBase.trim()}
+            >
+              {testing ? "测试中..." : "测试连接"}
+            </Button>
             <Button variant="outline" onClick={onClose} disabled={saving}>
               Cancel
             </Button>
@@ -392,10 +448,10 @@ function RuntimeRow({
         <div className="flex min-w-0 flex-col items-start gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
           <span className="min-w-0 font-medium leading-tight">{harness.display_name}</span>
           <div className="flex max-w-full flex-wrap gap-1.5">
-            <Badge variant={harness.is_default ? "secondary" : "outline"} className="text-[10px]">
+            <Badge variant={harness.is_default ? "secondary" : "outline"} className="text-[11px]">
               {harness.is_default ? "Default" : "Custom"}
             </Badge>
-            <Badge variant="outline" className="max-w-full text-[10px]">
+            <Badge variant="outline" className="max-w-full text-[11px]">
               {SPEC_LABELS[harness.api_spec] ?? harness.api_spec}
             </Badge>
           </div>
@@ -447,7 +503,7 @@ function RuntimeSection({
 }) {
   return (
     <section className="grid gap-2">
-      <h2 className="text-[13.5px] font-semibold tracking-tight">{title}</h2>
+      <h2 className="text-[13px] font-semibold tracking-tight">{title}</h2>
       <Card className="min-w-0 overflow-hidden rounded-lg p-0">
         {harnesses.length === 0 ? (
           <div className="px-4 py-5 text-sm text-muted-foreground">{empty}</div>
@@ -487,7 +543,7 @@ function RuntimeTemplatesSection({
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <FileText className="size-4 shrink-0 text-muted-foreground" />
-          <h2 className="text-[13.5px] font-semibold tracking-tight">Runtime templates</h2>
+          <h2 className="text-[13px] font-semibold tracking-tight">Runtime templates</h2>
         </div>
         {loading && (
           <span className="text-xs text-muted-foreground" aria-live="polite">
@@ -527,6 +583,7 @@ function RuntimeDetails({
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirmAction = useConfirm();
 
   useEffect(() => {
     setKey("");
@@ -576,22 +633,32 @@ function RuntimeDetails({
   };
 
   const handleRemove = async () => {
-    const message = harness.is_default
-      ? `Remove saved credentials for "${harness.display_name}"?`
-      : `Delete runtime "${harness.alias}"? This cannot be undone.`;
-    if (!confirm(message)) return;
+    const ok = await confirmAction(
+      harness.is_default
+        ? {
+            title: `移除「${harness.display_name}」已保存的凭证？`,
+            confirmLabel: "移除凭证",
+          }
+        : {
+            title: `删除运行时「${harness.alias}」？`,
+            description: "此操作无法撤销。",
+          },
+    );
+    if (!ok) return;
     setRemoving(true);
     setError(null);
     try {
       if (harness.is_default) {
         await deleteAgentRuntimeCredential(harness.alias);
+        toast.success(`已移除「${harness.display_name}」的凭证`);
       } else {
         await deleteRuntimeHarness(harness.alias);
+        toast.success(`已删除运行时「${harness.alias}」`);
       }
       const next = await listRuntimeHarnesses();
       onUpdated(next ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove runtime.");
+      toast.error(err instanceof Error ? err.message : "移除运行时失败");
     } finally {
       setRemoving(false);
     }

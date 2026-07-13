@@ -92,7 +92,7 @@ export default function SkillsPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <FileText className="size-4" />
-            <span className="text-sm font-semibold">Skills</span>
+            <span className="text-sm font-semibold">技能</span>
           </div>
           <ThemeToggle />
         </header>
@@ -101,7 +101,7 @@ export default function SkillsPage() {
           <div className="mx-auto w-full max-w-4xl px-6 py-6">
             <div className="mb-6 flex items-start justify-between gap-4">
               <div>
-                <h1 className="text-xl font-semibold tracking-tight">Skills</h1>
+                <h1 className="text-xl font-semibold tracking-tight">技能</h1>
                 <p className="text-sm text-muted-foreground">
                   Reusable capability docs. Upload a <code>.md</code> file or
                   paste content to create one. Agents see the catalog and follow
@@ -156,7 +156,7 @@ export default function SkillsPage() {
             {skills?.length === 0 && (
               <div className="rounded-xl border border-dashed border-border py-16 text-center">
                 <FileText className="mx-auto mb-3 size-7 text-muted-foreground" />
-                <h2 className="text-base font-semibold tracking-tight">No skills yet</h2>
+                <h2 className="text-base font-semibold tracking-tight">还没有技能</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Upload a <code>.md</code> file or create one manually.
                 </p>
@@ -183,12 +183,12 @@ export default function SkillsPage() {
                     <button
                       onClick={() => setEditor({ skill: s })}
                       className="group min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
-                      title="Open to view / edit"
+                      title="打开查看 / 编辑"
                     >
                       <div className="font-medium leading-none group-hover:underline">
                         {s.name}
                       </div>
-                      <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
                         {s.id}
                       </div>
                     </button>
@@ -331,7 +331,7 @@ function SkillEditorDialog({
 
         <div className="space-y-3 py-1">
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Name</label>
+            <label className="text-xs text-muted-foreground">名称</label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -339,15 +339,15 @@ function SkillEditorDialog({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Description</label>
+            <label className="text-xs text-muted-foreground">描述</label>
             <Input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this skill does (optional)"
+              placeholder="这个技能做什么（可选）"
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Content (markdown)</label>
+            <label className="text-xs text-muted-foreground">内容（Markdown）</label>
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}

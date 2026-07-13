@@ -19,8 +19,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<Json<DeleteResponse>, GatewayError> {
-    let auth =
-        crate::proxy::auth::master_key::authenticate(&headers, &state).await?;
+    let auth = crate::proxy::auth::master_key::authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?;
     let existing = registry::repository::get(pool, &agent_id)
         .await?
@@ -30,6 +29,11 @@ pub async fn delete(
         return Err(GatewayError::NotFound("not found".to_owned()));
     }
     memory::repository::delete_all(pool, &agent_id).await?;
+    let _ =
+        crate::db::managed_agents::agent_grants::repository::delete_all_for_agent(pool, &agent_id)
+            .await;
+    let _ = crate::db::managed_agents::groups::agent_grants::delete_all_for_agent(pool, &agent_id)
+        .await;
     // Best-effort workspace cleanup; a stuck bucket must not block deletion.
     if let Some(storage) = &state.object_storage {
         let bucket = crate::object_storage::ObjectStorageClient::agent_bucket_name(&agent_id);

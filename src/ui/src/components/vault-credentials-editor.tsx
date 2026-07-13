@@ -192,7 +192,7 @@ export function VaultCredentialsEditor({
                 <div className="min-w-0">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <span className="truncate font-mono text-xs font-medium">{key}</span>
-                    <Badge variant={isSet ? "secondary" : "outline"} className="text-[10px]">
+                    <Badge variant={isSet ? "secondary" : "outline"} className="text-[11px]">
                       {isSet
                         ? entry.scope === "global"
                           ? "Set Globally"

@@ -13,7 +13,7 @@ use crate::{
     },
     errors::GatewayError,
     http::agents::{has_configured_agent, parse_run_agent_request, start_configured_agent_run},
-    proxy::{auth::master_key::require_any_gateway_key, state::AppState},
+    proxy::{auth::master_key::authenticate, state::AppState},
 };
 
 use super::{execution::spawn_managed_agent_run, types::RunCreateResponse};
@@ -28,7 +28,7 @@ pub async fn create(
     Path(agent_id): Path<String>,
     Json(input): Json<serde_json::Value>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
+    let auth = authenticate(&headers, &state).await?;
     if has_configured_agent(&state, &agent_id) {
         return start_configured_agent_run(state, agent_id, parse_run_agent_request(input)?);
     }
@@ -40,6 +40,7 @@ pub async fn create(
     let agent = registry::repository::get(pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
+    super::super::assert_agent_use(&auth, &agent, pool).await?;
     let prompt = input
         .prompt
         .clone()

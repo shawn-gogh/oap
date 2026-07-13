@@ -36,7 +36,7 @@ export function RuntimeTemplateCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[13.5px] font-semibold tracking-tight">{template.name}</h3>
+            <h3 className="text-[13px] font-semibold tracking-tight">{template.name}</h3>
             <Badge variant="outline" className="text-xs">
               {SPEC_LABELS[template.apiSpec] ?? template.apiSpec}
             </Badge>

@@ -26,6 +26,9 @@ pub enum GatewayError {
     #[error("invalid request json: {0}")]
     InvalidJsonMessage(String),
 
+    #[error("invalid request: {0}")]
+    BadRequest(String),
+
     #[error("database is not configured")]
     MissingDatabase,
 
@@ -59,6 +62,13 @@ pub enum GatewayError {
     #[error("unauthorized")]
     Unauthorized,
 
+    /// Authenticated with a valid key, but that identity lacks the required
+    /// role/ownership. Distinct from `Unauthorized` (401, "we don't
+    /// recognize this key at all") so the frontend doesn't treat a
+    /// permission gap as a dead session and force a re-login.
+    #[error("forbidden")]
+    Forbidden,
+
     #[error("upstream request failed: {0}")]
     Upstream(reqwest::Error),
 
@@ -84,6 +94,7 @@ impl GatewayError {
             Self::MissingDatabase => StatusCode::SERVICE_UNAVAILABLE,
             Self::InvalidJson(_)
             | Self::InvalidJsonMessage(_)
+            | Self::BadRequest(_)
             | Self::MissingModel
             | Self::MissingMcpServer => StatusCode::BAD_REQUEST,
             Self::UnknownModel(_)
@@ -92,6 +103,7 @@ impl GatewayError {
             | Self::UnknownAgentRun(_)
             | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden => StatusCode::FORBIDDEN,
             Self::Upstream(_)
             | Self::Sandbox(_)
             | Self::SandboxError(_)

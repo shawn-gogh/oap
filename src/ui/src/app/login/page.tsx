@@ -47,10 +47,10 @@ function LoginForm() {
       clearStoredMasterKey();
       const msg =
         e instanceof ApiError && e.status === 401
-          ? "Invalid master key."
+          ? "访问密钥无效。"
           : e instanceof Error
             ? e.message
-            : "Sign-in failed.";
+            : "登录失败。";
       setError(msg);
       setSubmitting(false);
     }
@@ -67,14 +67,13 @@ function LoginForm() {
             <span className="text-2xl leading-none">🚄</span>
             <span className="font-semibold">LiteLLM</span>
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
+          <h1 className="text-xl font-semibold tracking-tight">登录</h1>
           <p className="text-sm text-muted-foreground">
-            Paste the <code className="font-mono">MASTER_KEY</code> set on the
-            server.
+            请粘贴管理员密钥或分配给你的访问密钥。
           </p>
         </div>
         <div className="flex flex-col gap-2">
-          <Label htmlFor="key">Master key</Label>
+          <Label htmlFor="key">访问密钥</Label>
           <Input
             id="key"
             type="password"
@@ -92,7 +91,7 @@ function LoginForm() {
           </p>
         ) : null}
         <Button type="submit" disabled={submitting || key.trim().length === 0}>
-          {submitting ? "Checking…" : "Sign in"}
+          {submitting ? "正在验证…" : "登录"}
         </Button>
       </form>
     </div>

@@ -18,7 +18,13 @@ fn sdk_tree_matches_provider_endpoint_contract() {
     assert_eq!(
         dirs(&providers),
         set([
-            "anthropic", "base", "cursor", "deepseek", "elastic", "gemini", "openai"
+            "anthropic",
+            "base",
+            "cursor",
+            "deepseek",
+            "elastic",
+            "gemini",
+            "openai"
         ])
     );
     assert_eq!(

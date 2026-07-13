@@ -28,8 +28,10 @@ import {
   createGatewayApiKey,
   deleteGatewayApiKey,
   listGatewayApiKeys,
+  listUsers,
   type CreatedGatewayApiKey,
   type GatewayApiKey,
+  type ManagedUser,
 } from "@/lib/api";
 
 function formatTime(ts?: number | null): string {
@@ -47,6 +49,7 @@ function formatTime(ts?: number | null): string {
 
 export function ApiKeysPanel() {
   const [keys, setKeys] = useState<GatewayApiKey[] | null>(null);
+  const [users, setUsers] = useState<ManagedUser[]>([]);
   const [label, setLabel] = useState("");
   const [userId, setUserId] = useState("");
   const [role, setRole] = useState("user");
@@ -58,7 +61,9 @@ export function ApiKeysPanel() {
 
   const load = async () => {
     try {
-      setKeys(await listGatewayApiKeys());
+      const [keyRows, userRows] = await Promise.all([listGatewayApiKeys(), listUsers()]);
+      setKeys(keyRows);
+      setUsers(userRows.filter((user) => user.status === "active"));
       setError(null);
     } catch (err) {
       setKeys([]);
@@ -220,13 +225,16 @@ export function ApiKeysPanel() {
                 }}
                 autoFocus
               />
-              <Label htmlFor="key-user">User ID (optional)</Label>
-              <Input
+              <Label htmlFor="key-user">User</Label>
+              <select
                 id="key-user"
                 value={userId}
                 onChange={(event) => setUserId(event.target.value)}
-                placeholder="Defaults to the key's own ID"
-              />
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              >
+                <option value="">为此密钥创建独立身份</option>
+                {users.map((user) => <option key={user.id} value={user.id}>{user.display_name} ({user.id})</option>)}
+              </select>
               <Label htmlFor="key-role">Role</Label>
               <select
                 id="key-role"

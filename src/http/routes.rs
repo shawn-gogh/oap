@@ -82,6 +82,10 @@ fn api_routes() -> Router<Arc<AppState>> {
             get(crate::http::runtime_harnesses::list).post(crate::http::runtime_harnesses::create),
         )
         .route(
+            "/api/runtime-harnesses/test",
+            post(crate::http::runtime_harnesses::test_connection),
+        )
+        .route(
             "/api/runtime-harnesses/{alias}",
             put(crate::http::runtime_harnesses::update)
                 .delete(crate::http::runtime_harnesses::delete_harness),
@@ -145,6 +149,8 @@ fn mcp_registry_routes() -> Router<Arc<AppState>> {
             "/v1/mcp/server/{server_id}/tools",
             get(tools::list_tools).post(tools::test_tools),
         )
+        // Batch tools discovery across all active servers (avoids N+1 from the UI)
+        .route("/v1/mcp/servers/tools", get(tools::list_all_tools))
         // Discover tools from an arbitrary URL (no saved server required)
         .route("/v1/mcp/discover", post(discover::discover_tools))
         // Admin CRUD
@@ -182,7 +188,9 @@ fn session_routes() -> Router<Arc<AppState>> {
         .route("/session", get(sessions::list).post(sessions::create))
         .route(
             "/session/{session_id}",
-            get(sessions::get).delete(sessions::delete),
+            get(sessions::get)
+                .patch(sessions::rename)
+                .delete(sessions::delete),
         )
         .route(
             "/session/{session_id}/message",

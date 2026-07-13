@@ -156,6 +156,24 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     Ok(())
 }
 
+pub async fn set_title(pool: &PgPool, session_id: &str, title: &str) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentSessionsTable"
+        SET title = $2,
+            updated_at = $3
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .bind(title)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// `owner`: None lists everything (admin); Some(user) restricts to that
 /// user's sessions. Legacy NULL-owner rows are only visible to admins.
 pub async fn list(pool: &PgPool, owner: Option<&str>) -> Result<Vec<SessionRow>, GatewayError> {
