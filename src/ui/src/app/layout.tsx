@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LiteLLM AI Gateway",
-  description: "LiteLLM AI Gateway console",
+  title: "OAP 开放智能体平台",
+  description: "OAP (Open Agent Platform) console",
 };
 
 // Runs synchronously before React hydration — reads ?token= from URL,

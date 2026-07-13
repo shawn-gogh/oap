@@ -53,7 +53,7 @@ export default function SettingsPage() {
           text:
             result.mode === "remote"
               ? `Connected to ${result.base}.`
-              : "Using LAP local harness routing.",
+              : "Using OAP local harness routing.",
         });
       } else {
         setHarnessStatus({
@@ -78,7 +78,7 @@ export default function SettingsPage() {
     setSavedHarnessUrl(saved);
     setHarnessStatus({
       tone: "success",
-      text: saved ? `Session calls now route through ${saved}.` : "Session calls now use LAP local routing.",
+      text: saved ? `Session calls now route through ${saved}.` : "Session calls now use OAP local routing.",
     });
   };
 
@@ -88,7 +88,7 @@ export default function SettingsPage() {
     setHarnessUrl("");
     setHarnessKey("");
     setSavedHarnessUrl("");
-    setHarnessStatus({ tone: "muted", text: "Session calls now use LAP local routing." });
+    setHarnessStatus({ tone: "muted", text: "Session calls now use OAP local routing." });
   };
 
   return (
@@ -109,7 +109,7 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold tracking-tight">Harness Server</h2>
                 <Badge variant={savedHarnessUrl ? "secondary" : "outline"} className="text-[10px]">
-                  {savedHarnessUrl ? "Lite-Harness remote" : "LAP local"}
+                  {savedHarnessUrl ? "Lite-Harness remote" : "OAP local"}
                 </Badge>
               </div>
               <Card className="p-4">
@@ -155,13 +155,13 @@ export default function SettingsPage() {
                       <div className="flex items-center justify-between gap-3 border-b border-border pb-2">
                         <span className="text-muted-foreground">Sessions</span>
                         <span className="font-mono text-foreground">
-                          {savedHarnessUrl ? "proxy" : "LAP"}
+                          {savedHarnessUrl ? "proxy" : "OAP"}
                         </span>
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-muted-foreground">Events</span>
                         <span className="font-mono text-foreground">
-                          {savedHarnessUrl ? "proxy SSE" : "LAP SSE"}
+                          {savedHarnessUrl ? "proxy SSE" : "OAP SSE"}
                         </span>
                       </div>
                     </div>
@@ -191,7 +191,7 @@ export default function SettingsPage() {
                   {savedHarnessUrl && (
                     <Button variant="outline" size="sm" onClick={useLocalHarness}>
                       <X className="size-3.5" />
-                      Use local LAP
+                      Use local OAP
                     </Button>
                   )}
                   <Button
