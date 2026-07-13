@@ -51,11 +51,42 @@
 - [x] D2 Runtime health：自定义 harness 对 api_base 发 GET 探测（任何 HTTP 响应即视为连通）；内置 SaaS Runtime 不探测（探测厂商 API 无意义且增加抖动），保持解析+凭证即 verified
 - [x] D3 模型可用性：模型在网关 `model_list` 中 → `verified`；不在 → `unverified`（外部 Runtime 厂商侧解析无法验证，如实说明），不误报 failed
 
-### 阶段 E：opencode wrapper 强制审批（中大，独立分支做）
-- [ ] E1 approval token 语义实现：绑定 `(user, agent_id, session_id, tool_name, args_hash)`，一次性、短 TTL（15min）、参数变化重批、子智能体不继承；签发/消费写审计表（schema 与后续迁移一起规划）
-- [ ] E2 LAP 侧校验点：平台 MCP handler（`platform_mcps/approval.rs` 旁）+ MCP 代理层
-- [ ] E3 opencode wrapper 接 permission hook → LAP 审批 API；完成后该 Runtime 的 `approval_enforcement` 改为 `"enforced"`，复核页自动切换到"平台强制"文案（前端分支已就位）
-- [ ] E4 副作用分类：内置工具静态保守分类（bash 一律按 write+）；MCP 工具用规范 `annotations`（`readOnlyHint`/`destructiveHint`），缺失默认高风险。第一版明确不做参数级判断
+### ~~阶段 E：opencode wrapper 强制审批~~（已完成，见分支提交）
+
+**设计变更**：原计划是自建 approval token 表（绑定 user/agent/session/tool/args_hash）。
+实现时发现 opencode 自身已有完整的强制拦截机制（`Permission.Service.ask`，vendored
+source 见 `/home/xxcx/docker/opencode/opencode/packages/opencode/src/permission/`、
+`src/session/tools.ts:80`）：工具执行代码在真正产生副作用前会 `yield* ctx.ask(...)`，
+这是一个真正阻塞的调用，没有回复时工具调用无法继续（fail-closed by construction）。
+于是改为**桥接**opencode 原生的 ask/reply 协议到 LAP 现有的 Inbox 审批系统，而不是重新发明一套
+token 语义——更小的攻击面、复用现成 UI、复用现成审计（inbox 表本身就是审计记录）。
+
+- [x] E1（改为）复用现有 `LiteLLM_ManagedAgentInboxItemsTable`，新增 `kind='tool_permission'`，
+  无需新表/新迁移。`create_approval`/`pending_approvals` 参数化支持新 kind。
+- [x] E2 LAP 侧新增 `POST /api/tool-approvals`（`src/http/managed_agents/tool_approvals.rs`）
+  接收 opencode wrapper 的 `permission.asked` 桥接请求，创建 pending inbox 项；
+  `inbox/approvals.rs::accept/reject` 按 kind 分支，`tool_permission` 走
+  `tool_approvals::reply()` 直接 POST 回 opencode 的 `/permission/{id}/reply`
+  （而不是像 MCP 审批那样枚举新 prompt 恢复会话——工具调用是协议层暂停，不是等下一条消息）。
+  LAP 只发送 `once`/`reject`，不发送 `always`，避免一次人工决定变成对未来所有调用的默许信任。
+- [x] E3 `runtime_provision.rs::provider_options` 在 `is_custom_harness &&
+  write_requires_approval` 时向 opencode agent 注入
+  `permissions: {bash:"ask", edit:"ask", webfetch:"ask"}`（键名对应 opencode 工具的实际
+  permission key，`write`/`edit` 工具共用 `edit` 键——已用 vendored source 核实，不是猜测）。
+  `agent_runtime_tools.rs::approval_enforcement(runtime, is_custom_harness)` 新增
+  `is_custom_harness` 参数：只有走 opencode wrapper 的 harness 返回 `"enforced"`，
+  真正的托管 Anthropic Managed Agents（哪怕共享同一个 api_spec 字符串）仍是 `"advisory"`。
+  复核页文案自动切换（前端逻辑上个分支已就位，无需改动）。
+- [x] opencode wrapper（`templates/opencode/src/app.mjs`）：pump 内新增
+  `bridgePermissionAsk`，收到 `permission.asked` SSE 事件即 POST 到 LAP；新增
+  `POST /v1/sessions/:id/permissions/:requestID/reply` 代理到 opencode 自身的
+  reply 端点。两处改动共享同一个已有的事件泵，双 pump（共享/per-session）都覆盖。
+- [x] 前端 Inbox 页面复用 `ToolApprovalPanel`，`kind` 类型新增 `"tool_permission"`，
+  "approvals" 计数与 pending 面板逻辑扩展到新 kind，无需新组件。
+- **不做（有意跳过）**：E4 副作用参数级分类——当前只做工具粒度的 ask/allow，不解析
+  bash 命令或文件路径来判断风险等级。理由：opencode 自己的 patterns/metadata 已经
+  把具体命令、diff、URL 带给人工审批者查看（人工决策时能看到细节），参数级自动分类
+  留给更高置信度的后续迭代。
 
 ### 阶段 F：P1 体验（中）
 - [x] F1 推荐模型内联差异提示（已完成）：生成结果模型与用户已选不同且在可选模型列表中时，配置页显示内联横幅 [使用建议]/[保留当前]，默认保留用户选择；建议模型不在 `models` 列表则不提示（避免推荐不可用模型）。未做：推荐理由展示（后端 drafting 接口暂不返回理由）

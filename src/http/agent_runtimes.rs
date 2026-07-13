@@ -189,7 +189,7 @@ async fn runtime_values(state: &AppState) -> Result<Vec<RuntimeResponse>, Gatewa
             credential_provider_id: provider.id.to_owned(),
             credential_provider_name: provider.name.to_owned(),
             tools: runtime_tools(entry.id).to_vec(),
-            approval_enforcement: approval_enforcement(entry.id),
+            approval_enforcement: approval_enforcement(entry.id, false),
             connected: credential.is_some(),
             api_base: credential.as_ref().map(|c| c.api_base.clone()),
             masked_api_key: credential.map(|c| provider_credentials::mask_api_key(&c.api_key)),

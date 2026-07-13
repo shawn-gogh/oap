@@ -163,7 +163,7 @@ function InboxInner() {
   const counts = useMemo(() => {
     const list = items ?? [];
     return {
-      approvals: list.filter((i) => i.kind === "approval").length,
+      approvals: list.filter((i) => i.kind === "approval" || i.kind === "tool_permission").length,
       issues: list.filter((i) => i.kind === "issue").length,
       blocked: list.filter((i) => i.status === "pending" || i.status === "open").length,
     };
@@ -383,7 +383,9 @@ function InboxInner() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusTag item={selected} />
-                          <span className="text-xs text-muted-foreground">{selected.kind}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {selected.kind === "tool_permission" ? "工具权限（平台强制）" : selected.kind}
+                          </span>
                         </div>
                         <h2 className="mt-3 text-base font-semibold tracking-tight leading-snug">{selected.title}</h2>
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -429,7 +431,7 @@ function InboxInner() {
                     </div>
                   </div>
 
-                  {selected.kind === "approval" && selected.status === "pending" && (
+                  {(selected.kind === "approval" || selected.kind === "tool_permission") && selected.status === "pending" && (
                     <ToolApprovalPanel
                       key={selected.id}
                       approval={{
@@ -445,7 +447,7 @@ function InboxInner() {
                     />
                   )}
 
-                  {selected.kind === "approval" && selected.status !== "pending" && (
+                  {(selected.kind === "approval" || selected.kind === "tool_permission") && selected.status !== "pending" && (
                     <div className="rounded-lg border border-border bg-card p-4">
                       <div className="mb-3 text-sm font-medium">审批记录</div>
                       {selected.args && Object.keys(selected.args).length > 0 ? (

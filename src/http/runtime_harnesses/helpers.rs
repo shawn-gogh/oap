@@ -43,7 +43,7 @@ async fn default_harnesses(state: &AppState) -> Result<Vec<HarnessResponse>, Gat
             connected: credential.is_some(),
             masked_api_key: credential.map(|c| mask_api_key(&c.api_key)),
             tools: runtime_tools(entry.id).to_vec(),
-            approval_enforcement: approval_enforcement(entry.id),
+            approval_enforcement: approval_enforcement(entry.id, false),
         });
     }
     Ok(result)
@@ -79,7 +79,7 @@ async fn custom_harnesses(
             connected,
             masked_api_key,
             tools: runtime_tools(&harness.api_spec).to_vec(),
-            approval_enforcement: approval_enforcement(&harness.api_spec),
+            approval_enforcement: approval_enforcement(&harness.api_spec, true),
         });
     }
     Ok(result)
@@ -102,7 +102,7 @@ fn append_import_providers(result: &mut Vec<HarnessResponse>) {
             connected: false,
             masked_api_key: None,
             tools: runtime_tools(provider.api_spec).to_vec(),
-            approval_enforcement: approval_enforcement(provider.api_spec),
+            approval_enforcement: approval_enforcement(provider.api_spec, false),
         });
     }
 }

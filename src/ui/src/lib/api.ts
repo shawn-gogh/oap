@@ -1277,7 +1277,7 @@ export async function rejectApproval(id: string, feedback?: string): Promise<voi
 // Unified list of human-in-the-loop approvals (kind="approval") an agent is
 // blocked on, plus informational issues an agent filed (kind="issue").
 
-export type InboxKind = "approval" | "issue";
+export type InboxKind = "approval" | "issue" | "tool_permission";
 export type InboxStatus = "pending" | "accepted" | "rejected" | "open" | "resolved";
 export type InboxFilter = "attention" | "completed" | "all";
 

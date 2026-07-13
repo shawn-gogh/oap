@@ -25,9 +25,20 @@ pub fn runtime_tools(runtime: &str) -> &'static [RuntimeTool] {
 /// Whether write-approval is enforced by the platform at the tool-execution
 /// boundary for this runtime, or merely suggested to the model via the
 /// approval MCP. Native tools (bash/write/edit) execute inside the runtime
-/// environment, outside LAP's dispatch path, so no runtime is enforced today.
-pub fn approval_enforcement(_runtime: &str) -> &'static str {
-    "advisory"
+/// environment, outside LAP's dispatch path — with one exception: our own
+/// opencode wrapper bridges opencode's native `Permission.Service.ask` gate
+/// into LAP's inbox (see runtime_provision::provider_options and
+/// managed_agents::tool_approvals), so opencode can genuinely block a tool
+/// call pending human approval. Custom harnesses register under the same
+/// api_spec as the built-in runtime they mimic (e.g. opencode speaks
+/// claude_managed_agents), so `is_custom_harness` — not the api_spec string —
+/// is what identifies "this is actually our wrapper".
+pub fn approval_enforcement(runtime: &str, is_custom_harness: bool) -> &'static str {
+    if is_custom_harness && runtime == CLAUDE_MANAGED_AGENTS {
+        "enforced"
+    } else {
+        "advisory"
+    }
 }
 
 const CLAUDE_MANAGED_TOOLS: [RuntimeTool; 8] = [

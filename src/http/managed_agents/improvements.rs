@@ -132,6 +132,7 @@ pub(crate) async fn propose(
 
     let item = inbox::repository::create_approval(
         pool,
+        "approval",
         format!("改进提案：{}", agent.name),
         None,
         Some(agent_id.clone()),

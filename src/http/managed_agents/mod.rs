@@ -15,6 +15,7 @@ pub mod runs;
 pub mod skills;
 pub mod slack;
 pub mod teams;
+pub mod tool_approvals;
 pub mod workspace;
 
 use axum::http::HeaderMap;

@@ -183,11 +183,48 @@ export function createApp({
   let pumpStarted = false;
   let pumpConnected = false;
 
+  // Notifies LAP that opencode has paused a tool call awaiting permission
+  // (config written by writeConfig's `permission: ask` block — see
+  // opencode.mjs::provisionAgent). LAP files a pending inbox item; a human
+  // decision there calls back into /v1/sessions/:id/permissions/:id/reply
+  // above to unblock or deny it. Fire-and-forget: if LAP is unreachable the
+  // tool call just stays paused (fail-closed), which is the safe direction.
+  async function bridgePermissionAsk(raw, sessionId) {
+    if (!litellmBaseURL) return;
+    const props = raw.properties || raw;
+    if (!props.id || !props.permission) return;
+    const lapBase = litellmBaseURL.replace(/\/v1\/?$/, "");
+    try {
+      const res = await fetch(`${lapBase}/api/tool-approvals`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(litellmApiKey ? { authorization: `Bearer ${litellmApiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          request_id: props.id,
+          permission: props.permission,
+          patterns: props.patterns || [],
+          metadata: props.metadata || {},
+        }),
+      });
+      if (!res.ok) {
+        console.error(`[permission] LAP tool-approval bridge failed (${res.status})`);
+      }
+    } catch (err) {
+      console.error("[permission] failed to notify LAP of permission.asked:", err?.message || err);
+    }
+  }
+
   function pumpHandle(raw) {
     const sid = rawSessionId(raw);
     if (!sid) return;
     const agentId = store.getSessionAgent(sid);
     if (!agentId) return; // not one of our sessions
+    if (raw.type === "permission.asked") {
+      bridgePermissionAsk(raw, sid).catch(() => {});
+    }
     const turn = activeTurns.get(sid);
     if (turn && !turn.terminal) turn.lastActivity = Date.now();
     const agent = store.getAgent(agentId);
@@ -567,6 +604,29 @@ export function createApp({
       body: "{}",
     });
     res.status(r.ok ? 200 : r.status).json({ aborted: r.ok });
+  }));
+
+  // Replies to an opencode-native permission request (bash/edit/webfetch
+  // paused by `permission: ask` — see writeConfig's permissions block),
+  // unblocking or permanently denying the tool call it's holding. LAP calls
+  // this after a human decides on the bridged inbox item (see
+  // bridgePermissionAsk below and src/http/managed_agents/tool_approvals.rs).
+  app.post("/v1/sessions/:id/permissions/:requestID/reply", wrap(async (req, res) => {
+    const r = await ocFetch(
+      await resolveBaseUrl(req.params.id),
+      `/permission/${encodeURIComponent(req.params.requestID)}/reply`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reply: req.body?.reply === "reject" ? "reject" : "once",
+          message: req.body?.message || undefined,
+        }),
+      },
+    );
+    const text = await r.text();
+    res.status(r.status);
+    try { res.json(JSON.parse(text)); } catch { res.type("text/plain").send(text); }
   }));
 
   app.get("/v1/sessions/:id/events", wrap(async (req, res) => {

@@ -139,6 +139,23 @@ curl -s http://localhost:4000/health   # 期望 200
   （预期中的行为收窄，如某存量智能体依赖这一隐式注入需显式补勾工具）。
 - Slack/Teams 渠道消息：active 智能体正常响应；draft 智能体静默忽略（仅日志）。
 
+### 6. opencode 强制审批（仅 local-opencode / opencode 自定义 harness）
+
+需要 `docker compose --profile opencode up -d` 已启动。
+
+| 步骤 | 期望结果 |
+|---|---|
+| 创建一个 runtime 为 `local-opencode` 的智能体，勾选 `bash` 工具，复核页勾选"写操作需要人工确认"并创建 | 复核页标题应为「写操作需要人工确认（平台强制）」（不是"提示性"） |
+| 激活该智能体，开始对话，让它执行一个 shell 命令（如 `ls`） | 智能体的回复卡在该工具调用上不继续；进入「收件箱」应看到一条新的 pending 条目，kind 为「工具权限（平台强制）」 |
+| 在收件箱点击「同意」 | 几秒内工具调用继续执行，会话恢复正常输出 |
+| 重复上一步，改为点击「拒绝」 | 该次工具调用被拒绝，模型收到拒绝信号，不会执行该命令 |
+| 检查 `docker compose logs opencode` | 应看到 `[permission]` 前缀日志，无桥接失败报错 |
+| 创建一个 runtime 为 `claude_managed_agents`（非 opencode）的智能体，同样勾选"写操作需要人工确认" | 复核页标题应为「写操作审批（提示性）」——这是预期行为，LAP 无法强制拦截该 Runtime |
+
+失败排查：若工具调用没有暂停（直接执行了），检查该智能体的 Eval 步骤是否勾选了
+`write_requires_approval`；若暂停了但收件箱没有出现条目，检查 opencode 容器是否配置了
+`LITELLM_BASE_URL`（桥接依赖它回调 LAP）。
+
 ## Contributing
 
 PRs welcome. See [docs/engineering/contributing.mdx](docs/engineering/contributing.mdx).

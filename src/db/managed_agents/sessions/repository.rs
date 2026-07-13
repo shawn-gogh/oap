@@ -201,6 +201,23 @@ pub async fn get(pool: &PgPool, session_id: &str) -> Result<Option<SessionRow>, 
     .map_err(GatewayError::Database)
 }
 
+/// Looks up by the *provider-side* session id (e.g. opencode's own session
+/// id), not LAP's own `id` — the two are distinct values assigned
+/// independently at provisioning time. Used to resolve inbound callbacks from
+/// a runtime wrapper, which only knows its own session id.
+pub async fn get_by_provider_session_id(
+    pool: &PgPool,
+    provider_session_id: &str,
+) -> Result<Option<SessionRow>, GatewayError> {
+    sqlx::query_as::<_, SessionRow>(
+        r#"SELECT * FROM "LiteLLM_ManagedAgentSessionsTable" WHERE provider_session_id = $1"#,
+    )
+    .bind(provider_session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn delete(pool: &PgPool, session_id: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(r#"DELETE FROM "LiteLLM_ManagedAgentSessionsTable" WHERE id = $1"#)
         .bind(session_id)
