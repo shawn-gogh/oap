@@ -4,12 +4,7 @@ pub async fn reset_tables(pool: &PgPool) {
     sqlx::query(
         r#"
         TRUNCATE
-          "LiteLLM_ManagedAgentSlackOAuthStatesTable",
-          "LiteLLM_SlackPendingInstallsTable",
-          "LiteLLM_SlackAgentBindingsTable",
-          "LiteLLM_ManagedAgentSlackEventsTable",
           "LiteLLM_CredentialsTable",
-          "LiteLLM_ManagedAgentSlackThreadSessionsTable",
           "LiteLLM_ManagedAgentInboxItemsTable",
           "LiteLLM_ManagedAgentRoutinesTable",
           "LiteLLM_ManagedAgentRunsTable",

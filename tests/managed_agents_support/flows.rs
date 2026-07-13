@@ -9,19 +9,12 @@ mod claude_runtime;
 mod cursor_runtime;
 mod gemini_runtime;
 mod platform_approvals;
-mod platform_factory;
-mod platform_factory_oauth;
-mod platform_factory_payloads;
 mod platform_mcps;
 mod platform_skill_mcp;
 mod routines;
 mod rules;
 mod runtime_catalog;
 mod sessions;
-mod slack;
-mod slack_helpers;
-mod slack_mcp;
-mod slack_url_verification;
 
 pub use claude_mcp_vault::exercise_claude_gateway_mcp_vault;
 pub use claude_runtime::exercise_claude_runtime_session_storage;
@@ -33,7 +26,6 @@ pub use routines::{exercise_routines, exercise_runtime_routine};
 pub use rules::exercise_rules;
 pub use runtime_catalog::assert_agent_runtime_catalog;
 pub use sessions::exercise_sessions;
-pub use slack::exercise_slack;
 
 pub async fn create_agent(fixture: &AppFixture) -> String {
     let created = request_json(

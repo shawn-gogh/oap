@@ -124,7 +124,6 @@ fn test_config(api_base: String) -> GatewayConfig {
             database_url: Some("postgres://test".to_owned()),
             ..Default::default()
         },
-        slack: Default::default(),
         agents: Vec::new(),
     }
 }

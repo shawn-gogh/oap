@@ -55,9 +55,6 @@ import type {
   VaultKeyEntry,
   PlatformMcp,
 } from "@/lib/types";
-import { useGoogleChatAppFlow } from "./google-chat-app-flow";
-import { useSlackAppFlow } from "./slack-app-flow";
-import { useTeamsAppFlow } from "./teams-app-flow";
 import { useWebhookAppFlow } from "./webhook-app-flow";
 import { ImportAgentDialog } from "./import-agent-dialog";
 import { AgentsTable } from "./agents-table";
@@ -121,9 +118,6 @@ export default function AgentsPage() {
   const [memValue, setMemValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [byoConfiguredAgents, setByoConfiguredAgents] = useState<Set<string>>(new Set());
-  const googleChatFlow = useGoogleChatAppFlow(setAgents);
-  const slackFlow = useSlackAppFlow(setAgents);
-  const teamsFlow = useTeamsAppFlow(setAgents);
   const webhookFlow = useWebhookAppFlow(setAgents);
 
   const load = async () => {
@@ -380,9 +374,6 @@ export default function AgentsPage() {
                 onRun={openAgent}
                 onEdit={openEdit}
                 onDelete={remove}
-                onSlack={slackFlow.openSlack}
-                onTeams={teamsFlow.openTeams}
-                onGoogleChat={googleChatFlow.openGoogleChat}
                 onWebhook={webhookFlow.openWebhook}
                 onOpenDetail={(agent) =>
                   router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`)
@@ -801,9 +792,6 @@ export default function AgentsPage() {
         onOpenChange={setImportOpen}
         onImported={(imported) => setAgents((current) => [...imported, ...(current ?? [])])}
       />
-      {googleChatFlow.dialog}
-      {slackFlow.dialog}
-      {teamsFlow.dialog}
       {webhookFlow.dialog}
     </div>
   );
@@ -814,28 +802,10 @@ function runtimeOptions(runtimes: AgentRuntime[]): AgentRuntime[] {
   return [
     {
       id: "claude_managed_agents",
-      name: "Claude Managed Agents",
+      name: "自托管开放 Harness",
       default_api_base: "",
       credential_provider_id: "anthropic",
       credential_provider_name: "Anthropic",
-      tools: [],
-      connected: false,
-    },
-    {
-      id: "cursor",
-      name: "Cursor",
-      default_api_base: "",
-      credential_provider_id: "cursor",
-      credential_provider_name: "Cursor",
-      tools: [],
-      connected: false,
-    },
-    {
-      id: "gemini_antigravity",
-      name: "Gemini Antigravity",
-      default_api_base: "",
-      credential_provider_id: "gemini",
-      credential_provider_name: "Gemini",
       tools: [],
       connected: false,
     },

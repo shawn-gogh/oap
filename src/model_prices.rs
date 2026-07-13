@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
-use reqwest::Client;
 use serde::{Deserialize, Deserializer};
 
-const MODEL_COST_MAP_URL: &str = "https://raw.githubusercontent.com/BerriAI/litellm/refs/heads/litellm_internal_staging/model_prices_and_context_window.json";
-
+// OAP is self-contained: the model cost map ships baked into the binary
+// (include_str! below) instead of being fetched from GitHub at startup.
 static BACKUP_JSON: &str = include_str!("model_prices_backup.json");
 
 fn deserialize_opt_u64<'de, D>(d: D) -> Result<Option<u64>, D::Error>
@@ -67,32 +66,10 @@ pub struct ModelInfo {
 
 pub type ModelCostMap = HashMap<String, ModelInfo>;
 
-pub async fn load(http: &Client) -> ModelCostMap {
-    let url = std::env::var("LITELLM_MODEL_COST_MAP_URL")
-        .unwrap_or_else(|_| MODEL_COST_MAP_URL.to_owned());
-
-    match fetch(http, &url).await {
-        Ok(map) => {
-            tracing::info!("Loaded model cost map from {url} ({} entries)", map.len());
-            map
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch model cost map from {url}: {e} — using backup");
-            load_backup()
-        }
-    }
-}
-
-async fn fetch(http: &Client, url: &str) -> Result<ModelCostMap, Box<dyn std::error::Error>> {
-    let text = http
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    let map = serde_json::from_str(&text)?;
-    Ok(map)
+pub fn load() -> ModelCostMap {
+    let map = load_backup();
+    tracing::info!("Loaded embedded model cost map ({} entries)", map.len());
+    map
 }
 
 fn load_backup() -> ModelCostMap {

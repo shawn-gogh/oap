@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use super::{
     factory, session_management, AGENT_MEMORY_MCP_ID, CHECK_HUMAN_APPROVAL_MCP_ID,
     EDIT_AGENT_SKILL_MCP_ID, LIST_SUB_AGENTS_MCP_ID, REQUEST_HUMAN_APPROVAL_MCP_ID,
-    RUN_SUB_AGENT_MCP_ID, SEND_SLACK_MESSAGE_MCP_ID,
+    RUN_SUB_AGENT_MCP_ID,
 };
 
 pub fn tool_defs() -> Vec<Value> {
@@ -12,7 +12,6 @@ pub fn tool_defs() -> Vec<Value> {
         session_management::send_tool_def(),
         agent_memory_tool(),
         edit_agent_skill_tool(),
-        send_slack_message_tool(),
         list_sub_agents_tool(),
         run_sub_agent_tool(),
         request_human_approval_tool(),
@@ -148,32 +147,6 @@ fn edit_agent_skill_tool() -> Value {
                 }
             },
             "required": ["action"]
-        }
-    })
-}
-
-fn send_slack_message_tool() -> Value {
-    json!({
-        "name": SEND_SLACK_MESSAGE_MCP_ID,
-        "description": "Send a Slack channel message or DM using this agent's connected Slack bot.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "channel_id": {
-                    "type": "string",
-                    "description": "Slack channel ID, such as C123. When omitted, sends a DM."
-                },
-                "user_id": {
-                    "type": "string",
-                    "description": "Slack user ID, such as U123. Used for DMs only."
-                },
-                "email": {
-                    "type": "string",
-                    "description": "Slack user email. Used for DMs when user_id is omitted."
-                },
-                "text": { "type": "string" }
-            },
-            "required": ["text"]
         }
     })
 }

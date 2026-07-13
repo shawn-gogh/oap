@@ -24,7 +24,6 @@ import {
   Webhook,
 } from "lucide-react";
 
-import { BrandIcon } from "@/components/brand-icons";
 import { RuntimeProviderLogo } from "@/components/runtime-provider-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,13 +45,6 @@ import {
   providerLabel,
   runtimeFromAgent,
 } from "./agent-row-utils";
-import {
-  googleChatActionClass,
-  googleChatActionLabel,
-  googleChatConfig,
-} from "./google-chat-app-flow";
-import { slackActionClass, slackActionLabel, slackConfig } from "./slack-app-flow";
-import { teamsActionClass, teamsActionLabel, teamsConfig } from "./teams-app-flow";
 import { webhookActionClass, webhookActionLabel, webhookConfig } from "./webhook-app-flow";
 
 interface AgentsTableProps {
@@ -62,9 +54,6 @@ interface AgentsTableProps {
   onRun: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
-  onSlack: (agent: Agent) => void;
-  onTeams: (agent: Agent) => void;
-  onGoogleChat: (agent: Agent) => void;
   onWebhook: (agent: Agent) => void;
   onOpenDetail: (agent: Agent) => void;
 }
@@ -81,8 +70,6 @@ interface AgentTableRow {
   model: string;
   schedule: string;
   access: string;
-  slack: string;
-  teams: string;
   webhook: string;
   mcpCount: number;
   searchText: string;
@@ -95,9 +82,6 @@ export function AgentsTable({
   onRun,
   onEdit,
   onDelete,
-  onSlack,
-  onTeams,
-  onGoogleChat,
   onWebhook,
   onOpenDetail,
 }: AgentsTableProps) {
@@ -158,18 +142,6 @@ export function AgentsTable({
         ),
       },
       {
-        id: "slack",
-        accessorKey: "slack",
-        header: SortableHeader,
-        cell: ({ row }) => <span className="text-muted-foreground">{row.original.slack}</span>,
-      },
-      {
-        id: "teams",
-        accessorKey: "teams",
-        header: SortableHeader,
-        cell: ({ row }) => <span className="text-muted-foreground">{row.original.teams}</span>,
-      },
-      {
         id: "webhook",
         accessorKey: "webhook",
         header: SortableHeader,
@@ -185,15 +157,12 @@ export function AgentsTable({
             onRun={onRun}
             onEdit={onEdit}
             onDelete={onDelete}
-            onSlack={onSlack}
-            onTeams={onTeams}
-            onGoogleChat={onGoogleChat}
             onWebhook={onWebhook}
           />
         ),
       },
     ],
-    [onDelete, onEdit, onOpenDetail, onRun, onSlack, onTeams, onGoogleChat, onWebhook],
+    [onDelete, onEdit, onOpenDetail, onRun, onWebhook],
   );
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -377,67 +346,19 @@ function ActionsCell({
   onRun,
   onEdit,
   onDelete,
-  onSlack,
-  onTeams,
-  onGoogleChat,
   onWebhook,
 }: {
   agent: Agent;
   onRun: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
-  onSlack: (agent: Agent) => void;
-  onTeams: (agent: Agent) => void;
-  onGoogleChat: (agent: Agent) => void;
   onWebhook: (agent: Agent) => void;
 }) {
-  const slack = slackConfig(agent);
-  const teams = teamsConfig(agent);
-  const gChat = googleChatConfig(agent);
   const webhook = webhookConfig(agent);
   return (
     <div className="flex justify-end gap-1">
       <Button size="icon-sm" onClick={() => onRun(agent)} aria-label="运行" title="运行">
         <Play className="size-3.5" />
-      </Button>
-      <Button
-        size="icon-sm"
-        variant="outline"
-        className={slackActionClass(slack)}
-        onClick={() => onSlack(agent)}
-        aria-label={slackActionLabel(slack)}
-        title={
-          slack.status === "connected"
-            ? `${slack.slack_team_name || "Slack"}${
-                slack.bot_user_id ? ` · <@${slack.bot_user_id}>` : ""
-              }`
-            : slack.oauth_error || undefined
-        }
-      >
-        <BrandIcon id="slack" className="size-3.5" />
-      </Button>
-      <Button
-        size="icon-sm"
-        variant="outline"
-        className={teamsActionClass(teams)}
-        onClick={() => onTeams(agent)}
-        aria-label={teamsActionLabel(teams)}
-        title={
-          teams.status === "package_ready"
-            ? `${teams.app_name || "Teams"} package ready`
-            : teams.oauth_error || undefined
-        }
-      >
-        <BrandIcon id="teams" className="size-3.5" />
-      </Button>
-      <Button
-        size="icon-sm"
-        variant="outline"
-        className={googleChatActionClass(gChat)}
-        onClick={() => onGoogleChat(agent)}
-        aria-label={googleChatActionLabel(gChat)}
-      >
-        <BrandIcon id="google_chat" className="size-3.5" />
       </Button>
       <Button
         size="icon-sm"
@@ -522,8 +443,6 @@ function toTableRow(
       : source?.credential_mode === "shared"
         ? "Shared key"
         : "Workspace";
-  const slack = slackActionLabel(slackConfig(agent));
-  const teams = teamsActionLabel(teamsConfig(agent));
   const webhook = webhookActionLabel(webhookConfig(agent));
   return {
     agent,
@@ -537,8 +456,6 @@ function toTableRow(
     model: String(agent.model ?? ""),
     schedule: scheduleLabel(agent.cron, agent.timezone),
     access,
-    slack,
-    teams,
     webhook,
     mcpCount: platformMcpIds(agent).length,
     searchText: [
@@ -551,8 +468,6 @@ function toTableRow(
       runtimeId,
       runtimeName,
       access,
-      slack,
-      teams,
       webhook,
     ]
       .filter(Boolean)
@@ -582,8 +497,6 @@ function headerLabel(id: string) {
     model: "Model",
     schedule: "Schedule",
     access: "Access",
-    slack: "Slack",
-    teams: "Teams",
     webhook: "Webhook",
   };
   return labels[id] ?? id;
@@ -596,8 +509,6 @@ function columnWidthClass(id: string) {
     model: "w-[10%]",
     schedule: "w-[8%]",
     access: "w-[7%]",
-    slack: "w-[7%]",
-    teams: "w-[7%]",
     webhook: "w-[7%]",
     actions: "w-[20%]",
   };

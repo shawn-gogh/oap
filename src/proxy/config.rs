@@ -7,7 +7,7 @@ use crate::{
 };
 
 pub use crate::proxy::config_types::{
-    GatewayConfig, GeneralSettings, LiteLlmParams, McpServersConfig, ModelEntry, SlackSettings,
+    GatewayConfig, GeneralSettings, LiteLlmParams, McpServersConfig, ModelEntry,
 };
 pub use crate::proxy::mcp_config::{McpAuthType, McpServerEntry, McpTransport};
 
@@ -61,8 +61,6 @@ fn expand_env(config: &mut GatewayConfig) -> Result<(), GatewayError> {
             "RENDER_EXTERNAL_URL",
         ]);
     }
-    config.slack.api_base_url = expand_env_value(&config.slack.api_base_url)?;
-
     for entry in &mut config.model_list {
         if let Some(api_key) = entry.litellm_params.api_key.as_deref() {
             entry.litellm_params.api_key = Some(expand_env_value(api_key)?);
