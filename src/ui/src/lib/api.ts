@@ -202,10 +202,10 @@ export function clearHarnessServerKey(): void {
 
 function withAuth(init?: RequestInit): RequestInit {
   const key = getStoredMasterKey();
-  if (!key) return { cache: "no-store", ...init };
+  if (!key) return { cache: "no-store", credentials: "same-origin", ...init };
   const headers = new Headers(init?.headers);
   if (!headers.has("authorization")) headers.set("authorization", `Bearer ${key}`);
-  return { cache: "no-store", ...init, headers };
+  return { cache: "no-store", credentials: "same-origin", ...init, headers };
 }
 
 async function req(path: string, init?: RequestInit): Promise<Response> {
@@ -249,11 +249,32 @@ export async function whoami(): Promise<void> {
   }
 }
 
+export async function loginWithAccessKey(key: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key }),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text().catch(() => ""));
+  }
+}
+
+export async function logout(): Promise<void> {
+  const res = await req("/api/auth/logout", { method: "POST" });
+  if (!res.ok && res.status !== 401) {
+    throw new ApiError(res.status, await res.text().catch(() => ""));
+  }
+  clearStoredMasterKey();
+}
+
 export interface CurrentUser {
   id: string;
   display_name: string;
   email?: string | null;
   is_admin: boolean;
+  can_manage_groups: boolean;
 }
 
 export interface ManagedUser {
@@ -288,11 +309,28 @@ export async function createUser(input: { id: string; display_name: string; emai
 }
 
 export async function updateUserStatus(id: string, status: "active" | "disabled"): Promise<ManagedUser> {
+  return updateUser(id, { status });
+}
+
+export async function updateUser(
+  id: string,
+  input: { status?: "active" | "disabled"; display_name?: string; email?: string | null },
+): Promise<ManagedUser> {
   return jsonOrThrow<ManagedUser>(
     await req(`/api/users/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function deactivateUser(id: string, transferTo?: string): Promise<ManagedUser> {
+  return jsonOrThrow<ManagedUser>(
+    await req(`/api/users/${encodeURIComponent(id)}/deactivate`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ transfer_to: transferTo || undefined }),
     }),
   );
 }
@@ -772,7 +810,7 @@ export async function sendMessageWithRuntimeModel(opts: {
   apiSpec?: string | null; // resolved api_spec; null = harnesses not yet loaded
 }): Promise<void> {
   if (opts.runtime && !opts.model.trim()) {
-    throw new Error("Runtime model is required.");
+    throw new Error("必须选择运行时模型。");
   }
   return sendMessage({
     sessionId: opts.sessionId,
@@ -806,7 +844,7 @@ function draftModelFrom(models: string[], requestedModel?: string): string {
   const modelOptions = models.map((model) => model.trim()).filter(Boolean);
   const requested = requestedModel?.trim();
   const model = requested && modelOptions.includes(requested) ? requested : preferredModel(modelOptions);
-  if (!model) throw new Error("No models are configured.");
+  if (!model) throw new Error("尚未配置可用模型。");
   return model;
 }
 
@@ -851,7 +889,7 @@ function jsonFromMessage(text: string): unknown {
   const raw = (fenced?.[1] ?? text).trim();
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error("Model returned no JSON.");
+  if (start < 0 || end < start) throw new Error("模型未返回 JSON 数据。");
   return JSON.parse(raw.slice(start, end + 1));
 }
 
@@ -913,6 +951,7 @@ export async function draftAgentConfigWithModel(
       max_tokens: 3200,
       system:
         `You design managed agent applications for OAP (Open Agent Platform). Start with the business contract, then compile it into the runtime configuration.\n\n` +
+        `LANGUAGE: All user-facing content in the generated YAML must be Simplified Chinese, including name, description, system prompt, application text, evaluation cases, and governance explanations. Keep protocol field names, enum values, runtime/model/tool/MCP/skill/rule IDs, credential names, and YAML keys unchanged.\n\n` +
         `METHODOLOGY (apply in order):\n` +
         `1. Define the application contract: the objective, intended audience, interaction mode, concrete inputs, reviewable outputs, explicit non-goals, completion criteria, and failure behavior. Do not put runtime IDs, model IDs, tool IDs, MCP IDs, credentials, skills, or rules in the application block.\n` +
         `2. Assess feasibility. Judge complexity, value, model_fit, and recoverable_errors honestly in design.feasibility. If most are false, emit a simple single-shot assistant rather than pretending autonomy is useful.\n` +
@@ -927,10 +966,17 @@ export async function draftAgentConfigWithModel(
         `  interaction_mode: conversational\n` +
         `  inputs:\n    - type: request\n      source: conversation\n      description: "<concrete input>"\n` +
         `  outputs:\n    - type: response\n      description: "<reviewable deliverable>"\n` +
+        `  dashboard: # Only include when the user requests a dashboard, cockpit, or visual analytics application.\n` +
+        `    title: "<Chinese dashboard title>"\n` +
+        `    description: "<Chinese dashboard purpose>"\n` +
+        `    template: analysis\n` +
+        `    metrics: ["<Chinese metric name>"]\n` +
+        `    dimensions: ["<Chinese dimension name>"]\n` +
+        `    visualizations: ["指标卡", "趋势图", "明细表"]\n` +
         `  non_goals: ["<explicitly excluded behavior>"]\n` +
         `  completion_criteria: ["<observable completion condition>"]\n` +
         `  failure_behavior: "<what to do when blocked>"\n` +
-        `interaction_mode is one of conversational, scheduled, event_driven, manual. The application block describes business intent only; operational IDs belong in their existing top-level fields.\n\n` +
+        `interaction_mode is one of conversational, scheduled, event_driven, manual. When dashboard is present, outputs must contain type: interactive_dashboard. Instruct the agent to return a JSON artifact with metrics as an object and rows as an array of flat objects so the built-in dashboard can render it. The application block describes business intent only; operational IDs belong in their existing top-level fields.\n\n` +
         `The design key records the methodology artifacts and must always be present, shaped exactly like:\n` +
         `design:\n` +
         `  feasibility:\n    complexity: true\n    value: true\n    model_fit: true\n    recoverable_errors: true\n` +
@@ -949,7 +995,7 @@ export async function draftAgentConfigWithModel(
     context?.onProgress,
   );
   const yaml = yamlFromMessage(text);
-  if (!yaml) throw new Error("Model returned an empty config.");
+  if (!yaml) throw new Error("模型返回了空配置。");
   return yaml;
 }
 
@@ -1100,6 +1146,7 @@ export async function refineAgentConfigWithModel(
       max_tokens: 3200,
       system:
         `You incrementally edit an existing managed agent config for LiteLLM Agent Platform.\n\n` +
+        `LANGUAGE: Any newly generated or rewritten user-facing text must be Simplified Chinese. Keep protocol field names, enum values, runtime/model/tool/MCP/skill/rule IDs, credential names, and YAML keys unchanged.\n\n` +
         `RULES:\n` +
         `1. Apply ONLY the change the user asked for. Every other field — including name, description, model, runtime, system prompt wording, tools, schedule, vault_keys, skill_ids, rule_ids, sub_agents, mcp_server_ids, the application contract, and the whole design block — must be preserved exactly as-is unless the user's instruction requires touching it.\n` +
         `2. Never regenerate or rephrase untouched text. Copy it through verbatim.\n` +
@@ -1120,7 +1167,7 @@ export async function refineAgentConfigWithModel(
     context?.onProgress,
   );
   const yaml = yamlFromMessage(text);
-  if (!yaml) throw new Error("Model returned an empty config.");
+  if (!yaml) throw new Error("模型返回了空配置。");
   return yaml;
 }
 
@@ -1161,6 +1208,7 @@ export async function askAgentBuilderCopilot(input: {
       max_tokens: 1400,
       system:
         `You are the interactive Agent Builder Copilot for LiteLLM Agent Platform.\n` +
+        `Reply in Simplified Chinese for summary, clarification questions, reasons, risks, and suggested system notes. Keep tool IDs and JSON keys unchanged.\n` +
         `Help the user improve the current managed-agent draft without taking over final decisions.\n` +
         `Mode: ${input.mode}.\n\n` +
         `Return only JSON with this exact shape:\n` +
@@ -2082,6 +2130,61 @@ export async function activateAgent(id: string): Promise<{ id: string; status: s
   return jsonOrThrow<{ id: string; status: string }>(res);
 }
 
+export interface AgentGovernance {
+  agent_id: string;
+  owner_id: string;
+  source_provider: string;
+  source_endpoint: string;
+  external_agent_id: string;
+  source_version: number;
+  lifecycle_status: "imported" | "tested" | "pending_approval" | "published" | "unhealthy" | "rolled_back";
+  runtime_health: "unknown" | "healthy" | "unhealthy";
+  health_detail?: string | null;
+  credential_scope: "personal" | "byo";
+  credential_name?: string | null;
+  tested_revision?: number | null;
+  published_revision?: number | null;
+  previous_published_revision?: number | null;
+  publish_approval_id?: string | null;
+  last_health_at?: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AgentGovernanceResponse {
+  governance: AgentGovernance;
+  current_revision: number;
+  preflight?: AgentPreflightReport | null;
+}
+
+export async function getAgentGovernance(id: string): Promise<AgentGovernanceResponse> {
+  return jsonOrThrow<AgentGovernanceResponse>(
+    await req(`/api/agents/${encodeURIComponent(id)}/governance`),
+  );
+}
+
+export async function testAgentGovernance(id: string): Promise<AgentGovernanceResponse> {
+  return jsonOrThrow<AgentGovernanceResponse>(
+    await req(`/api/agents/${encodeURIComponent(id)}/governance/test`, { method: "POST" }),
+  );
+}
+
+export async function requestAgentPublish(id: string): Promise<{ governance: AgentGovernance }> {
+  return jsonOrThrow<{ governance: AgentGovernance }>(
+    await req(`/api/agents/${encodeURIComponent(id)}/governance/request-publish`, { method: "POST" }),
+  );
+}
+
+export async function rollbackAgent(id: string, version?: number): Promise<{ agent: Agent; governance: AgentGovernance }> {
+  return jsonOrThrow<{ agent: Agent; governance: AgentGovernance }>(
+    await req(`/api/agents/${encodeURIComponent(id)}/governance/rollback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version }),
+    }),
+  );
+}
+
 export async function runAgent(agentId: string, prompt: string): Promise<AgentRunStart> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/run`, {
     method: "POST",
@@ -2352,6 +2455,14 @@ export interface AgentGrant {
   permission: "use" | "edit" | string;
   granted_by?: string | null;
   created_at: number;
+  expires_at?: number | null;
+  source?: "direct" | string;
+  user?: {
+    id: string;
+    display_name: string;
+    email?: string | null;
+    status: "active" | "disabled" | string;
+  } | null;
 }
 
 export async function listAgentGrants(agentId: string): Promise<AgentGrant[]> {
@@ -2360,13 +2471,34 @@ export async function listAgentGrants(agentId: string): Promise<AgentGrant[]> {
   return data.grants ?? [];
 }
 
-export async function createAgentGrant(agentId: string, userId: string, permission: string): Promise<AgentGrant> {
+export async function createAgentGrant(
+  agentId: string,
+  userId: string,
+  permission: string,
+  expiresAt?: number,
+): Promise<AgentGrant> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/grants`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, permission }),
+    body: JSON.stringify({ user_id: userId, permission, expires_at: expiresAt }),
   });
   return jsonOrThrow<AgentGrant>(res);
+}
+
+export async function createAgentGrantsBatch(
+  agentId: string,
+  userIds: string[],
+  permission: string,
+  expiresAt?: number,
+): Promise<AgentGrant[]> {
+  const data = await jsonOrThrow<{ grants: AgentGrant[] }>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/grants/batch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_ids: userIds, permission, expires_at: expiresAt }),
+    }),
+  );
+  return data.grants ?? [];
 }
 
 export async function deleteAgentGrant(agentId: string, granteeUserId: string): Promise<void> {
@@ -2411,6 +2543,14 @@ export interface AgentGroupGrant {
   permission: "use" | "edit" | string;
   granted_by: string;
   created_at: number;
+  expires_at?: number | null;
+  source?: "group" | string;
+  group?: {
+    id: string;
+    name: string;
+    status: "active" | "disabled" | string;
+    member_count: number;
+  } | null;
 }
 
 export async function listGroups(query = ""): Promise<ManagedGroup[]> {
@@ -2464,6 +2604,36 @@ export async function deleteGroupMember(groupId: string, userId: string): Promis
   );
 }
 
+export async function listGroupAgentGrants(groupId: string): Promise<AgentGroupGrant[]> {
+  const data = await jsonOrThrow<{ grants: AgentGroupGrant[] }>(
+    await req(`/api/groups/${encodeURIComponent(groupId)}/agent-grants`),
+  );
+  return data.grants;
+}
+
+export async function deleteGroupAgentGrant(groupId: string, agentId: string): Promise<void> {
+  await jsonOrThrow<boolean>(
+    await req(`/api/groups/${encodeURIComponent(groupId)}/agent-grants/${encodeURIComponent(agentId)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export interface AuditLog {
+  id: string;
+  actor_user_id: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  metadata: Record<string, unknown>;
+  created_at: number;
+}
+
+export async function listAuditLogs(limit = 100): Promise<AuditLog[]> {
+  const data = await jsonOrThrow<{ logs: AuditLog[] }>(await req(`/api/audit-logs?limit=${limit}`));
+  return data.logs;
+}
+
 export async function listAgentGroupGrants(agentId: string): Promise<AgentGroupGrant[]> {
   const data = await jsonOrThrow<{ grants: AgentGroupGrant[] }>(
     await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants`),
@@ -2475,14 +2645,31 @@ export async function createAgentGroupGrant(
   agentId: string,
   groupId: string,
   permission: string,
+  expiresAt?: number,
 ): Promise<AgentGroupGrant> {
   return jsonOrThrow<AgentGroupGrant>(
     await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ group_id: groupId, permission }),
+      body: JSON.stringify({ group_id: groupId, permission, expires_at: expiresAt }),
     }),
   );
+}
+
+export async function createAgentGroupGrantsBatch(
+  agentId: string,
+  groupIds: string[],
+  permission: string,
+  expiresAt?: number,
+): Promise<AgentGroupGrant[]> {
+  const data = await jsonOrThrow<{ grants: AgentGroupGrant[] }>(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/group-grants/batch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ group_ids: groupIds, permission, expires_at: expiresAt }),
+    }),
+  );
+  return data.grants ?? [];
 }
 
 export async function deleteAgentGroupGrant(agentId: string, groupId: string): Promise<void> {

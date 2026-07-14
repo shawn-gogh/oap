@@ -44,10 +44,10 @@ export function loadSavedBuilderDraft(): SavedBuilderDraft | null {
  *  the backend only returns opaque config errors. */
 export function validateDraftForCreate(draft: AgentDraft): string[] {
   const problems: string[] = [];
-  if (!draft.name.trim()) problems.push("名称（Name）不能为空");
-  if (!draft.model.trim()) problems.push("未选择模型（Model）");
-  if (!draft.runtime.trim()) problems.push("未选择运行时（Runtime）");
-  if (!draft.system.trim()) problems.push("System prompt 为空");
+  if (!draft.name.trim()) problems.push("智能体名称不能为空");
+  if (!draft.model.trim()) problems.push("未选择模型");
+  if (!draft.runtime.trim()) problems.push("未选择运行时");
+  if (!draft.system.trim()) problems.push("系统提示词为空");
   if (!applicationGatePassed(draft.application)) {
     problems.push("应用蓝图需要业务目标、至少一个输入、一个输出和一项完成条件");
   }

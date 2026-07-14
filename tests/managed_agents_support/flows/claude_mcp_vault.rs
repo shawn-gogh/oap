@@ -96,9 +96,14 @@ async fn create_idle_runtime_session(fixture: &AppFixture, agent_id: &str, title
 fn assert_agent_mcp_body(body: &Value) {
     assert_eq!(
         body["mcp_servers"],
-        json!([{ "name": "mcp_gmail", "type": "url", "url": "http://localhost/mcp_gmail/mcp" }])
+        json!([{
+            "authorization_token": "sk-local",
+            "name": "mcp_gmail",
+            "type": "url",
+            "url": "http://localhost/mcp_gmail/mcp"
+        }])
     );
-    assert!(body["mcp_servers"][0].get("authorization_token").is_none());
+    assert_eq!(body["mcp_servers"][0]["authorization_token"], "sk-local");
     let gmail_toolset = body["tools"]
         .as_array()
         .unwrap()

@@ -336,10 +336,12 @@ async fn create_runtime_session_row(
     input: CreateSessionRequest,
     owner: Option<&str>,
 ) -> Result<CreatedRuntimeSession, GatewayError> {
-    let alias = input.runtime.as_deref().unwrap_or_default();
-    let resolved = crate::http::runtime_resolution::resolve_runtime(pool, state, alias).await?;
-    let runtime = resolved.alias.clone();
     let mut agent = load_agent(pool, &input).await?;
+    let alias = input.runtime.as_deref().unwrap_or_default();
+    let resolved =
+        crate::http::runtime_resolution::resolve_runtime_for_agent(pool, state, alias, &agent)
+            .await?;
+    let runtime = resolved.alias.clone();
     agent.system =
         crate::db::managed_agents::skills::compose::compose_agent_system_prompt(pool, &agent)
             .await?;
@@ -396,7 +398,9 @@ pub(super) async fn execute_runtime_prompt(
     if super::generic_chat::is_generic_chat(pool, runtime).await? {
         return super::generic_chat::execute_prompt(state, pool, &row, &prompt).await;
     }
-    let resolved = crate::http::runtime_resolution::resolve_runtime(pool, &state, runtime).await?;
+    let resolved =
+        crate::http::runtime_resolution::resolve_runtime_for_session(pool, &state, runtime, &row)
+            .await?;
     let client = super::runtime_sdk::lap_from_credential(&resolved)?;
     if let Err(error) = register_runtime_session(&client, pool, &row, &resolved).await {
         mark_session_error(&state, pool, &row.id, error.to_string()).await?;

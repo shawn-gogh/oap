@@ -73,3 +73,34 @@ pub async fn list(
     .await
     .map_err(GatewayError::Database)
 }
+
+pub async fn latest_version(pool: &PgPool, agent_id: &str) -> Result<Option<i32>, GatewayError> {
+    sqlx::query_scalar::<_, i32>(
+        r#"
+        SELECT version FROM "LiteLLM_ManagedAgentRevisionsTable"
+        WHERE agent_id = $1 ORDER BY version DESC LIMIT 1
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn get_version(
+    pool: &PgPool,
+    agent_id: &str,
+    version: i32,
+) -> Result<Option<AgentRevisionRow>, GatewayError> {
+    sqlx::query_as::<_, AgentRevisionRow>(
+        r#"
+        SELECT * FROM "LiteLLM_ManagedAgentRevisionsTable"
+        WHERE agent_id = $1 AND version = $2
+        "#,
+    )
+    .bind(agent_id)
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}

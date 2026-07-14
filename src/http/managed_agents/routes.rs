@@ -1,16 +1,23 @@
 use std::sync::Arc;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{delete, get, post},
     Router,
 };
 
 use crate::{channels::webhook, proxy::state::AppState};
 
+// Bundle/opencode-files imports carry a base64-encoded zip in the JSON body,
+// which inflates the payload ~33% over the raw file size (plus the
+// MAX_BUNDLE_BYTES uncompressed-size guard in import_files.rs already caps
+// the decoded archive at 20MB). Axum's default 2MB body limit is far too
+// small for these routes, so it's raised just for them.
+const IMPORT_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .merge(agent_routes())
-        .merge(import_routes())
         .merge(rule_routes())
         .merge(routine_routes())
         .merge(skill_routes())
@@ -21,6 +28,24 @@ pub fn router() -> Router<Arc<AppState>> {
 
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/api/agents/import/opencode-files",
+            post(super::import_files::import_opencode_files)
+                .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/agents/import/bundle",
+            post(super::import_files::import_agent_bundle)
+                .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/agents/import/{provider_id}/discover",
+            post(super::import::discover),
+        )
+        .route(
+            "/api/agents/import/{provider_id}",
+            post(super::import::import),
+        )
         .route(
             "/api/agents",
             post(super::registry::create::create).get(super::registry::list::list),
@@ -84,6 +109,22 @@ fn agent_routes() -> Router<Arc<AppState>> {
             get(super::registry::revisions::list),
         )
         .route(
+            "/api/agents/{agent_id}/governance",
+            get(super::governance::get),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/test",
+            post(super::governance::test),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/request-publish",
+            post(super::governance::request_publish),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/rollback",
+            post(super::governance::rollback),
+        )
+        .route(
             "/api/agents/{agent_id}/eval-runs",
             get(super::eval_runs::list).post(super::eval_runs::create),
         )
@@ -97,6 +138,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
             get(super::grants::list).post(super::grants::create),
         )
         .route(
+            "/api/agents/{agent_id}/grants/batch",
+            post(super::grants::create_batch),
+        )
+        .route(
             "/api/agents/{agent_id}/grantable-users",
             get(super::grants::grantable_users),
         )
@@ -107,6 +152,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/group-grants",
             get(super::grants::list_group_grants).post(super::grants::create_group_grant),
+        )
+        .route(
+            "/api/agents/{agent_id}/group-grants/batch",
+            post(super::grants::create_batch_group_grant),
         )
         .route(
             "/api/agents/{agent_id}/group-grants/{group_id}",
@@ -144,26 +193,6 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/runs/{run_id}/logs",
             get(super::runs::logs::logs),
-        )
-}
-
-fn import_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route(
-            "/api/agents/import/opencode-files",
-            post(super::import_files::import_opencode_files),
-        )
-        .route(
-            "/api/agents/import/bundle",
-            post(super::import_files::import_agent_bundle),
-        )
-        .route(
-            "/api/agents/import/{provider_id}/discover",
-            post(super::import::discover),
-        )
-        .route(
-            "/api/agents/import/{provider_id}",
-            post(super::import::import),
         )
 }
 

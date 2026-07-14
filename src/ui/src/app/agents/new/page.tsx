@@ -159,7 +159,7 @@ export default function NewAgentPage() {
       } catch (err) {
         if (cancelled) return;
         setMcpIntegrations([]);
-        setMcpError(apiErrorMessage(err, "MCP integrations unavailable"));
+        setMcpError(apiErrorMessage(err, "MCP 集成暂不可用"));
       } finally {
         if (!cancelled) setMcpLoading(false);
       }
@@ -191,7 +191,7 @@ export default function NewAgentPage() {
       setModelsLoading(false);
       setConfigText((current) => {
         const currentDraft = parseAgentDraftConfig(current);
-        if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+        if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
         if (currentDraft.draft.runtime.trim() !== runtime) return current;
         if (currentDraft.draft.model.trim() === defaultModel) return current;
         return stringifyAgentDraft({
@@ -207,7 +207,7 @@ export default function NewAgentPage() {
         setModels(modelValues);
         setConfigText((current) => {
           const currentDraft = parseAgentDraftConfig(current);
-          if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+          if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
           if (currentDraft.draft.runtime.trim() !== runtime) return current;
           const nextModel = selectedRuntimeModel(modelValues, currentDraft.draft.model);
           if (currentDraft.draft.model.trim() === nextModel) return current;
@@ -220,10 +220,10 @@ export default function NewAgentPage() {
       .catch((err) => {
         if (cancelled) return;
         setModels([]);
-        setModelsError(apiErrorMessage(err, "Failed to load runtime models"));
+        setModelsError(apiErrorMessage(err, "加载运行时模型失败"));
         setConfigText((current) => {
           const currentDraft = parseAgentDraftConfig(current);
-          if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+          if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
           if (currentDraft.draft.runtime.trim() !== runtime) return current;
           if (!currentDraft.draft.model.trim()) return current;
           return stringifyAgentDraft({ ...currentDraft.draft, model: "" });
@@ -243,7 +243,7 @@ export default function NewAgentPage() {
     const runtime = draft.runtime.trim();
     setConfigText((current) => {
       const currentDraft = parseAgentDraftConfig(current);
-      if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+      if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
       if (currentDraft.draft.runtime.trim() !== runtime) return current;
       const nextModel = selectedRuntimeModel(models, currentDraft.draft.model);
       if (currentDraft.draft.model.trim() === nextModel) return current;
@@ -367,13 +367,13 @@ export default function NewAgentPage() {
       const isServiceError =
         err instanceof Error &&
         (err.message.startsWith("HTTP ") || err.name === "TypeError" || err.name === "AbortError");
-      const serviceError = apiErrorMessage(err, "Model drafting failed");
+      const serviceError = apiErrorMessage(err, "模型生成草案失败");
       const fallbackDraft = withRuntimeDefaultTools(buildAgentDraftFromPrompt(trimmed), runtimes);
       openConfig(selectedModel ? { ...fallbackDraft, model: selectedModel } : fallbackDraft, templateId, {
         request: trimmed,
         notice: isServiceError
-          ? `Model drafting failed: ${serviceError}. Using a local starter config instead.`
-          : "Model couldn't generate a valid config for this request, so a local starter config was generated.",
+          ? `模型生成草案失败：${serviceError}。已改用本地初始配置。`
+          : "模型未能生成有效配置，已改用本地初始配置。",
       });
     } finally {
       setDrafting(false);
@@ -434,7 +434,7 @@ export default function NewAgentPage() {
     const selectedModel = draft.model.trim();
     const blankDraft = withRuntimeDefaultTools(AGENT_TEMPLATES[0].draft, runtimes);
     openConfig(selectedModel ? { ...blankDraft, model: selectedModel } : blankDraft, "blank", {
-      request: "Manual UI setup",
+      request: "使用表单手动配置",
     });
   };
 
@@ -503,7 +503,7 @@ export default function NewAgentPage() {
               onClick={() => router.push("/agents/")}
               className="gap-1.5 text-muted-foreground hover:text-foreground"
             >
-              Agents
+              智能体
             </Button>
             <span className="text-muted-foreground">/</span>
             <span className="truncate text-sm font-semibold">创建智能体</span>

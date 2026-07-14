@@ -97,10 +97,10 @@ export function CreateStep({
                 <ConversationHint
                   title="运行时"
                   value={`${connectedRuntimes.length || 0} 个可选`}
-                  detail="优先选择已连接 runtime/harness"
+                  detail="优先选择已连接的运行时"
                 />
                 <ConversationHint title="模型" value="自动推荐" detail="按任务复杂度和可用模型选择" />
-                <ConversationHint title="技能" value={`${skills.length} 个可用`} detail="只附加真正相关的 skill" />
+                <ConversationHint title="技能" value={`${skills.length} 个可用`} detail="只附加真正相关的技能" />
               </div>
             </div>
           )}
@@ -133,7 +133,7 @@ export function CreateStep({
               className="gap-1.5"
             >
               <Bot className="size-3.5" />
-              使用 UI 编辑器
+              使用表单编辑器
             </Button>
             <div className="ml-auto" />
             <Button

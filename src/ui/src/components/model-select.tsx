@@ -22,7 +22,7 @@ export function ModelSelect({
   className,
   buttonClassName,
   disabled = false,
-  ariaLabel = "Select model",
+  ariaLabel = "选择模型",
 }: ModelSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -122,14 +122,14 @@ export function ModelSelect({
             defaultValue=""
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
-            placeholder="Search models…"
+            placeholder="搜索模型…"
             className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
         </div>
 
         <div className="overflow-y-auto py-1" role="listbox" style={{ maxHeight: menuPosition.listMaxHeight }}>
           {filtered.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted-foreground">No models found.</div>
+            <div className="px-3 py-2 text-xs text-muted-foreground">未找到模型。</div>
           ) : (
             filtered.map((m) => (
               <button
@@ -167,7 +167,7 @@ export function ModelSelect({
         aria-expanded={open}
         aria-label={ariaLabel}
       >
-        <span className="flex-1 truncate text-left font-mono">{value || "No model"}</span>
+        <span className="flex-1 truncate text-left font-mono">{value || "未选择模型"}</span>
         <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
       </button>
       {menu ? createPortal(menu, document.body) : null}

@@ -161,7 +161,7 @@ async fn archive_source(
 // into each new session automatically.
 
 const MAX_BUNDLE_ENTRIES: usize = 200;
-const MAX_BUNDLE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct ImportBundleRequest {

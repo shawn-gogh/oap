@@ -392,7 +392,9 @@ pub(crate) async fn interrupt_runtime_session(
     let Some(runtime) = row.runtime.as_deref() else {
         return false;
     };
-    let Ok(resolved) = crate::http::runtime_resolution::resolve_runtime(pool, state, runtime).await
+    let Ok(resolved) =
+        crate::http::runtime_resolution::resolve_runtime_for_session(pool, state, runtime, row)
+            .await
     else {
         return false;
     };
@@ -427,7 +429,8 @@ pub async fn interrupt(
         return Ok(StatusCode::NO_CONTENT);
     };
     let Ok(resolved) =
-        crate::http::runtime_resolution::resolve_runtime(pool, &state, runtime).await
+        crate::http::runtime_resolution::resolve_runtime_for_session(pool, &state, runtime, &row)
+            .await
     else {
         return Ok(StatusCode::NO_CONTENT);
     };

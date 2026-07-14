@@ -8,9 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   ApiError,
-  setStoredMasterKey,
   clearStoredMasterKey,
-  whoami,
+  loginWithAccessKey,
 } from "@/lib/api";
 
 export default function LoginPage() {
@@ -40,8 +39,7 @@ function LoginForm() {
     setError(null);
     setSubmitting(true);
     try {
-      setStoredMasterKey(key.trim());
-      await whoami();
+      await loginWithAccessKey(key.trim());
       router.replace(next);
     } catch (e) {
       clearStoredMasterKey();

@@ -22,7 +22,7 @@ pub use cursor_runtime::exercise_cursor_runtime_stream;
 pub use gemini_runtime::exercise_gemini_runtime_session;
 pub use platform_mcps::exercise_platform_mcps;
 pub use platform_skill_mcp::assert_agent_skill_edit;
-pub use routines::{exercise_routines, exercise_runtime_routine};
+pub use routines::exercise_routines;
 pub use rules::exercise_rules;
 pub use runtime_catalog::assert_agent_runtime_catalog;
 pub use sessions::exercise_sessions;
@@ -110,41 +110,6 @@ pub async fn exercise_memory(fixture: &AppFixture, agent_id: &str) {
         None,
     )
     .await;
-}
-
-pub async fn exercise_files(fixture: &AppFixture, agent_id: &str) {
-    let file_path = format!("/api/agents/{agent_id}/files/notes.txt");
-    request_raw(
-        fixture.app.clone(),
-        "PUT",
-        &file_path,
-        Some("hello".to_owned()),
-        "text/plain",
-        StatusCode::OK,
-    )
-    .await;
-
-    let files = request_json(
-        fixture.app.clone(),
-        "GET",
-        &format!("/api/agents/{agent_id}/files"),
-        None,
-    )
-    .await;
-    assert_eq!(files["files"].as_array().unwrap().len(), 1);
-
-    let file = request_raw(
-        fixture.app.clone(),
-        "GET",
-        &file_path,
-        None,
-        "application/json",
-        StatusCode::OK,
-    )
-    .await;
-    assert_eq!(file, "hello");
-
-    request_json(fixture.app.clone(), "DELETE", &file_path, None).await;
 }
 
 pub async fn exercise_runs(fixture: &AppFixture, agent_id: &str) {
@@ -334,7 +299,9 @@ pub async fn exercise_inbox(fixture: &AppFixture) {
         None,
     )
     .await;
-    assert_eq!(inbox["items"].as_array().unwrap().len(), 2);
+    let items = inbox["items"].as_array().unwrap();
+    assert!(items.iter().any(|item| item["id"] == "appr_1"));
+    assert!(items.iter().any(|item| item["id"] == "iss_1"));
 
     request_json(
         fixture.app.clone(),

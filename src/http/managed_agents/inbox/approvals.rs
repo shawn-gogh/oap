@@ -60,9 +60,20 @@ pub async fn accept(
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
     let existing = owned_approval(&pool, &auth, &item_id).await?;
+    let publish_approval = crate::http::managed_agents::governance::is_publish_approval(&existing);
+    if publish_approval && !auth.is_admin {
+        return Err(GatewayError::NotFound("approval not found".to_owned()));
+    }
     let live =
         repository::decide_approval(&pool, &item_id, "accept", None, input.arguments).await?;
-    if existing.kind == "tool_permission" {
+    if publish_approval {
+        crate::http::managed_agents::governance::apply_publish_approval(
+            &pool,
+            &existing,
+            &auth.user_id,
+        )
+        .await?;
+    } else if existing.kind == "tool_permission" {
         reply_tool_permission(&state, &pool, &item_id).await;
     } else {
         if live {
@@ -87,8 +98,16 @@ pub async fn reject(
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
     let existing = owned_approval(&pool, &auth, &item_id).await?;
+    let publish_approval = crate::http::managed_agents::governance::is_publish_approval(&existing);
+    if publish_approval && !auth.is_admin {
+        return Err(GatewayError::NotFound("approval not found".to_owned()));
+    }
     let live = repository::decide_approval(&pool, &item_id, "reject", input.feedback, None).await?;
-    if existing.kind == "tool_permission" {
+    if publish_approval {
+        if let Some(agent_id) = existing.agent.as_deref() {
+            crate::db::managed_agents::governance::reject_publish(&pool, agent_id).await?;
+        }
+    } else if existing.kind == "tool_permission" {
         reply_tool_permission(&state, &pool, &item_id).await;
     } else {
         resume_linked_session(state, pool, &item_id).await;

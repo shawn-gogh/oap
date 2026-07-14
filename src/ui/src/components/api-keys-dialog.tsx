@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Check, Copy, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -170,8 +171,16 @@ export function ApiKeysPanel() {
                 <TableCell className="font-mono text-xs text-muted-foreground">
                   {key.id}
                 </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
-                  {key.user_id || "—"}
+                <TableCell className="text-xs text-muted-foreground">
+                  {key.user_id ? (
+                    <Link
+                      href={`/users/?user=${encodeURIComponent(key.user_id)}`}
+                      className="font-mono underline-offset-4 hover:text-foreground hover:underline"
+                      title={`查看用户 ${key.user_id}`}
+                    >
+                      {key.user_id}
+                    </Link>
+                  ) : "—"}
                 </TableCell>
                 <TableCell className="text-muted-foreground">{key.role || "user"}</TableCell>
                 <TableCell className="text-muted-foreground">

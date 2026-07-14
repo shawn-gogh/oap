@@ -78,6 +78,19 @@ pub async fn delete(pool: &PgPool, id: &str) -> Result<Option<String>, GatewayEr
     .map_err(GatewayError::Database)
 }
 
+pub async fn delete_all_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<String>, GatewayError> {
+    sqlx::query_scalar::<_, String>(
+        r#"DELETE FROM "LiteLLM_GatewayApiKeysTable" WHERE user_id = $1 RETURNING key_hash"#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 /// Looks a presented key up by hash and touches `last_used_at`.
 pub async fn find_by_key(
     pool: &PgPool,

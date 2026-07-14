@@ -59,7 +59,15 @@ async fn create_runtime_agent(fixture: &AppFixture) -> String {
         })),
     )
     .await;
-    created["id"].as_str().unwrap().to_owned()
+    let agent_id = created["id"].as_str().unwrap().to_owned();
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/activate"),
+        None,
+    )
+    .await;
+    agent_id
 }
 
 async fn create_routine(fixture: &AppFixture, agent_id: &str) -> String {

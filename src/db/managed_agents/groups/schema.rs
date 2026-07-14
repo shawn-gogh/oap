@@ -34,4 +34,5 @@ pub struct AgentGroupGrantRow {
     pub permission: String,
     pub granted_by: String,
     pub created_at: i64,
+    pub expires_at: Option<i64>,
 }

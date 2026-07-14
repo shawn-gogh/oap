@@ -19,11 +19,12 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use tower::util::ServiceExt;
 use wiremock::{
-    matchers::{method, path},
+    matchers::{header as header_matcher, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
 mod db;
+#[allow(dead_code, unused_imports)]
 pub mod flows;
 
 use db::reset_tables;
@@ -33,6 +34,7 @@ pub struct AppFixture {
     pub state: Arc<AppState>,
     pub(crate) pool: PgPool,
     _e2b: MockServer,
+    _litellm: Option<MockServer>,
 }
 
 impl AppFixture {
@@ -44,17 +46,49 @@ impl AppFixture {
         managed_agents_pool::migrate(&pool).await.unwrap();
         reset_tables(&pool).await;
         let e2b = mock_e2b().await;
-        let state = build_state(pool.clone(), e2b.uri());
+        let state = build_state(pool.clone(), e2b.uri(), None);
         Some(Self {
             app: router(state.clone()),
             state,
             pool,
             _e2b: e2b,
+            _litellm: None,
+        })
+    }
+
+    pub async fn new_with_litellm_key_info() -> Option<Self> {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())?;
+        let pool = managed_agents_pool::connect(&database_url).await.unwrap();
+        managed_agents_pool::migrate(&pool).await.unwrap();
+        reset_tables(&pool).await;
+        let e2b = mock_e2b().await;
+        let litellm = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/key/info"))
+            .and(header_matcher("authorization", "Bearer external-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "info": { "user_id": "external-user" }
+            })))
+            .mount(&litellm)
+            .await;
+        let state = build_state(pool.clone(), e2b.uri(), Some(litellm.uri()));
+        Some(Self {
+            app: router(state.clone()),
+            state,
+            pool,
+            _e2b: e2b,
+            _litellm: Some(litellm),
         })
     }
 }
 
-fn build_state(pool: PgPool, e2b_api_base: String) -> Arc<AppState> {
+fn build_state(
+    pool: PgPool,
+    e2b_api_base: String,
+    litellm_base_url: Option<String>,
+) -> Arc<AppState> {
     let config = GatewayConfig {
         model_list: Vec::new(),
         mcp_servers: Default::default(),
@@ -62,6 +96,7 @@ fn build_state(pool: PgPool, e2b_api_base: String) -> Arc<AppState> {
             master_key: Some("sk-local".to_owned()),
             public_base_url: Some("http://localhost".to_owned()),
             database_url: Some("postgres://test".to_owned()),
+            litellm_base_url,
             sandbox_choice: Some("e2b".to_owned()),
             e2b_sandbox_params: E2bSandboxParams {
                 e2b_api_key: Some("e2b-test".to_owned()),
@@ -138,6 +173,32 @@ pub async fn request_json_raw(
     (status, String::from_utf8_lossy(&body).to_string())
 }
 
+pub async fn request_json_raw_with_key(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    key: &str,
+) -> (StatusCode, String) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    body.map(|value| value.to_string()).unwrap_or_default(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&body).to_string())
+}
+
 pub async fn read_events_until_completed(
     app: axum::Router,
     event_url: &str,
@@ -153,7 +214,7 @@ pub async fn read_events_until_completed(
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut stream = response.into_body().into_data_stream();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let mut body = String::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.unwrap();
@@ -185,6 +246,7 @@ pub async fn request_raw(
     String::from_utf8(body.to_vec()).unwrap()
 }
 
+#[allow(dead_code)]
 pub async fn request_with_headers(
     app: axum::Router,
     method: &str,

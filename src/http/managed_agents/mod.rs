@@ -1,5 +1,6 @@
 pub mod eval_runs;
 pub mod evolution;
+pub mod governance;
 pub mod grants;
 pub mod import;
 pub mod import_files;

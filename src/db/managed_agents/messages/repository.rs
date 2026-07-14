@@ -29,6 +29,13 @@ pub async fn append(
     parts_json: &str,
 ) -> Result<SessionMessageRow, GatewayError> {
     let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
+    // Serialize sequence allocation per session. Without this lock, a user
+    // message and an asynchronous runtime reply can both choose MAX(seq)+1.
+    sqlx::query(r#"SELECT id FROM "LiteLLM_ManagedAgentSessionsTable" WHERE id = $1 FOR UPDATE"#)
+        .bind(session_id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(GatewayError::Database)?;
     let next_seq: i32 = sqlx::query_scalar(
         r#"
         SELECT COALESCE(MAX(seq), 0) + 1

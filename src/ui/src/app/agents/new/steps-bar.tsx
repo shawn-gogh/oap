@@ -9,14 +9,13 @@ const BUILDER_STEPS: Array<{
   label: string;
   suffix?: string;
 }> = [
-  { index: 1, step: "create", label: "目标 Goal" },
-  { index: 2, step: "config", label: "蓝图 Blueprint" },
-  { index: 3, step: "eval", label: "验证 Validate" },
+  { index: 1, step: "create", label: "目标" },
+  { index: 2, step: "config", label: "蓝图" },
+  { index: 3, step: "eval", label: "验证" },
   {
     index: 4,
     step: "review",
-    label: "发布 Publish",
-    suffix: "POST /api/agents",
+    label: "发布",
   },
 ];
 

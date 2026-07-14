@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, X } from "lucide-react";
+import { BarChart3, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   applicationContractFor,
   type AgentApplicationContract,
+  type AgentDashboardDefinition,
   type AgentApplicationInput,
   type AgentApplicationOutput,
   type AgentDraft,
@@ -27,14 +28,14 @@ const MODES: Array<{
   {
     value: "scheduled",
     label: "定时应用",
-    detail: "由 Routine 或 Cron 周期性触发",
+    detail: "由例程或定时计划周期性触发",
   },
   {
     value: "event_driven",
     label: "事件应用",
-    detail: "由 Webhook 或消息渠道事件触发",
+    detail: "由网络回调或消息渠道事件触发",
   },
-  { value: "manual", label: "人工运行", detail: "由详情页或 API 显式启动" },
+  { value: "manual", label: "人工运行", detail: "由详情页或接口显式启动" },
 ];
 
 export function ApplicationBlueprintEditor({
@@ -103,6 +104,31 @@ export function ApplicationBlueprintEditor({
       <InputListEditor values={application.inputs} onChange={(inputs) => update({ inputs })} />
 
       <OutputListEditor values={application.outputs} onChange={(outputs) => update({ outputs })} />
+
+      {application.outputs.some((output) => output.type === "interactive_dashboard") ? (
+        <DashboardEditor
+          value={application.dashboard ?? defaultDashboard()}
+          onChange={(dashboard) => update({ dashboard })}
+        />
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            update({
+              outputs: [
+                ...application.outputs,
+                { type: "interactive_dashboard", description: "可筛选、可复核的数据大屏。" },
+              ],
+              dashboard: defaultDashboard(),
+            })
+          }
+          className="justify-start border-sky-300/20 bg-sky-300/5 text-editor-foreground hover:bg-sky-300/10 hover:text-white"
+        >
+          <BarChart3 className="size-4" />
+          添加大屏应用输出
+        </Button>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <LineListEditor
@@ -270,6 +296,96 @@ function OutputListEditor({
       ))}
     </BlueprintList>
   );
+}
+
+function DashboardEditor({
+  value,
+  onChange,
+}: {
+  value: AgentDashboardDefinition;
+  onChange: (next: AgentDashboardDefinition) => void;
+}) {
+  return (
+    <div className="grid gap-3 rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-4">
+      <div>
+        <div className="flex items-center gap-2 text-sm font-semibold text-editor-foreground">
+          <BarChart3 className="size-4 text-cyan-300" />
+          大屏应用配置
+        </div>
+        <p className="mt-1 text-xs leading-5 text-editor-muted">
+          智能体运行后输出 metrics 对象和 rows 数组，平台将自动渲染指标、趋势和明细。
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-1.5">
+          <Label className="text-editor-muted">大屏标题</Label>
+          <Input
+            value={value.title}
+            onChange={(event) => onChange({ ...value, title: event.target.value })}
+            placeholder="例如：经营分析驾驶舱"
+            className="border-white/10 bg-editor-surface-raised"
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label className="text-editor-muted">展示模板</Label>
+          <select
+            value={value.template}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                template: event.target.value as AgentDashboardDefinition["template"],
+              })
+            }
+            className="h-10 rounded-md border border-white/10 bg-editor-surface-raised px-3 text-sm text-editor-foreground"
+          >
+            <option value="analysis">分析看板</option>
+            <option value="operations">运营监控</option>
+            <option value="executive">管理驾驶舱</option>
+          </select>
+        </div>
+      </div>
+      <div className="grid gap-1.5">
+        <Label className="text-editor-muted">用途说明</Label>
+        <Input
+          value={value.description}
+          onChange={(event) => onChange({ ...value, description: event.target.value })}
+          placeholder="说明大屏帮助用户判断什么"
+          className="border-white/10 bg-editor-surface-raised"
+        />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <LineListEditor
+          label="关键指标"
+          values={value.metrics}
+          placeholder="例如：销售额"
+          onChange={(metrics) => onChange({ ...value, metrics })}
+        />
+        <LineListEditor
+          label="分析维度"
+          values={value.dimensions}
+          placeholder="例如：日期"
+          onChange={(dimensions) => onChange({ ...value, dimensions })}
+        />
+        <LineListEditor
+          label="展示组件"
+          values={value.visualizations}
+          placeholder="例如：趋势图"
+          onChange={(visualizations) => onChange({ ...value, visualizations })}
+        />
+      </div>
+    </div>
+  );
+}
+
+function defaultDashboard(): AgentDashboardDefinition {
+  return {
+    title: "数据分析大屏",
+    description: "展示智能体运行产生的关键指标、趋势和明细数据。",
+    template: "analysis",
+    metrics: ["总量", "成功量", "异常量"],
+    dimensions: ["时间", "类别"],
+    visualizations: ["指标卡", "趋势图", "明细表"],
+  };
 }
 
 function BlueprintList({

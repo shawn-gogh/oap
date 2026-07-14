@@ -232,7 +232,7 @@ export function ConfigStep({
                 )}
               >
                 <Code2 className="size-3.5" />
-                Config
+                配置文件
               </Button>
               <Button
                 type="button"
@@ -245,7 +245,7 @@ export function ConfigStep({
                 )}
               >
                 <FileSearch className="size-3.5" />
-                Preview
+                预览
               </Button>
               <Button
                 type="button"
@@ -258,7 +258,7 @@ export function ConfigStep({
                 )}
               >
                 <Bot className="size-3.5" />
-                Edit UI
+                表单编辑
               </Button>
             </div>
             <div className="flex items-center gap-2">
@@ -309,7 +309,7 @@ export function ConfigStep({
               onChange={(event) => onConfigChange(event.target.value)}
               spellCheck={false}
               className="min-h-0 flex-1 resize-none rounded-none border-0 bg-editor-surface px-5 py-4 font-mono text-[13px] leading-6 text-editor-accent shadow-none outline-none focus-visible:ring-0"
-              aria-label="Agent YAML config"
+              aria-label="智能体 YAML 配置"
             />
           ) : (
             <ConfigPreview draft={draft} mcpIntegrations={mcpIntegrations} />
@@ -412,7 +412,7 @@ function AgentBuilderCopilot({
       });
       setResponse(next);
     } catch (err) {
-      setError(apiErrorMessage(err, "Builder Copilot failed"));
+      setError(apiErrorMessage(err, "智能体创建助手调用失败"));
     } finally {
       setLoadingMode(null);
     }
@@ -438,7 +438,7 @@ function AgentBuilderCopilot({
         <div className="grid gap-1">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <MessageSquareText className="size-4" />
-            Agent Builder Copilot
+            智能体创建助手
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
             用当前草案和输入框里的补充需求，让 LLM 做澄清、解释和工具建议。
@@ -468,13 +468,13 @@ function AgentBuilderCopilot({
           {response.summary && <p className="leading-6 text-foreground">{response.summary}</p>}
           <CopilotList title="需要确认的问题" items={response.clarification_questions} />
           <CopilotList title="风险提醒" items={response.risks} />
-          <CopilotList title="可加入 system prompt 的约束" items={response.suggested_system_notes} />
+          <CopilotList title="可加入系统提示词的约束" items={response.suggested_system_notes} />
           {response.tool_recommendations.length > 0 && (
             <div className="grid gap-2">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">工具建议</h3>
                 <Button type="button" size="sm" variant="outline" onClick={applyToolRecommendations}>
-                  应用 add/remove
+                  应用增删建议
                 </Button>
               </div>
               <div className="grid gap-2">
@@ -485,7 +485,7 @@ function AgentBuilderCopilot({
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant={recommendation.action === "remove" ? "destructive" : "secondary"}>
-                        {recommendation.action}
+                        {recommendation.action === "add" ? "添加" : recommendation.action === "remove" ? "移除" : "保留"}
                       </Badge>
                       <span className="font-mono text-xs">{recommendation.tool}</span>
                     </div>

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, Deserialize, FromRow, Serialize)]
 pub struct ManagedAgentRow {
     pub id: String,
     pub name: String,

@@ -109,20 +109,20 @@ export function AgentDraftControls({
 
         <div className="grid gap-1.5">
           <Label htmlFor="draft-name" className="text-editor-muted">
-            Name
+            名称
           </Label>
           <Input
             id="draft-name"
             value={draft.name}
             onChange={(event) => update({ name: event.target.value })}
-            placeholder="security-reviewer"
+            placeholder="例如：安全审查智能体"
             className="border-white/10 bg-editor-surface-raised text-editor-foreground placeholder:text-editor-faint"
           />
         </div>
 
         <div className="grid gap-1.5">
           <Label htmlFor="draft-description" className="text-editor-muted">
-            Description
+            描述
           </Label>
           <Input
             id="draft-description"
@@ -134,7 +134,7 @@ export function AgentDraftControls({
         </div>
 
         <div className="grid gap-1.5">
-          <Label className="text-editor-muted">Model</Label>
+          <Label className="text-editor-muted">模型</Label>
           <div className="[&_button]:border-white/10 [&_button]:bg-editor-surface-raised [&_button]:text-editor-foreground [&_svg]:text-editor-faint">
             <ModelSelect value={draft.model} models={availableModels} onValueChange={(model) => update({ model })} />
           </div>
@@ -144,7 +144,7 @@ export function AgentDraftControls({
 
         {harnesses.length === 0 && (
           <div className="grid gap-1.5">
-            <Label className="text-editor-muted">Runtime</Label>
+            <Label className="text-editor-muted">运行时</Label>
             <div className="rounded-md border border-white/10 bg-white/5 px-3 py-3 text-xs text-editor-faint">
               <p>没有已连接的运行时 harness，当前使用默认运行时 {runtimeLabel(draft.runtime)}。</p>
               <Button
@@ -164,7 +164,7 @@ export function AgentDraftControls({
         )}
         {harnesses.length >= 1 && (
           <div className="grid gap-1.5">
-            <Label className="text-editor-muted">Runtime</Label>
+            <Label className="text-editor-muted">运行时</Label>
             <Select
               value={draft.runtime || "claude_managed_agents"}
               onValueChange={(v) => {
@@ -210,14 +210,14 @@ export function AgentDraftControls({
 
         <div className="grid gap-1.5">
           <Label htmlFor="draft-system" className="text-editor-muted">
-            System prompt
+            系统提示词
           </Label>
           <Textarea
             id="draft-system"
             value={draft.system}
             onChange={(event) => update({ system: event.target.value })}
             className="min-h-[280px] resize-y border-white/10 bg-editor-surface-raised font-mono text-xs text-editor-foreground placeholder:text-editor-faint"
-            placeholder="You are a meticulous security reviewer..."
+            placeholder="例如：你是一名严谨的安全审查智能体……"
           />
         </div>
 
@@ -228,7 +228,7 @@ export function AgentDraftControls({
         <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1">
-              <Label className="text-sm font-medium">Vault Credentials</Label>
+              <Label className="text-sm font-medium">保险库凭据</Label>
               <p className="max-w-xl text-xs leading-5 text-editor-faint">
                 先登记密钥名称，创建后在智能体详情页填写密钥值。
               </p>
@@ -250,7 +250,7 @@ export function AgentDraftControls({
               }}
               placeholder="BROWSER_USE_API_KEY"
               className="border-white/10 bg-white/5 font-mono text-xs"
-              aria-label="Vault credential name"
+              aria-label="保险库凭据名称"
             />
             <Button
               type="button"
@@ -284,7 +284,7 @@ export function AgentDraftControls({
                         vault_keys: draft.vault_keys.filter((value) => value !== key),
                       })
                     }
-                    aria-label={`Remove ${key}`}
+                    aria-label={`移除 ${key}`}
                   >
                     <X className="size-3" />
                   </button>
@@ -296,7 +296,7 @@ export function AgentDraftControls({
 
         <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
-            <Label className="text-sm font-medium">Tools</Label>
+            <Label className="text-sm font-medium">工具</Label>
             <span className="font-mono text-xs text-editor-faint">{draft.tools.length} 已选</span>
           </div>
           <div className="grid max-h-[284px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
@@ -325,7 +325,7 @@ export function AgentDraftControls({
 
         <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
-            <Label className="text-sm font-medium">Skills</Label>
+            <Label className="text-sm font-medium">技能</Label>
             <span className="font-mono text-xs text-editor-faint">{draft.skill_ids.length} 已挂载</span>
           </div>
           {skills.length === 0 ? (
@@ -362,7 +362,7 @@ export function AgentDraftControls({
         <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
             <div className="grid gap-1">
-              <Label className="text-sm font-medium">MCP integrations</Label>
+              <Label className="text-sm font-medium">MCP 集成</Label>
               <p className="max-w-xl text-xs leading-5 text-editor-faint">
                 从注册表挂载托管 MCP 服务器。创建智能体时会根据这些 ID 重建工具集。
               </p>
@@ -454,7 +454,7 @@ export function AgentDraftControls({
                           {previewTools.map((tool) => (
                             <EditorChip key={tool}>{tool}</EditorChip>
                           ))}
-                          {remainingTools > 0 && <EditorChip>+{remainingTools} more</EditorChip>}
+                          {remainingTools > 0 && <EditorChip>另有 {remainingTools} 个</EditorChip>}
                         </div>
                       )}
                       {!canAttach && (
@@ -483,7 +483,7 @@ export function AgentDraftControls({
         <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1">
-              <Label className="text-sm font-medium">Rules</Label>
+              <Label className="text-sm font-medium">规则</Label>
               <p className="max-w-xl text-xs leading-5 text-editor-faint">
                 规则是持久的 prompt 级指令。挂载后其 Markdown 内容会在模型运行前注入智能体上下文。
               </p>
@@ -523,7 +523,7 @@ export function AgentDraftControls({
 
         <div className="grid gap-2 rounded-md border border-white/10 bg-black/10 p-3 text-editor-foreground">
           <div className="flex items-center justify-between gap-3">
-            <Label className="text-sm font-medium">Sub-agents</Label>
+            <Label className="text-sm font-medium">子智能体</Label>
             <span className="font-mono text-xs text-editor-faint">{draft.sub_agents.length} 已挂载</span>
           </div>
           {agents.length === 0 ? (
@@ -599,7 +599,7 @@ function RuntimeSelectOption({
           <span className="truncate text-sm font-medium !text-editor-foreground">{displayName}</span>
           {isDefault && !compact && (
             <span className="runtime-option-muted rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[11px] !text-editor-muted">
-              Default
+              默认
             </span>
           )}
         </span>
@@ -636,13 +636,13 @@ function runtimeLabel(value: string): string {
   if (value === "cursor") return "Cursor";
   if (value === "gemini_antigravity") return "Gemini Antigravity";
   if (value === "opencode") return "OpenCode";
-  return value || "Runtime";
+  return value || "运行时";
 }
 
 function runtimeSubtitle(value: string): string {
-  if (value === "claude_managed_agents") return "Anthropic sessions and tools";
-  if (value === "cursor") return "Background repo agents";
-  if (value === "gemini_antigravity") return "Google managed sandbox";
-  if (value === "opencode") return "OpenCode server";
-  return "Custom runtime";
+  if (value === "claude_managed_agents") return "Anthropic 会话与工具";
+  if (value === "cursor") return "后台代码仓库智能体";
+  if (value === "gemini_antigravity") return "Google 托管沙箱";
+  if (value === "opencode") return "OpenCode 服务";
+  return "自定义运行时";
 }

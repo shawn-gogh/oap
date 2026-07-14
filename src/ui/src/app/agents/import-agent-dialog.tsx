@@ -109,7 +109,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   const importSelected = async () => {
     if (mode === "bundle") {
       if (!bundle) {
-        setError("Select a .zip bundle first.");
+        setError("请先选择一个 .zip 智能体包。");
         return;
       }
       setSaving(true);
@@ -131,7 +131,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     }
     if (mode === "files") {
       if (agentFiles.length === 0) {
-        setError("Select at least one .md agent file.");
+        setError("请至少选择一个 .md 智能体文件。");
         return;
       }
       setSaving(true);
@@ -153,7 +153,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
 
     const selected = externalAgents.filter((agent) => selectedIds.includes(agent.id));
     if (selected.length === 0) {
-      setError("Select at least one agent.");
+      setError("请至少选择一个智能体。");
       return;
     }
     setSaving(true);
@@ -197,7 +197,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
       const base64 = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
       setBundle({ filename: file.name, base64 });
     };
-    reader.onerror = () => setError("Failed to read the bundle file.");
+    reader.onerror = () => setError("读取智能体包失败。");
     reader.readAsDataURL(file);
   };
 
@@ -207,7 +207,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     const markdownFiles = Array.from(files).filter((file) => /\.(md|markdown)$/i.test(file.name));
     if (markdownFiles.length === 0) {
       setAgentFiles([]);
-      setError("Select .md or .markdown files.");
+      setError("请选择 .md 或 .markdown 文件。");
       return;
     }
     try {
@@ -227,14 +227,14 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="w-[94vw] sm:max-w-3xl max-h-[88vh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-border">
-          <DialogTitle>Import agents</DialogTitle>
+          <DialogTitle>纳管外部智能体</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-6 py-4 overflow-y-auto">
           <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
             {[
-              { value: "remote" as const, label: "Remote runtime" },
-              { value: "files" as const, label: "Markdown files" },
-              { value: "bundle" as const, label: "Agent Bundle (.zip)" },
+              { value: "remote" as const, label: "远程运行时" },
+              { value: "files" as const, label: "Markdown 文件" },
+              { value: "bundle" as const, label: "智能体包（.zip）" },
             ].map((option) => (
               <button
                 key={option.value}
@@ -254,8 +254,14 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               </button>
             ))}
           </div>
+          <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm">
+            <p className="font-medium">纳管流程：导入 → 测试 → 审批发布 → 授权 → 监控</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              导入只生成草稿版本，运行检查通过并由管理员审批后才可运行。共享凭据按导入人隔离存储，不会成为全局凭据。
+            </p>
+          </div>
           <div className="grid gap-1.5">
-            <Label>{mode === "files" ? "Runtime" : "Platform"}</Label>
+            <Label>{mode === "files" ? "运行时" : "平台"}</Label>
             <div className="grid gap-2">
               {providers.map((provider) => {
                 const selected = provider.alias === providerId;
@@ -283,12 +289,12 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               })}
               {providersLoading && (
                 <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  Loading runtime providers...
+                  正在加载运行时提供方...
                 </div>
               )}
               {!providersLoading && providers.length === 0 && (
                 <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  No runtime providers are available.
+                  暂无可用的运行时提供方。
                 </div>
               )}
             </div>
@@ -296,7 +302,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           {mode === "remote" ? (
             <>
               <div className="grid gap-1.5">
-                <Label htmlFor="import-endpoint">{providerName} endpoint</Label>
+                <Label htmlFor="import-endpoint">{providerName} 服务地址</Label>
                 <Input
                   id="import-endpoint"
                   value={endpoint}
@@ -305,21 +311,21 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                 />
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="import-key">{providerName} API key</Label>
+                <Label htmlFor="import-key">{providerName} API 密钥</Label>
                 <Input
                   id="import-key"
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="API key"
+                  placeholder="API 密钥"
                 />
               </div>
               <div className="grid gap-1.5">
-                <Label>Credential policy</Label>
+                <Label>凭据策略</Label>
                 <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
                   {[
-                    { value: "shared" as const, label: "Shared key" },
-                    { value: "byo" as const, label: "BYO key" },
+                    { value: "shared" as const, label: "属主隔离密钥" },
+                    { value: "byo" as const, label: "运行时自带密钥" },
                   ].map((option) => (
                     <button
                       key={option.value}
@@ -344,21 +350,21 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                   onClick={discover}
                   disabled={loading || !providerId || !endpoint.trim() || !apiKey.trim()}
                 >
-                  {loading ? "Connecting..." : "Connect"}
+                  {loading ? "连接中..." : "连接并发现"}
                 </Button>
                 {externalAgents.length > 0 && (
                   <span className="text-xs text-muted-foreground">
-                    {externalAgents.length} agent{externalAgents.length === 1 ? "" : "s"} found
+                    已发现 {externalAgents.length} 个智能体
                   </span>
                 )}
               </div>
             </>
           ) : mode === "bundle" ? (
             <div className="grid gap-2">
-              <Label htmlFor="agent-bundle-zip">Agent bundle (.zip)</Label>
+              <Label htmlFor="agent-bundle-zip">智能体包（.zip）</Label>
               <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
                 <FileUp className="size-4" />
-                <span>{bundle ? bundle.filename : "Choose a .zip bundle"}</span>
+                <span>{bundle ? bundle.filename : "选择 .zip 智能体包"}</span>
                 <input
                   id="agent-bundle-zip"
                   type="file"
@@ -373,10 +379,10 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
             </div>
           ) : (
             <div className="grid gap-2">
-              <Label htmlFor="opencode-agent-files">OpenCode agent markdown</Label>
+              <Label htmlFor="opencode-agent-files">OpenCode 智能体 Markdown</Label>
               <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
                 <FileUp className="size-4" />
-                <span>{agentFiles.length ? `${agentFiles.length} file(s) selected` : "Choose .md files"}</span>
+                <span>{agentFiles.length ? `已选择 ${agentFiles.length} 个文件` : "选择 .md 文件"}</span>
                 <input
                   id="opencode-agent-files"
                   type="file"
@@ -391,7 +397,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                   {agentFiles.map((file) => (
                     <div key={file.filename} className="px-3 py-2">
                       <div className="truncate text-sm font-medium">{file.filename}</div>
-                      <div className="text-xs text-muted-foreground">{file.content.length} chars</div>
+                      <div className="text-xs text-muted-foreground">{file.content.length} 个字符</div>
                     </div>
                   ))}
                 </div>
@@ -406,7 +412,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                   <Input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search agents"
+                    placeholder="搜索智能体"
                     className="pl-8"
                   />
                 </div>
@@ -416,7 +422,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                   size="sm"
                   onClick={() => setSelectedIds(filteredAgents.map((agent) => agent.id))}
                 >
-                  Select all
+                  全选
                 </Button>
               </div>
               <div className="max-h-72 divide-y divide-border overflow-y-auto rounded-md border border-border">
@@ -446,7 +452,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                 ))}
                 {filteredAgents.length === 0 && (
                   <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                    No agents match the search.
+                    没有匹配的智能体。
                   </p>
                 )}
               </div>
@@ -456,15 +462,15 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
         </div>
         <DialogFooter className="m-0 rounded-b-xl px-6 py-4">
           <Button variant="outline" onClick={() => close(false)} disabled={saving}>
-            Cancel
+            取消
           </Button>
           <Button
             onClick={importSelected}
             disabled={saving || (mode === "remote" ? selectedIds.length === 0 : mode === "bundle" ? !bundle : agentFiles.length === 0)}
           >
             {saving
-              ? "Importing..."
-              : `Import ${mode === "remote" ? selectedIds.length || "" : mode === "bundle" ? "" : agentFiles.length || ""}`.trim()}
+              ? "导入中..."
+              : `导入${mode === "remote" ? ` ${selectedIds.length}` : mode === "bundle" ? "" : ` ${agentFiles.length}`}`}
           </Button>
         </DialogFooter>
       </DialogContent>

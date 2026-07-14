@@ -4,6 +4,7 @@ import {
   applicationGatePassed,
   blankAgentDraft,
   blankDesign,
+  buildAgentDraftFromPrompt,
   createInputFromDraft,
   evalGatePassed,
   parseAgentDraftConfig,
@@ -69,6 +70,14 @@ function fullDraft(): AgentDraft {
           description: "Severity-ranked findings with file references.",
         },
       ],
+      dashboard: {
+        title: "安全审查大屏",
+        description: "展示风险指标和审查明细。",
+        template: "analysis",
+        metrics: ["风险总数", "高危数量"],
+        dimensions: ["文件", "严重程度"],
+        visualizations: ["指标卡", "明细表"],
+      },
       non_goals: ["Do not modify the repository."],
       completion_criteria: ["Every finding includes evidence and a severity."],
       failure_behavior: "Report missing repository context and stop.",
@@ -120,6 +129,16 @@ describe("stringify/parse round trip", () => {
     expect(input.config.application).toEqual(draft.application);
   });
 
+  it("creates a built-in dashboard contract from a dashboard request", () => {
+    const draft = buildAgentDraftFromPrompt("创建一个数据分析智能体，用大屏展示结果");
+    expect(draft.application?.outputs).toContainEqual(
+      expect.objectContaining({ type: "interactive_dashboard" }),
+    );
+    expect(draft.application?.dashboard?.metrics.length).toBeGreaterThan(0);
+    expect(draft.system).toContain("metrics");
+    expect(draft.system).toContain("rows");
+  });
+
   it("keeps legacy configs without an application contract compatible", () => {
     const { draft, error } = parseAgentDraftConfig("name: legacy\nmodel: m\nruntime: r\nsystem: s");
     expect(error).toBeNull();
@@ -148,17 +167,17 @@ describe("stringify/parse round trip", () => {
 describe("parseAgentDraftConfig validation", () => {
   it("requires a name", () => {
     const { error } = parseAgentDraftConfig("name: \nmodel: m\nruntime: r\nsystem: s");
-    expect(error).toBe("Agent name is required.");
+    expect(error).toBe("必须填写智能体名称。");
   });
 
   it("requires a model", () => {
     const { error } = parseAgentDraftConfig("name: a\nmodel: \nruntime: r\nsystem: s");
-    expect(error).toBe("Model is required.");
+    expect(error).toBe("必须选择模型。");
   });
 
   it("requires a runtime", () => {
     const { error } = parseAgentDraftConfig("name: a\nmodel: m\nruntime: \nsystem: s");
-    expect(error).toBe("Runtime is required.");
+    expect(error).toBe("必须选择运行时。");
   });
 
   it("reports the line it cannot parse", () => {

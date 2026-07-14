@@ -48,8 +48,8 @@ function longTextChange(field: string, before: string, after: string): FieldChan
   const delta = afterLines - beforeLines;
   const detail =
     delta === 0
-      ? `${afterLines} lines rewritten in place`
-      : `${delta > 0 ? "+" : ""}${delta} lines (${beforeLines} → ${afterLines})`;
+      ? `原位置重写 ${afterLines} 行`
+      : `${delta > 0 ? "+" : ""}${delta} 行（${beforeLines} → ${afterLines}）`;
   return { field, kind: before ? "edited" : "set", detail, before, after };
 }
 
@@ -59,60 +59,60 @@ export function diffAgentDrafts(before: AgentDraft, after: AgentDraft): FieldCha
   const beforeApplication = before.application;
   const afterApplication = after.application;
   const changes: Array<FieldChange | null> = [
-    scalarChange("name", before.name.trim(), after.name.trim()),
-    scalarChange("description", before.description.trim(), after.description.trim()),
-    scalarChange("model", before.model.trim(), after.model.trim()),
-    scalarChange("runtime", before.runtime.trim(), after.runtime.trim()),
+    scalarChange("名称", before.name.trim(), after.name.trim()),
+    scalarChange("描述", before.description.trim(), after.description.trim()),
+    scalarChange("模型", before.model.trim(), after.model.trim()),
+    scalarChange("运行时", before.runtime.trim(), after.runtime.trim()),
     scalarChange(
-      "application objective",
+      "应用目标",
       beforeApplication?.objective.trim() ?? "",
       afterApplication?.objective.trim() ?? "",
     ),
     scalarChange(
-      "interaction mode",
+      "交互方式",
       beforeApplication?.interaction_mode ?? "",
       afterApplication?.interaction_mode ?? "",
     ),
-    listChange("audience", beforeApplication?.audience ?? [], afterApplication?.audience ?? []),
+    listChange("使用者", beforeApplication?.audience ?? [], afterApplication?.audience ?? []),
     listChange(
-      "application inputs",
+      "应用输入",
       (beforeApplication?.inputs ?? []).map((input) => `${input.type}:${input.source}:${input.description}`),
       (afterApplication?.inputs ?? []).map((input) => `${input.type}:${input.source}:${input.description}`),
     ),
     listChange(
-      "application outputs",
+      "应用输出",
       (beforeApplication?.outputs ?? []).map((output) => `${output.type}:${output.description}`),
       (afterApplication?.outputs ?? []).map((output) => `${output.type}:${output.description}`),
     ),
-    listChange("non-goals", beforeApplication?.non_goals ?? [], afterApplication?.non_goals ?? []),
+    listChange("明确不做", beforeApplication?.non_goals ?? [], afterApplication?.non_goals ?? []),
     listChange(
-      "completion criteria",
+      "完成条件",
       beforeApplication?.completion_criteria ?? [],
       afterApplication?.completion_criteria ?? [],
     ),
     scalarChange(
-      "failure behavior",
+      "失败处理",
       beforeApplication?.failure_behavior.trim() ?? "",
       afterApplication?.failure_behavior.trim() ?? "",
     ),
-    longTextChange("system prompt", before.system, after.system),
+    longTextChange("系统提示词", before.system, after.system),
     listChange(
-      "tools",
+      "工具",
       before.tools.map((tool) => tool.type).filter(Boolean),
       after.tools.map((tool) => tool.type).filter(Boolean),
     ),
-    scalarChange("schedule", before.cron, after.cron),
-    scalarChange("timezone", before.timezone, after.timezone),
-    listChange("vault keys", before.vault_keys, after.vault_keys),
-    listChange("skills", before.skill_ids, after.skill_ids),
-    listChange("rules", before.rule_ids, after.rule_ids),
+    scalarChange("调度计划", before.cron, after.cron),
+    scalarChange("时区", before.timezone, after.timezone),
+    listChange("保险库密钥", before.vault_keys, after.vault_keys),
+    listChange("技能", before.skill_ids, after.skill_ids),
+    listChange("规则", before.rule_ids, after.rule_ids),
     listChange(
-      "sub-agents",
+      "子智能体",
       before.sub_agents.map((agent) => agent.agent_id),
       after.sub_agents.map((agent) => agent.agent_id),
     ),
-    listChange("MCP servers", before.mcp_server_ids, after.mcp_server_ids),
-    scalarChange("max runtime", `${before.max_runtime_minutes} min`, `${after.max_runtime_minutes} min`),
+    listChange("MCP 服务器", before.mcp_server_ids, after.mcp_server_ids),
+    scalarChange("最长运行时间", `${before.max_runtime_minutes} 分钟`, `${after.max_runtime_minutes} 分钟`),
   ];
   return changes.filter((change): change is FieldChange => change !== null);
 }

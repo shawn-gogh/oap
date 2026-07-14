@@ -40,6 +40,17 @@ export interface AgentApplicationOutput {
   description: string;
 }
 
+export type AgentDashboardTemplate = "analysis" | "operations" | "executive";
+
+export interface AgentDashboardDefinition {
+  title: string;
+  description: string;
+  template: AgentDashboardTemplate;
+  metrics: string[];
+  dimensions: string[];
+  visualizations: string[];
+}
+
 export interface AgentApplicationContract {
   version: 1;
   objective: string;
@@ -47,6 +58,7 @@ export interface AgentApplicationContract {
   interaction_mode: AgentInteractionMode;
   inputs: AgentApplicationInput[];
   outputs: AgentApplicationOutput[];
+  dashboard?: AgentDashboardDefinition;
   non_goals: string[];
   completion_criteria: string[];
   failure_behavior: string;
@@ -107,13 +119,13 @@ const DEFAULT_TOOLS: AgentTool[] = [{ type: "read" }, { type: "glob" }, { type: 
 
 function baseDraft(): AgentDraft {
   return {
-    name: "Untitled Agent",
-    description: "A blank starting point with a read-only toolset.",
+    name: "未命名智能体",
+    description: "一个仅启用只读工具的空白起点。",
     model: "",
     runtime: DEFAULT_RUNTIME,
     owner_id: DEFAULT_OWNER,
     system:
-      "You are a general-purpose agent. Research, analyze, and use the tools you have been granted to complete the user's task end to end. State assumptions clearly, keep progress visible, and ask for missing credentials only when blocked.",
+      "你是一个通用智能体。请进行研究和分析，并使用已获授权的工具端到端完成用户任务。清楚说明假设，保持进度可见，并且只在确实受阻时请求缺失的凭据。",
     tools: DEFAULT_TOOLS.map((tool) => ({ ...tool })),
     cron: "",
     timezone: DEFAULT_TIMEZONE,
@@ -170,25 +182,25 @@ function applicationContractForDraft(draft: AgentDraft): AgentApplicationContrac
   const successCriteria = draft.design?.evaluation?.success_criteria?.trim();
   return {
     version: 1,
-    objective: draft.description.trim() || "Complete the user's requested workflow.",
-    audience: ["requesting user"],
+    objective: draft.description.trim() || "完成用户请求的工作流程。",
+    audience: ["提出请求的用户"],
     interaction_mode: draft.cron.trim() ? "scheduled" : "conversational",
     inputs: [
       {
         type: "request",
-        source: "conversation",
-        description: "The user's request and supplied context.",
+        source: "对话",
+        description: "用户请求及其提供的上下文。",
       },
     ],
     outputs: [
       {
         type: "response",
-        description: draft.description.trim() || "A reviewable result.",
+        description: draft.description.trim() || "可复核的结果。",
       },
     ],
-    non_goals: ["Do not perform unapproved write, destructive, or external-send actions."],
-    completion_criteria: [successCriteria || "Produce a complete, reviewable result for the request."],
-    failure_behavior: "Report the blocked dependency and propose a safe next step.",
+    non_goals: ["不执行未经批准的写入、破坏性或对外发送操作。"],
+    completion_criteria: [successCriteria || "针对请求产出完整且可复核的结果。"],
+    failure_behavior: "报告造成阻塞的依赖，并提出安全的下一步方案。",
   };
 }
 
@@ -234,60 +246,60 @@ function designPreset(input: {
 export const AGENT_TEMPLATES: AgentTemplate[] = [
   {
     id: "blank",
-    title: "Blank agent config",
-    description: "A neutral base agent with a read-only toolset.",
-    tags: ["core"],
+    title: "空白智能体配置",
+    description: "仅启用只读工具的通用基础智能体。",
+    tags: ["基础"],
     draft: withDraft({
       design: designPreset({
         success_criteria:
-          "The agent completes the requested workflow with clear assumptions, explicit next steps, and no unapproved write or external side effects.",
+          "智能体应完成请求的工作流程，明确说明假设和下一步，并且不产生未经批准的写入或外部副作用。",
         task_distribution: [
           {
-            type: "general workflow",
-            example: "Research the requested topic, summarize findings, and list recommended next actions.",
+            type: "通用工作流程",
+            example: "研究指定主题，总结发现并列出建议的后续行动。",
           },
         ],
-        normal_cases: ["User provides a clear task and enough context to complete it end to end."],
+        normal_cases: ["用户提供清晰任务和充分上下文，智能体能够端到端完成。"],
         edge_cases: [
-          "User request is ambiguous or missing required inputs; agent asks focused clarification questions.",
+          "用户请求含糊或缺少必要输入；智能体应提出聚焦的澄清问题。",
         ],
         recovery_cases: [
-          "A tool call fails or data is unavailable; agent reports the failure and offers a fallback path.",
+          "工具调用失败或数据不可用；智能体应报告失败并提供替代路径。",
         ],
         safety_cases: [
-          "User asks for destructive or external action; agent summarizes the intended action and waits for approval.",
+          "用户要求执行破坏性或外部操作；智能体应概述预期操作并等待批准。",
         ],
       }),
     }),
   },
   {
     id: "deep-researcher",
-    title: "Deep researcher",
-    description: "Synthesizes sources, keeps citations, and writes concise briefs.",
-    tags: ["research", "writing"],
+    title: "深度研究员",
+    description: "综合多个来源、保留引用并撰写简洁报告。",
+    tags: ["研究", "写作"],
     draft: withDraft({
-      name: "Deep Researcher",
-      description: "Runs multi-step research and writes a sourced synthesis.",
+      name: "深度研究智能体",
+      description: "执行多步骤研究并撰写有来源依据的综合报告。",
       system:
-        "You are a deep research agent. Break broad questions into focused searches, compare sources, preserve source links, call out uncertainty, and write a compact synthesis with clear next steps. Do not invent citations or hide weak evidence.",
+        "你是一个深度研究智能体。请将宽泛问题拆分为聚焦的检索任务，对比不同来源，保留来源链接，指出不确定性，并撰写包含明确后续步骤的精炼综合报告。不得编造引用或掩盖薄弱证据。",
       max_runtime_minutes: 45,
       design: designPreset({
         success_criteria:
-          "The final brief answers the question, cites source links for factual claims, separates evidence from uncertainty, and includes concise next steps.",
+          "最终报告应回答问题，为事实性主张附上来源链接，区分证据与不确定性，并给出简洁的后续步骤。",
         task_distribution: [
           {
-            type: "research brief",
-            example: "Compare three approaches to deploying private LLM gateways for internal teams.",
+            type: "研究简报",
+            example: "比较为内部团队部署私有大模型网关的三种方案。",
           },
           {
-            type: "monitoring scan",
-            example: "Find recent changes in vendor pricing and summarize product impact.",
+            type: "动态监测",
+            example: "查找供应商近期价格变化并总结对产品的影响。",
           },
         ],
-        normal_cases: ["Research a well-scoped topic and produce a sourced summary with tradeoffs."],
-        edge_cases: ["Sources disagree or are outdated; agent labels uncertainty instead of forcing a conclusion."],
-        recovery_cases: ["Search or fetch fails; agent uses available sources and clearly states coverage gaps."],
-        safety_cases: ["User asks for uncited claims or fabricated references; agent refuses to invent citations."],
+        normal_cases: ["研究范围明确的主题，并产出包含来源和方案权衡的摘要。"],
+        edge_cases: ["来源相互矛盾或已经过时；智能体应标注不确定性，而不是强行得出结论。"],
+        recovery_cases: ["搜索或内容获取失败；智能体应使用现有来源，并明确说明覆盖缺口。"],
+        safety_cases: ["用户要求提供无引用的主张或虚构参考资料；智能体应拒绝编造引用。"],
         evaluator: "llm_judge",
         timeout_minutes: 45,
       }),
@@ -295,69 +307,69 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   },
   {
     id: "inbox-triage",
-    title: "Inbox triage",
-    description: "Categorizes messages, flags urgency, and drafts replies.",
-    tags: ["email", "ops"],
+    title: "收件箱分诊",
+    description: "分类消息、标记紧急程度并起草回复。",
+    tags: ["邮件", "运营"],
     draft: withDraft({
-      name: "Inbox Triage Agent",
-      description: "Monitors and triages an inbox by priority and response need.",
+      name: "收件箱分诊智能体",
+      description: "按优先级和回复需求监控并分诊收件箱。",
       system:
-        "You are an inbox triage agent. Categorize incoming messages as urgent, needs reply, FYI, or archive. Identify action items, summarize current inbox state, and draft concise reply suggestions for user review. Never send messages or make external changes without explicit approval.",
+        "你是一个收件箱分诊智能体。请将收到的消息分类为紧急、需要回复、仅供参考或归档。识别待办事项，总结当前收件箱状态，并起草简洁的回复建议供用户复核。未经明确批准，绝不发送消息或执行外部变更。",
       vault_keys: ["GMAIL_API_KEY"],
       cron: "0 9 * * 1-5",
       design: designPreset({
         success_criteria:
-          "Each message is assigned a priority/category with a short reason, action items are extracted, and any reply is drafted but not sent.",
+          "每封消息都应分配优先级和类别并附简短理由，提取待办事项，回复只能起草而不能发送。",
         task_distribution: [
           {
-            type: "daily inbox scan",
-            example: "Triage unread messages from the last business day and identify replies needed today.",
+            type: "每日收件箱扫描",
+            example: "分诊上一个工作日的未读消息，并识别今天需要回复的邮件。",
           },
           {
-            type: "urgent detection",
-            example: "Flag customer or executive emails that need same-day response.",
+            type: "紧急消息识别",
+            example: "标记需要当天回复的客户或管理层邮件。",
           },
         ],
-        normal_cases: ["Classify a batch of ordinary inbox messages into urgent, needs reply, FYI, or archive."],
-        edge_cases: ["Email body is short or ambiguous; agent marks uncertainty and asks what rule to apply."],
+        normal_cases: ["将一批普通收件箱消息分类为紧急、需要回复、仅供参考或归档。"],
+        edge_cases: ["邮件正文过短或含糊；智能体应标记不确定性，并询问适用规则。"],
         recovery_cases: [
-          "Gmail access fails or returns partial data; agent reports what was checked and what remains unknown.",
+          "邮箱访问失败或只返回部分数据；智能体应报告已检查内容和仍未知的部分。",
         ],
-        safety_cases: ["A drafted reply would be sent externally; agent never sends without explicit approval."],
+        safety_cases: ["回复草稿即将对外发送；未经明确批准，智能体不得发送。"],
       }),
     }),
   },
   {
     id: "security-reviewer",
-    title: "Security reviewer",
-    description: "Reviews code and config for security regressions.",
-    tags: ["code", "security"],
+    title: "安全审查员",
+    description: "审查代码和配置中的安全回归。",
+    tags: ["代码", "安全"],
     draft: withDraft({
-      name: "Security Reviewer",
-      description: "Reviews code, dependencies, and configuration for security risk.",
+      name: "安全审查智能体",
+      description: "审查代码、依赖和配置中的安全风险。",
       system:
-        "You are a meticulous security reviewer. Inspect code changes, dependency updates, configuration, authentication flows, and data handling. Prioritize exploitable risks, include file-level evidence when available, and separate blocking issues from hardening suggestions.",
+        "你是一名严谨的安全审查员。请检查代码变更、依赖更新、配置、身份认证流程和数据处理。优先报告可被利用的风险，在可能时提供文件级证据，并区分阻断性问题与加固建议。",
       vault_keys: ["GITHUB_TOKEN"],
       design: designPreset({
         success_criteria:
-          "Findings are evidence-backed, severity-ranked, include file or config references when available, and distinguish exploitable risks from hardening suggestions.",
+          "审查结果应有证据支撑、按严重程度排序，在可能时包含文件或配置引用，并区分可利用风险与加固建议。",
         task_distribution: [
           {
-            type: "pull request review",
-            example: "Review a diff that changes auth middleware and session ownership checks.",
+            type: "合并请求审查",
+            example: "审查一份修改认证中间件和会话归属校验的代码差异。",
           },
           {
-            type: "dependency/config review",
-            example: "Inspect dependency updates and deployment config for new security exposure.",
+            type: "依赖与配置审查",
+            example: "检查依赖更新和部署配置是否引入新的安全暴露。",
           },
         ],
-        normal_cases: ["Review a code diff and return blocking vulnerabilities plus lower-priority hardening notes."],
-        edge_cases: ["Diff lacks enough context; agent states missing files or assumptions before judging severity."],
+        normal_cases: ["审查代码差异，返回阻断性漏洞和优先级较低的加固建议。"],
+        edge_cases: ["代码差异缺少足够上下文；智能体应先说明缺失文件或假设，再判断严重程度。"],
         recovery_cases: [
-          "Repository or file access fails; agent reports the exact failed access and reviews available context only.",
+          "代码仓库或文件访问失败；智能体应准确报告失败的访问，并只审查现有上下文。",
         ],
         safety_cases: [
-          "User asks to expose secrets, disable auth, or bypass permissions; agent refuses and suggests a safer alternative.",
+          "用户要求暴露密钥、禁用认证或绕过权限；智能体应拒绝并建议更安全的替代方案。",
         ],
         evaluator: "llm_judge",
       }),
@@ -365,70 +377,70 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   },
   {
     id: "support-agent",
-    title: "Support agent",
-    description: "Answers customer questions from docs and escalates gaps.",
-    tags: ["support", "docs"],
+    title: "客户支持",
+    description: "依据文档回答客户问题，并升级处理信息缺口。",
+    tags: ["支持", "文档"],
     draft: withDraft({
-      name: "Support Agent",
-      description: "Answers support questions from product docs and known context.",
+      name: "客户支持智能体",
+      description: "根据产品文档和已知上下文回答支持问题。",
       system:
-        "You are a support agent. Answer customer questions using the available documentation and product context. Be concise, quote exact limits or steps when known, and escalate when the answer depends on account data, billing, security, or an unverified assumption.",
+        "你是一个客户支持智能体。请使用现有文档和产品上下文回答客户问题。保持简洁，在已知时引用准确限制或步骤；当答案依赖账户数据、计费、安全信息或未经验证的假设时，应升级给人工处理。",
       vault_keys: ["INTERCOM_ACCESS_TOKEN"],
       design: designPreset({
         success_criteria:
-          "The answer is grounded in product docs or known context, names assumptions, gives clear next steps, and escalates account-specific or risky requests.",
+          "回答应以产品文档或已知上下文为依据，说明假设，给出明确后续步骤，并升级处理账户相关或高风险请求。",
         task_distribution: [
           {
-            type: "how-to answer",
-            example: "Explain how a customer can rotate an API key without downtime.",
+            type: "操作指导",
+            example: "说明客户如何在不中断服务的情况下轮换接口密钥。",
           },
           {
-            type: "troubleshooting",
-            example: "Help a customer diagnose why a webhook stopped receiving events.",
+            type: "故障排查",
+            example: "帮助客户诊断网络回调停止接收事件的原因。",
           },
         ],
-        normal_cases: ["Answer a documented product question with concise steps and relevant caveats."],
+        normal_cases: ["用简洁步骤和相关注意事项回答已有文档说明的产品问题。"],
         edge_cases: [
-          "Customer asks with incomplete product/version context; agent asks for the minimum missing detail.",
+          "客户提供的产品或版本上下文不完整；智能体应只询问最少的必要信息。",
         ],
-        recovery_cases: ["Relevant docs cannot be found; agent says so and escalates instead of inventing policy."],
+        recovery_cases: ["找不到相关文档；智能体应如实说明并升级处理，而不是编造政策。"],
         safety_cases: [
-          "Customer requests account, billing, or security-sensitive changes; agent escalates and does not act directly.",
+          "客户请求账户、计费或安全敏感变更；智能体应升级处理，不得直接执行。",
         ],
       }),
     }),
   },
   {
     id: "incident-commander",
-    title: "Incident commander",
-    description: "Triage alerts, open incidents, and maintain status updates.",
-    tags: ["on-call", "slack"],
+    title: "故障指挥官",
+    description: "分诊告警、协调故障并维护状态更新。",
+    tags: ["值班", "协作"],
     draft: withDraft({
-      name: "Incident Commander",
-      description: "Coordinates alert triage, incident notes, and team updates.",
+      name: "故障指挥智能体",
+      description: "协调告警分诊、故障记录和团队更新。",
       system:
-        "You are an incident commander agent. Triage incoming alerts, collect timeline facts, identify likely owners, draft status updates, and keep an incident checklist current. Ask before paging people, opening tickets, or posting to shared channels unless a human has already approved the action.",
+        "你是一个故障指挥智能体。请分诊收到的告警，收集时间线事实，识别可能的负责人，起草状态更新，并持续维护故障检查清单。除非人工已经批准，否则在呼叫人员、创建工单或向共享频道发布消息前必须先询问。",
       vault_keys: ["SENTRY_AUTH_TOKEN", "LINEAR_API_KEY", "SLACK_BOT_TOKEN"],
       max_runtime_minutes: 60,
       design: designPreset({
         success_criteria:
-          "The agent summarizes impact, timeline, suspected cause, owner candidates, next actions, and drafts updates without posting or paging unapproved.",
+          "智能体应总结影响、时间线、疑似原因、候选负责人和下一步操作，并且只能起草更新，不得执行未经批准的发布或呼叫。",
         task_distribution: [
           {
-            type: "alert triage",
-            example: "Investigate a spike in 500 errors and draft an incident update.",
+            type: "告警分诊",
+            example: "调查 500 错误激增，并起草一份故障更新。",
           },
           {
-            type: "status coordination",
-            example: "Summarize current incident facts and propose next owner handoff.",
+            type: "状态协调",
+            example: "总结当前故障事实，并建议下一位接手负责人。",
           },
         ],
-        normal_cases: ["Triage an alert with logs and issue context, then produce a concise incident note."],
-        edge_cases: ["Alert has noisy or contradictory signals; agent separates facts from hypotheses."],
+        normal_cases: ["结合日志和问题上下文分诊告警，并产出简洁的故障记录。"],
+        edge_cases: ["告警信号嘈杂或相互矛盾；智能体应区分事实与假设。"],
         recovery_cases: [
-          "Sentry, Linear, or Slack access fails; agent records missing source and continues with available evidence.",
+          "外部告警、工单或协作服务访问失败；智能体应记录缺失来源，并利用现有证据继续分析。",
         ],
-        safety_cases: ["Paging, posting to channels, or opening tickets requires explicit human approval."],
+        safety_cases: ["呼叫人员、向频道发布消息或创建工单都需要人工明确批准。"],
         evaluator: "llm_judge",
         timeout_minutes: 60,
       }),
@@ -436,38 +448,38 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   },
   {
     id: "data-analyst",
-    title: "Data analyst",
-    description: "Explores data, checks assumptions, and writes findings.",
-    tags: ["data", "analysis"],
+    title: "数据分析师",
+    description: "探索数据、校验假设并撰写分析结论。",
+    tags: ["数据", "分析"],
     draft: withDraft({
-      name: "Data Analyst",
-      description: "Loads, explores, and summarizes datasets with reproducible steps.",
+      name: "数据分析智能体",
+      description: "通过可复现步骤加载、探索并总结数据集。",
       system:
-        "You are a data analyst agent. Inspect the dataset shape first, validate assumptions, run reproducible calculations, and explain findings with caveats. Prefer simple tables and charts over long prose when they make the answer clearer.",
+        "你是一个数据分析智能体。请先检查数据集结构，验证假设，执行可复现的计算，并在解释结论时说明限制。当简单表格和图表能让答案更清晰时，应优先使用它们而不是长篇文字。",
       vault_keys: ["DATABASE_URL"],
       max_runtime_minutes: 45,
       design: designPreset({
         success_criteria:
-          "The analysis states dataset scope, validates assumptions, uses reproducible calculations, and presents findings with caveats and next checks.",
+          "分析应说明数据集范围、验证假设、使用可复现计算，并在呈现结论时附上限制和后续检查建议。",
         task_distribution: [
           {
-            type: "metric investigation",
-            example: "Explain why weekly activation rate dropped compared with the prior four weeks.",
+            type: "指标调查",
+            example: "解释本周激活率相比此前四周下降的原因。",
           },
           {
-            type: "dataset summary",
-            example: "Profile a CSV and identify quality issues before analysis.",
+            type: "数据集概览",
+            example: "分析前先检查一个表格文件，并识别数据质量问题。",
           },
         ],
-        normal_cases: ["Inspect a dataset, calculate requested metrics, and summarize findings in a compact table."],
+        normal_cases: ["检查数据集、计算所需指标，并用紧凑表格总结结论。"],
         edge_cases: [
-          "Columns are missing, sparse, or ambiguous; agent asks for schema clarification or states assumptions.",
+          "字段缺失、稀疏或含义不清；智能体应请求澄清数据结构或明确说明假设。",
         ],
         recovery_cases: [
-          "Database query or file read fails; agent reports the query/source and proposes a smaller validation step.",
+          "数据库查询或文件读取失败；智能体应报告查询或数据来源，并提出更小范围的验证步骤。",
         ],
         safety_cases: [
-          "Data appears sensitive or personally identifiable; agent minimizes exposure and avoids unnecessary raw dumps.",
+          "数据可能敏感或包含个人身份信息；智能体应尽量减少暴露，并避免不必要的原始数据输出。",
         ],
         evaluator: "environment",
         timeout_minutes: 45,
@@ -476,38 +488,38 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   },
   {
     id: "sprint-retro",
-    title: "Sprint retro facilitator",
-    description: "Summarizes a sprint and drafts retro themes.",
-    tags: ["linear", "docs"],
+    title: "迭代复盘主持人",
+    description: "总结迭代并起草复盘主题。",
+    tags: ["迭代", "文档"],
     draft: withDraft({
-      name: "Sprint Retro Facilitator",
-      description: "Pulls sprint work, synthesizes themes, and drafts a retro note.",
+      name: "迭代复盘智能体",
+      description: "汇总迭代工作、提炼主题并起草复盘记录。",
       system:
-        "You are a sprint retro facilitator. Review completed work, open carryover, incident notes, and team comments. Summarize what shipped, what slowed the team down, and which follow-ups need owners. Keep the output facilitation-ready and neutral in tone.",
+        "你是一个迭代复盘主持智能体。请审查已完成工作、遗留事项、故障记录和团队评论。总结已交付内容、拖慢团队的因素，以及哪些后续事项需要负责人。输出应可直接用于主持复盘，并保持中立语气。",
       vault_keys: ["LINEAR_API_KEY", "NOTION_API_KEY"],
       cron: "0 13 * * 5",
       design: designPreset({
         success_criteria:
-          "The retro note neutrally summarizes shipped work, blockers, carryover, incidents, themes, and follow-up actions with suggested owners.",
+          "复盘记录应以中立方式总结已交付工作、阻塞项、遗留事项、故障、主题和后续行动，并建议负责人。",
         task_distribution: [
           {
-            type: "weekly retro prep",
-            example: "Summarize this sprint's completed Linear issues and draft retro themes.",
+            type: "每周复盘准备",
+            example: "总结本次迭代完成的工单，并起草复盘主题。",
           },
           {
-            type: "carryover review",
-            example: "Identify unfinished work and recurring blockers from the last sprint.",
+            type: "遗留事项审查",
+            example: "识别上次迭代未完成的工作和反复出现的阻塞因素。",
           },
         ],
-        normal_cases: ["Gather completed and carryover work, then produce a facilitation-ready retro note."],
+        normal_cases: ["收集已完成工作和遗留事项，并产出可直接用于主持的复盘记录。"],
         edge_cases: [
-          "Issue labels or ownership are inconsistent; agent marks uncertainty and avoids blaming individuals.",
+          "工单标签或负责人信息不一致；智能体应标记不确定性，并避免归咎个人。",
         ],
         recovery_cases: [
-          "Linear or Notion access fails; agent reports missing data and drafts from available context.",
+          "工单或文档服务访问失败；智能体应报告缺失数据，并依据现有上下文起草内容。",
         ],
         safety_cases: [
-          "Output could expose sensitive performance judgments; agent keeps tone neutral and focuses on process.",
+          "输出可能暴露敏感的绩效评价；智能体应保持中立语气并聚焦流程。",
         ],
       }),
     }),
@@ -545,14 +557,16 @@ function cleanRequest(prompt: string): string {
 function requestedName(prompt: string): string {
   const cleaned = cleanRequest(prompt);
   const words = cleaned.split(/\s+/).filter(Boolean).slice(0, 5);
-  const titled = titleCase(words.join(" ")) || "Custom Agent";
-  return /\bagent\b/i.test(titled) ? titled : `${titled} Agent`;
+  const titled = titleCase(words.join(" ")) || "自定义智能体";
+  if (/[\u3400-\u9fff]/.test(titled)) return titled.endsWith("智能体") ? titled : `${titled}智能体`;
+  return /\bagent\b/i.test(titled) ? titled : `${titled} 智能体`;
 }
 
 function sentence(value: string): string {
   const compact = value.replace(/\s+/g, " ").trim();
-  if (!compact) return "Complete the user's requested workflow.";
-  return `${compact.charAt(0).toUpperCase()}${compact.slice(1).replace(/[.?!]*$/, ".")}`;
+  if (!compact) return "完成用户请求的工作流程。";
+  const punctuation = /[\u3400-\u9fff]/.test(compact) ? "。" : ".";
+  return `${compact.charAt(0).toUpperCase()}${compact.slice(1).replace(/[。.!?！？]*$/, punctuation)}`;
 }
 
 export function agentTemplateForPrompt(prompt: string): AgentTemplate {
@@ -596,12 +610,16 @@ function subAgentsForPrompt(prompt: string): AgentSubAgent[] {
 
 function generatedSystem(template: AgentTemplate, prompt: string): string {
   const objective = sentence(prompt);
-  return `${template.draft.system}\n\nUse this agent configuration to accomplish the requested workflow: ${objective} Before taking irreversible external actions, summarize the intended action and wait for explicit user approval. Keep outputs structured, concise, and easy to review.`;
+  const dashboardInstruction = /(大屏|看板|驾驶舱|dashboard)/i.test(prompt)
+    ? " 最终输出必须包含一个 JSON 对象，其中 metrics 是以中文指标名为键的对象，rows 是由扁平对象组成的明细数组；不要在 JSON 中输出 HTML 或脚本。"
+    : "";
+  return `${template.draft.system}\n\n请使用此智能体配置完成以下工作流程：${objective} 在执行不可逆的外部操作前，先概述预期操作并等待用户明确批准。输出应结构清晰、简洁且易于复核。${dashboardInstruction}`;
 }
 
 function applicationContractFromPrompt(prompt: string, draft: AgentDraft): AgentApplicationContract {
   const objective = sentence(cleanRequest(prompt) || prompt.trim());
   const scheduled = Boolean(cronForPrompt(prompt) || draft.cron.trim());
+  const needsDashboard = /(大屏|看板|驾驶舱|dashboard)/i.test(prompt);
   return {
     ...applicationContractForDraft(draft),
     objective,
@@ -609,11 +627,30 @@ function applicationContractFromPrompt(prompt: string, draft: AgentDraft): Agent
     inputs: [
       {
         type: "request",
-        source: scheduled ? "scheduled routine" : "conversation",
+        source: scheduled ? "定时例程" : "对话",
         description: objective,
       },
     ],
-    outputs: [{ type: "result", description: draft.description.trim() || objective }],
+    outputs: needsDashboard
+      ? [
+          {
+            type: "interactive_dashboard",
+            description: "可筛选、可复核的分析大屏。",
+          },
+        ]
+      : [{ type: "result", description: draft.description.trim() || objective }],
+    ...(needsDashboard
+      ? {
+          dashboard: {
+            title: `${draft.name}数据大屏`,
+            description: "展示本次运行产生的关键指标、趋势和明细数据。",
+            template: "analysis" as const,
+            metrics: ["总量", "成功量", "异常量"],
+            dimensions: ["时间", "类别"],
+            visualizations: ["指标卡", "趋势图", "明细表"],
+          },
+        }
+      : {}),
   };
 }
 
@@ -624,10 +661,10 @@ export function buildAgentDraftFromPrompt(prompt: string): AgentDraft {
   if (/\bhello\s*,?\s*world\b/i.test(prompt)) {
     const draft = {
       ...blankAgentDraft(),
-      name: "Hello World Agent",
-      description: "A simple agent that greets users with a hello world message.",
+      name: "你好世界智能体",
+      description: "一个使用“你好，世界”消息问候用户的简单智能体。",
       system:
-        'You are a friendly Hello World agent. When a user sends you any message, greet them warmly with "Hello, World!" and a brief, cheerful follow-up. Keep responses short, positive, and welcoming.',
+        '你是一个友好的“你好，世界”智能体。用户发送任何消息时，请用“你好，世界！”热情问候，并附上一句简短愉快的话。回复应简短、积极且亲切。',
       cron: promptCron,
       vault_keys: promptVaultKeys,
       sub_agents: promptSubAgents,
@@ -868,6 +905,25 @@ function normalizeApplicationContract(value: YamlValue): AgentApplicationContrac
         ];
       })
     : [];
+  const rawDashboard = raw.dashboard;
+  const dashboard =
+    rawDashboard && typeof rawDashboard === "object" && !Array.isArray(rawDashboard)
+      ? (() => {
+          const value = rawDashboard as Record<string, unknown>;
+          const template = stringValue(value.template);
+          return {
+            title: stringValue(value.title),
+            description: stringValue(value.description),
+            template:
+              template === "operations" || template === "executive"
+                ? template
+                : ("analysis" as AgentDashboardTemplate),
+            metrics: stringList(value.metrics),
+            dimensions: stringList(value.dimensions),
+            visualizations: stringList(value.visualizations),
+          };
+        })()
+      : undefined;
   return {
     version: 1,
     objective: stringValue(raw.objective),
@@ -877,6 +933,7 @@ function normalizeApplicationContract(value: YamlValue): AgentApplicationContrac
       : "conversational",
     inputs,
     outputs,
+    ...(dashboard ? { dashboard } : {}),
     non_goals: stringList(raw.non_goals),
     completion_criteria: stringList(raw.completion_criteria),
     failure_behavior: stringValue(raw.failure_behavior),
@@ -1138,9 +1195,9 @@ export function parseAgentDraftConfig(source: string): ParsedAgentDraft {
     assignScalar(draft, key, value);
   }
 
-  if (!draft.name.trim()) return { draft, error: "Agent name is required." };
-  if (!draft.model.trim()) return { draft, error: "Model is required." };
-  if (!draft.runtime.trim()) return { draft, error: "Runtime is required." };
+  if (!draft.name.trim()) return { draft, error: "必须填写智能体名称。" };
+  if (!draft.model.trim()) return { draft, error: "必须选择模型。" };
+  if (!draft.runtime.trim()) return { draft, error: "必须选择运行时。" };
   return { draft, error: null };
 }
 

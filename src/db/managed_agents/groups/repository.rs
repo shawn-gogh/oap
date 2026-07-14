@@ -48,6 +48,25 @@ pub async fn list(pool: &PgPool, query: Option<&str>) -> Result<Vec<GroupRow>, G
     .map_err(GatewayError::Database)
 }
 
+pub async fn list_administered_by(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<GroupRow>, GatewayError> {
+    sqlx::query_as::<_, GroupRow>(
+        r#"
+        SELECT groups.*
+        FROM "LiteLLM_GroupsTable" groups
+        JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = groups.id
+        WHERE member.user_id = $1 AND member.member_role = 'group_admin'
+        ORDER BY groups.name, groups.id
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn find(pool: &PgPool, id: &str) -> Result<Option<GroupRow>, GatewayError> {
     sqlx::query_as::<_, GroupRow>(r#"SELECT * FROM "LiteLLM_GroupsTable" WHERE id = $1"#)
         .bind(id)
@@ -62,6 +81,16 @@ pub async fn find_by_name(pool: &PgPool, name: &str) -> Result<Option<GroupRow>,
         .fetch_optional(pool)
         .await
         .map_err(GatewayError::Database)
+}
+
+pub async fn active_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<String>, GatewayError> {
+    sqlx::query_scalar::<_, String>(
+        r#"SELECT id FROM "LiteLLM_GroupsTable" WHERE id = ANY($1) AND status = 'active'"#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 pub async fn update_status(

@@ -5,12 +5,14 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Activity,
   ArrowLeft,
   Brain,
   Check,
   Clock,
   Download,
   FileText,
+  GitPullRequest,
   KeyRound,
   Pencil,
   Pin,
@@ -18,7 +20,9 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
   Users,
@@ -34,6 +38,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
   AgentApplicationOverview,
+  AgentInteractiveDashboard,
   applicationContractFromAgent,
   type AgentDashboardSection,
 } from "./application-dashboard";
@@ -41,7 +46,9 @@ import {
   DEFAULT_VAULT_USER,
   agentFileDownloadUrl,
   createAgentGrant,
+  createAgentGrantsBatch,
   createAgentGroupGrant,
+  createAgentGroupGrantsBatch,
   createAgentTask,
   createSession,
   createImprovementProposal,
@@ -69,7 +76,12 @@ import {
   apiErrorMessage,
   cancelAgentTask,
   getAgent,
+  getAgentGovernance,
   preflightAgent,
+  requestAgentPublish,
+  rollbackAgent,
+  testAgentGovernance,
+  type AgentGovernanceResponse,
   type AgentPreflightReport,
   listAgentFiles,
   uploadAgentFile,
@@ -145,6 +157,23 @@ function formatBytes(bytes: number): string {
     value /= 1024;
   }
   return `${bytes} B`;
+}
+
+function formatGrantExpiry(expiresAt?: number | null): string {
+  if (!expiresAt) return "长期有效";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(expiresAt));
+}
+
+function grantExpiryMillis(value: string): number | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function runtimeFromAgent(agent: Agent): string {
@@ -251,6 +280,9 @@ function AgentDetail() {
   const [taskStartError, setTaskStartError] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [taskArtifacts, setTaskArtifacts] = useState<TaskArtifact[]>([]);
+  const [dashboardArtifacts, setDashboardArtifacts] = useState<TaskArtifact[]>([]);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0);
   const [taskChecks, setTaskChecks] = useState<TaskAcceptanceCheck[]>([]);
   const [taskAttempts, setTaskAttempts] = useState<TaskAttempts>({
     sessions: [],
@@ -269,6 +301,7 @@ function AgentDetail() {
   const [taskCancelling, setTaskCancelling] = useState<string | null>(null);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [preflightReport, setPreflightReport] = useState<AgentPreflightReport | null>(null);
+  const [governance, setGovernance] = useState<AgentGovernanceResponse | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -281,11 +314,12 @@ function AgentDetail() {
   const [groupGrants, setGroupGrants] = useState<AgentGroupGrant[]>([]);
   const [grantableUsers, setGrantableUsers] = useState<ManagedUser[]>([]);
   const [grantableGroups, setGrantableGroups] = useState<ManagedGroup[]>([]);
-  const [grantUser, setGrantUser] = useState("");
   const [grantUserQuery, setGrantUserQuery] = useState("");
-  const [grantGroup, setGrantGroup] = useState("");
   const [grantGroupQuery, setGrantGroupQuery] = useState("");
   const [grantPermission, setGrantPermission] = useState("use");
+  const [grantExpiry, setGrantExpiry] = useState("");
+  const [selectedGrantUsers, setSelectedGrantUsers] = useState<Set<string>>(new Set());
+  const [selectedGrantGroups, setSelectedGrantGroups] = useState<Set<string>>(new Set());
   const [grantBusy, setGrantBusy] = useState(false);
   const [grantError, setGrantError] = useState<string | null>(null);
   const [grantsVisible, setGrantsVisible] = useState(true);
@@ -403,7 +437,7 @@ function AgentDetail() {
       try {
         const ag = await getAgent(id);
         const owner = vaultUserFromAgent(ag);
-        const [allSessions, memoryRows, fileRows, keyRows, routineRows, taskRows, report] = await Promise.all([
+        const [allSessions, memoryRows, fileRows, keyRows, routineRows, taskRows, report, governanceState] = await Promise.all([
           listSessions().catch(() => []),
           listMemory(id).catch(() => []),
           listAgentFiles(id).catch(() => []),
@@ -411,6 +445,7 @@ function AgentDetail() {
           listRoutines(id).catch(() => []),
           listAgentTasks(id).catch(() => []),
           preflightAgent(id).catch(() => null),
+          getAgentGovernance(id).catch(() => null),
         ]);
         setVaultUserId(owner);
         setAgent(ag);
@@ -421,6 +456,7 @@ function AgentDetail() {
         setRoutines(routineRows);
         setTasks(taskRows);
         setPreflightReport(report);
+        setGovernance(governanceState);
         listEvalRuns(id).then(setEvalRuns).catch(() => {});
         listAgentGrants(id)
           .then(setGrants)
@@ -446,6 +482,31 @@ function AgentDetail() {
     }, 200);
     return () => window.clearTimeout(timer);
   }, [grantUserQuery, id]);
+
+  useEffect(() => {
+    if (activeSection !== "dashboard") return;
+    const latestTask = [...tasks].sort((a, b) => b.created_at - a.created_at)[0];
+    if (!latestTask) {
+      setDashboardArtifacts([]);
+      setDashboardLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDashboardLoading(true);
+    listTaskArtifacts(id, latestTask.id)
+      .then((artifacts) => {
+        if (!cancelled) setDashboardArtifacts(artifacts);
+      })
+      .catch(() => {
+        if (!cancelled) setDashboardArtifacts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, dashboardRefreshKey, id, tasks]);
 
   useEffect(() => {
     const query = grantGroupQuery.trim();
@@ -746,14 +807,19 @@ function AgentDetail() {
   };
 
   const addGrant = async () => {
-    const user = grantUser.trim();
-    if (!user || grantBusy) return;
+    const users = [...selectedGrantUsers];
+    if (users.length === 0 || grantBusy) return;
     setGrantBusy(true);
     setGrantError(null);
     try {
-      await createAgentGrant(id, user, grantPermission);
+      const expiry = grantExpiryMillis(grantExpiry);
+      if (users.length === 1) {
+        await createAgentGrant(id, users[0], grantPermission, expiry);
+      } else {
+        await createAgentGrantsBatch(id, users, grantPermission, expiry);
+      }
       setGrants(await listAgentGrants(id));
-      setGrantUser("");
+      setSelectedGrantUsers(new Set());
       setGrantUserQuery("");
     } catch (e) {
       setGrantError(e instanceof Error ? e.message : String(e));
@@ -776,14 +842,19 @@ function AgentDetail() {
   };
 
   const addGroupGrant = async () => {
-    const group = grantGroup.trim();
-    if (!group || grantBusy) return;
+    const groups = [...selectedGrantGroups];
+    if (groups.length === 0 || grantBusy) return;
     setGrantBusy(true);
     setGrantError(null);
     try {
-      await createAgentGroupGrant(id, group, grantPermission);
+      const expiry = grantExpiryMillis(grantExpiry);
+      if (groups.length === 1) {
+        await createAgentGroupGrant(id, groups[0], grantPermission, expiry);
+      } else {
+        await createAgentGroupGrantsBatch(id, groups, grantPermission, expiry);
+      }
       setGroupGrants(await listAgentGroupGrants(id));
-      setGrantGroup("");
+      setSelectedGrantGroups(new Set());
       setGrantGroupQuery("");
     } catch (e) {
       setGrantError(e instanceof Error ? e.message : String(e));
@@ -1015,7 +1086,16 @@ function AgentDetail() {
                 </div>
 
                 <nav className="flex gap-1 overflow-x-auto border-b border-border" aria-label="智能体应用视图">
-                  {DASHBOARD_SECTIONS.map((section) => (
+                  {[
+                    ...DASHBOARD_SECTIONS.slice(0, 1),
+                    ...(applicationContractFromAgent(agent)?.dashboard &&
+                    applicationContractFromAgent(agent)?.outputs.some(
+                      (output) => output.type === "interactive_dashboard",
+                    )
+                      ? [{ id: "dashboard" as const, label: "大屏应用" }]
+                      : []),
+                    ...DASHBOARD_SECTIONS.slice(1),
+                  ].map((section) => (
                     <button
                       key={section.id}
                       type="button"
@@ -1049,12 +1129,21 @@ function AgentDetail() {
                   />
                 )}
 
-                {activeSection === "overview" && agent.status === "draft" && (
+                {activeSection === "overview" && agent.status === "draft" && !governance && (
                   <DraftPreflightPanel
                     agentId={agent.id}
                     initialReport={preflightReport}
                     onReport={setPreflightReport}
                     onActivated={() => setAgent({ ...agent, status: "active" })}
+                  />
+                )}
+
+                {activeSection === "dashboard" && applicationContractFromAgent(agent)?.dashboard && (
+                  <AgentInteractiveDashboard
+                    definition={applicationContractFromAgent(agent)!.dashboard!}
+                    artifacts={dashboardArtifacts}
+                    loading={dashboardLoading}
+                    onRefresh={() => setDashboardRefreshKey((value) => value + 1)}
                   />
                 )}
 
@@ -1155,7 +1244,7 @@ function AgentDetail() {
                   onVaultKeysChange={updateVaultKeys}
                   onStoredKeyEntriesChange={(updater) => setStoredKeyEntries(updater)}
                 />
-                {agent.status === "draft" && (
+                {agent.status === "draft" && !governance && (
                   <DraftPreflightPanel
                     agentId={agent.id}
                     initialReport={preflightReport}
@@ -1164,6 +1253,15 @@ function AgentDetail() {
                   />
                 )}
                 </>
+                )}
+
+                {activeSection === "governance" && governance && (
+                  <ManagedGovernancePanel
+                    response={governance}
+                    onChange={setGovernance}
+                    onAgentChange={setAgent}
+                    onReport={setPreflightReport}
+                  />
                 )}
 
                 {activeSection === "governance" && grantsVisible && (
@@ -1181,28 +1279,15 @@ function AgentDetail() {
                     <p className="mb-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{grantError}</p>
                   )}
                   <Card className="overflow-hidden">
-                    <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
                       <Input
                         value={grantUserQuery}
                         onChange={(e) => {
                           setGrantUserQuery(e.target.value);
-                          setGrantUser("");
                         }}
                         placeholder="搜索姓名、邮箱或用户 ID"
                         className="h-8 max-w-[200px] text-xs"
                       />
-                      <select
-                        value={grantUser}
-                        onChange={(e) => setGrantUser(e.target.value)}
-                        className="h-8 max-w-[240px] rounded-md border border-input bg-transparent px-2 text-xs"
-                      >
-                        <option value="">从搜索结果选择用户</option>
-                        {grantableUsers.map((user) => (
-                          <option key={user.id} value={user.id} disabled={user.status !== "active"}>
-                            {user.display_name} ({user.id}){user.status !== "active" ? " · 已禁用" : ""}
-                          </option>
-                        ))}
-                      </select>
                       <select
                         value={grantPermission}
                         onChange={(e) => setGrantPermission(e.target.value)}
@@ -1211,18 +1296,44 @@ function AgentDetail() {
                         <option value="use">use（使用）</option>
                         <option value="edit">edit（可修改）</option>
                       </select>
+                      <Input
+                        value={grantExpiry}
+                        onChange={(e) => setGrantExpiry(e.target.value)}
+                        type="datetime-local"
+                        aria-label="授权到期时间"
+                        className="h-8 w-auto text-xs"
+                      />
                       <Button
                         type="button"
                         size="sm"
                         variant="outline"
                         className="h-8"
                         onClick={() => void addGrant()}
-                        disabled={grantBusy || !grantUser.trim()}
+                        disabled={grantBusy || selectedGrantUsers.size === 0}
                       >
                         <Plus className="size-3.5" />
-                        授权
+                        授权所选（{selectedGrantUsers.size}）
                       </Button>
                     </div>
+                    {grantableUsers.length > 0 && (
+                      <div className="grid gap-1 border-b border-border px-3 py-2 sm:grid-cols-2">
+                        {grantableUsers.map((user) => (
+                          <label key={user.id} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
+                            <input
+                              type="checkbox"
+                              checked={selectedGrantUsers.has(user.id)}
+                              disabled={user.status !== "active"}
+                              onChange={() => setSelectedGrantUsers((current) => {
+                                const next = new Set(current);
+                                if (next.has(user.id)) next.delete(user.id); else next.add(user.id);
+                                return next;
+                              })}
+                            />
+                            <span className="truncate">{user.display_name}（{user.id}）{user.status !== "active" ? " · 已停用" : ""}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                     {grants.length === 0 ? (
                       <div className="p-4 text-center text-xs text-muted-foreground">
                         尚未授权给任何用户，仅 owner 与 admin 可见。
@@ -1232,10 +1343,12 @@ function AgentDetail() {
                         {grants.map((grant) => (
                           <div key={grant.id} className="flex items-center justify-between px-3 py-2">
                             <div className="min-w-0">
-                              <span className="font-mono text-xs">{grant.grantee_user_id}</span>
+                              <span className="text-xs font-medium">{grant.user?.display_name ?? grant.grantee_user_id}</span>
+                              <span className="ml-1 font-mono text-[11px] text-muted-foreground">{grant.grantee_user_id}</span>
                               <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
                                 {grant.permission}
                               </span>
+                              <span className="ml-2 text-[11px] text-muted-foreground">直接授予 · {formatGrantExpiry(grant.expires_at)}</span>
                             </div>
                             <Button
                               type="button"
@@ -1279,23 +1392,10 @@ function AgentDetail() {
                         value={grantGroupQuery}
                         onChange={(e) => {
                           setGrantGroupQuery(e.target.value);
-                          setGrantGroup("");
                         }}
                         placeholder="搜索用户组"
                         className="h-8 max-w-[180px] text-xs"
                       />
-                      <select
-                        value={grantGroup}
-                        onChange={(e) => setGrantGroup(e.target.value)}
-                        className="h-8 max-w-[220px] rounded-md border border-input bg-transparent px-2 text-xs"
-                      >
-                        <option value="">从搜索结果选择用户组</option>
-                        {grantableGroups.map((group) => (
-                          <option key={group.id} value={group.id} disabled={group.status !== "active"}>
-                            {group.name}{group.status !== "active" ? " · 已禁用" : ""}
-                          </option>
-                        ))}
-                      </select>
                       <select
                         value={grantPermission}
                         onChange={(e) => setGrantPermission(e.target.value)}
@@ -1304,18 +1404,51 @@ function AgentDetail() {
                         <option value="use">use（使用）</option>
                         <option value="edit">edit（可修改）</option>
                       </select>
-                      <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void addGroupGrant()} disabled={grantBusy || !grantGroup.trim()}>
+                      <Input
+                        value={grantExpiry}
+                        onChange={(e) => setGrantExpiry(e.target.value)}
+                        type="datetime-local"
+                        aria-label="授权到期时间"
+                        className="h-8 w-auto text-xs"
+                      />
+                      <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void addGroupGrant()} disabled={grantBusy || selectedGrantGroups.size === 0}>
                         <Plus className="size-3.5" />
-                        授权用户组
+                        授权所选（{selectedGrantGroups.size}）
                       </Button>
                     </div>
+                    {grantableGroups.length > 0 && (
+                      <div className="grid gap-1 border-b border-border px-3 py-2 sm:grid-cols-2">
+                        {grantableGroups.map((group) => (
+                          <label key={group.id} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
+                            <input
+                              type="checkbox"
+                              checked={selectedGrantGroups.has(group.id)}
+                              disabled={group.status !== "active"}
+                              onChange={() => setSelectedGrantGroups((current) => {
+                                const next = new Set(current);
+                                if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+                                return next;
+                              })}
+                            />
+                            <span className="truncate">{group.name}{group.status !== "active" ? " · 已停用" : ""}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                     {groupGrants.length === 0 ? (
                       <div className="p-4 text-center text-xs text-muted-foreground">尚未授权给任何用户组。</div>
                     ) : (
                       <div className="divide-y divide-border">
                         {groupGrants.map((grant) => (
                           <div key={grant.id} className="flex items-center justify-between px-3 py-2">
-                            <div className="min-w-0"><span className="font-mono text-xs">{grant.group_id}</span><span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{grant.permission}</span></div>
+                            <div className="min-w-0">
+                              <span className="text-xs font-medium">{grant.group?.name ?? grant.group_id}</span>
+                              <span className="ml-1 font-mono text-[11px] text-muted-foreground">{grant.group_id}</span>
+                              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{grant.permission}</span>
+                              <span className="ml-2 text-[11px] text-muted-foreground">
+                                通过该组为 {grant.group?.member_count ?? 0} 名成员授予 {grant.permission} · {grant.group?.status === "disabled" ? "组已停用" : formatGrantExpiry(grant.expires_at)}
+                              </span>
+                            </div>
                             <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => void removeGroupGrant(grant.group_id)} disabled={grantBusy} aria-label={`撤销用户组 ${grant.group_id}`}><Trash2 className="size-3.5" /></Button>
                           </div>
                         ))}
@@ -2259,6 +2392,145 @@ const PREFLIGHT_VERDICT_META: Record<string, { label: string; className: string 
   unverified: { label: "未验证", className: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
   failed: { label: "失败", className: "bg-destructive/10 text-destructive" },
 };
+
+const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
+  imported: "已导入",
+  tested: "测试通过",
+  pending_approval: "等待发布审批",
+  published: "已发布",
+  unhealthy: "运行检查失败",
+  rolled_back: "已回滚",
+};
+
+function ManagedGovernancePanel({
+  response,
+  onChange,
+  onAgentChange,
+  onReport,
+}: {
+  response: AgentGovernanceResponse;
+  onChange: (response: AgentGovernanceResponse) => void;
+  onAgentChange: (agent: Agent) => void;
+  onReport: (report: AgentPreflightReport) => void;
+}) {
+  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const governance = response.governance;
+  const testedCurrentRevision =
+    governance.runtime_health === "healthy" &&
+    governance.tested_revision === response.current_revision;
+
+  const runTest = async () => {
+    setBusy("test");
+    setError(null);
+    try {
+      const next = await testAgentGovernance(governance.agent_id);
+      onChange(next);
+      if (next.preflight) onReport(next.preflight);
+      toast.success(next.governance.runtime_health === "healthy" ? "运行检查通过" : "运行检查未通过");
+    } catch (e) {
+      setError(apiErrorMessage(e, "运行检查失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const requestPublish = async () => {
+    setBusy("publish");
+    setError(null);
+    try {
+      const next = await requestAgentPublish(governance.agent_id);
+      onChange({ ...response, governance: next.governance });
+      toast.success("发布申请已提交，等待管理员审批");
+    } catch (e) {
+      setError(apiErrorMessage(e, "提交发布申请失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rollback = async () => {
+    if (!window.confirm("确认回滚到上一个已发布版本？回滚会生成新的版本记录。")) return;
+    setBusy("rollback");
+    setError(null);
+    try {
+      const next = await rollbackAgent(governance.agent_id);
+      onAgentChange(next.agent);
+      onChange({
+        governance: next.governance,
+        current_revision: next.governance.published_revision ?? response.current_revision,
+      });
+      toast.success("智能体已回滚到上一个已发布版本");
+    } catch (e) {
+      setError(apiErrorMessage(e, "回滚失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stages = [
+    { label: "导入", done: true },
+    { label: "测试", done: testedCurrentRevision },
+    { label: "发布", done: ["published", "rolled_back"].includes(governance.lifecycle_status) },
+    { label: "授权", done: ["published", "rolled_back"].includes(governance.lifecycle_status) },
+    { label: "监控", done: governance.last_health_at != null },
+  ];
+
+  return (
+    <section>
+      <div className="mb-2">
+        <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <ShieldCheck className="size-3.5" />
+          外部智能体纳管
+        </h2>
+        <p className="mt-1 text-xs text-muted-foreground">导入、测试、审批发布、授权和运行监控使用同一版本链路。</p>
+      </div>
+      <Card className="overflow-hidden">
+        <div className="grid grid-cols-5 border-b border-border bg-muted/20">
+          {stages.map((stage, index) => (
+            <div key={stage.label} className="relative px-2 py-3 text-center">
+              <div className={`mx-auto mb-1 flex size-6 items-center justify-center rounded-full text-xs font-semibold ${stage.done ? "bg-emerald-500 text-white" : "bg-muted text-muted-foreground"}`}>
+                {index + 1}
+              </div>
+              <span className="text-[11px] text-muted-foreground">{stage.label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-4 p-4 lg:grid-cols-[1fr_auto]">
+          <dl className="grid gap-x-5 gap-y-2 text-xs sm:grid-cols-[120px_1fr]">
+            <dt className="text-muted-foreground">纳管状态</dt>
+            <dd className="font-medium">{GOVERNANCE_STATUS_LABELS[governance.lifecycle_status] ?? governance.lifecycle_status}</dd>
+            <dt className="text-muted-foreground">外部来源版本</dt>
+            <dd>v{governance.source_version} · 本地 revision {response.current_revision}</dd>
+            <dt className="text-muted-foreground">来源</dt>
+            <dd className="break-all">{governance.source_provider} · {governance.external_agent_id}</dd>
+            <dt className="text-muted-foreground">运行凭据</dt>
+            <dd>{governance.credential_scope === "personal" ? "属主隔离凭据" : "运行时由用户提供"}</dd>
+            <dt className="text-muted-foreground">运行健康</dt>
+            <dd className={governance.runtime_health === "unhealthy" ? "text-destructive" : ""}>
+              {governance.runtime_health === "healthy" ? "健康" : governance.runtime_health === "unhealthy" ? "异常" : "尚未检查"}
+              {governance.health_detail ? ` · ${governance.health_detail}` : ""}
+            </dd>
+            <dt className="text-muted-foreground">已发布版本</dt>
+            <dd>{governance.published_revision ?? "暂无"}</dd>
+          </dl>
+          <div className="flex flex-wrap content-start gap-2 lg:max-w-[190px]">
+            <Button size="sm" variant="outline" onClick={() => void runTest()} disabled={busy !== null}>
+              <Activity className="size-3.5" />{busy === "test" ? "检查中..." : "运行检查"}
+            </Button>
+            <Button size="sm" onClick={() => void requestPublish()} disabled={busy !== null || !testedCurrentRevision || governance.lifecycle_status === "pending_approval"}>
+              <GitPullRequest className="size-3.5" />{busy === "publish" ? "提交中..." : "申请发布"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void rollback()} disabled={busy !== null || governance.previous_published_revision == null}>
+              <RotateCcw className="size-3.5" />{busy === "rollback" ? "回滚中..." : "回滚"}
+            </Button>
+          </div>
+        </div>
+        {error && <p className="border-t border-border bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
+      </Card>
+    </section>
+  );
+}
 
 function DraftPreflightPanel({
   agentId,

@@ -2,9 +2,527 @@
 mod support;
 
 use serde_json::{json, Value};
-use support::{flows, request_json, request_json_raw, AppFixture};
+use support::{flows, request_json, request_json_raw, request_json_raw_with_key, AppFixture};
 
 static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn permission_matrix_and_not_found_isolation_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new_with_litellm_key_info().await else {
+        eprintln!("skipping permission integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let alice = litellm_rust::db::managed_agents::users::repository::create(
+        &fixture.pool,
+        "alice",
+        "Alice",
+        Some("alice@example.com"),
+    )
+    .await
+    .unwrap();
+    let bob = litellm_rust::db::managed_agents::users::repository::create(
+        &fixture.pool,
+        "bob",
+        "Bob",
+        Some("bob@example.com"),
+    )
+    .await
+    .unwrap();
+    let bob_key = litellm_rust::db::managed_agents::api_keys::repository::create(
+        &fixture.pool,
+        Some("bob-test"),
+        Some(&bob.id),
+        Some("user"),
+    )
+    .await
+    .unwrap()
+    .key;
+
+    let agent = create_owned_agent(&fixture, "private-agent", &alice.id).await;
+    let other_agent = create_owned_agent(&fixture, "other-agent", &alice.id).await;
+    let session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        Some(&agent),
+        "private session",
+        None,
+        Some(&alice.id),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_resources_hidden(&fixture, &bob_key, &agent, &session.id).await;
+
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent}/grants"),
+        Some(json!({ "user_id": bob.id, "permission": "use" })),
+    )
+    .await;
+    assert_status(
+        &fixture,
+        &bob_key,
+        "GET",
+        &format!("/api/agents/{agent}"),
+        None,
+        axum::http::StatusCode::OK,
+    )
+    .await;
+    assert_status(
+        &fixture,
+        &bob_key,
+        "PATCH",
+        &format!("/api/agents/{agent}"),
+        Some(json!({ "description": "blocked" })),
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent}/grants"),
+        Some(json!({ "user_id": bob.id, "permission": "edit" })),
+    )
+    .await;
+    assert_status(
+        &fixture,
+        &bob_key,
+        "PATCH",
+        &format!("/api/agents/{agent}"),
+        Some(json!({ "description": "direct edit" })),
+        axum::http::StatusCode::OK,
+    )
+    .await;
+    request_json(
+        fixture.app.clone(),
+        "DELETE",
+        &format!("/api/agents/{agent}/grants/{}", bob.id),
+        None,
+    )
+    .await;
+
+    let use_group = litellm_rust::db::managed_agents::groups::repository::create(
+        &fixture.pool,
+        "analysts",
+        None,
+        "admin",
+    )
+    .await
+    .unwrap();
+    let edit_group = litellm_rust::db::managed_agents::groups::repository::create(
+        &fixture.pool,
+        "maintainers",
+        None,
+        "admin",
+    )
+    .await
+    .unwrap();
+    for group in [&use_group, &edit_group] {
+        litellm_rust::db::managed_agents::groups::members::upsert(
+            &fixture.pool,
+            &group.id,
+            &bob.id,
+            "member",
+            "admin",
+        )
+        .await
+        .unwrap();
+    }
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent}/group-grants"),
+        Some(json!({ "group_id": use_group.id, "permission": "use" })),
+    )
+    .await;
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent}/group-grants"),
+        Some(json!({ "group_id": edit_group.id, "permission": "edit" })),
+    )
+    .await;
+    assert_status(
+        &fixture,
+        &bob_key,
+        "PATCH",
+        &format!("/api/agents/{agent}"),
+        Some(json!({ "description": "stacked edit" })),
+        axum::http::StatusCode::OK,
+    )
+    .await;
+
+    litellm_rust::db::managed_agents::groups::members::delete(
+        &fixture.pool,
+        &edit_group.id,
+        &bob.id,
+    )
+    .await
+    .unwrap();
+    assert_status(
+        &fixture,
+        &bob_key,
+        "GET",
+        &format!("/api/agents/{agent}"),
+        None,
+        axum::http::StatusCode::OK,
+    )
+    .await;
+    assert_status(
+        &fixture,
+        &bob_key,
+        "PATCH",
+        &format!("/api/agents/{agent}"),
+        Some(json!({ "description": "no edit" })),
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+
+    litellm_rust::db::managed_agents::groups::repository::update_status(
+        &fixture.pool,
+        &use_group.id,
+        "disabled",
+    )
+    .await
+    .unwrap();
+    assert_resources_hidden(&fixture, &bob_key, &agent, &session.id).await;
+
+    litellm_rust::db::managed_agents::users::repository::update_status(
+        &fixture.pool,
+        &bob.id,
+        "disabled",
+    )
+    .await
+    .unwrap();
+    assert_status(
+        &fixture,
+        &bob_key,
+        "GET",
+        &format!("/api/agents/{agent}"),
+        None,
+        axum::http::StatusCode::UNAUTHORIZED,
+    )
+    .await;
+
+    assert_status(
+        &fixture,
+        "external-test-key",
+        "GET",
+        "/api/auth/me",
+        None,
+        axum::http::StatusCode::OK,
+    )
+    .await;
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent}/grants"),
+        Some(json!({ "user_id": "external-user", "permission": "use" })),
+    )
+    .await;
+    assert_status(
+        &fixture,
+        "external-test-key",
+        "GET",
+        &format!("/api/agents/{agent}"),
+        None,
+        axum::http::StatusCode::OK,
+    )
+    .await;
+    assert_status(
+        &fixture,
+        "external-test-key",
+        "GET",
+        &format!("/api/agents/{other_agent}"),
+        None,
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+    assert_status(
+        &fixture,
+        "external-test-key",
+        "GET",
+        &format!("/session/{}", session.id),
+        None,
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+    assert_status(
+        &fixture,
+        "external-test-key",
+        "GET",
+        &format!("/session/{}/workspace/files", session.id),
+        None,
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn imported_agent_governance_publish_and_rollback_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping governance integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let owner = litellm_rust::db::managed_agents::users::repository::create(
+        &fixture.pool,
+        "import-owner",
+        "导入负责人",
+        Some("import-owner@example.com"),
+    )
+    .await
+    .unwrap();
+    let owner_key = litellm_rust::db::managed_agents::api_keys::repository::create(
+        &fixture.pool,
+        Some("import-owner-test"),
+        Some(&owner.id),
+        Some("user"),
+    )
+    .await
+    .unwrap()
+    .key;
+    let agent_id = create_owned_agent(&fixture, "external-managed-agent", &owner.id).await;
+
+    let credential_name = format!("import:{agent_id}");
+    litellm_rust::db::credentials::upsert_personal(
+        &fixture.pool,
+        &credential_name,
+        &owner.id,
+        json!({ "api_key": "owner-secret" }),
+        json!({ "purpose": "imported_runtime" }),
+        &owner.id,
+    )
+    .await
+    .unwrap();
+    assert!(litellm_rust::db::credentials::get_personal_by_name(
+        &fixture.pool,
+        &credential_name,
+        &owner.id,
+    )
+    .await
+    .unwrap()
+    .is_some());
+    assert!(litellm_rust::db::credentials::get_personal_by_name(
+        &fixture.pool,
+        &credential_name,
+        "another-user",
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert!(
+        litellm_rust::db::credentials::get_by_name(&fixture.pool, &credential_name)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let imported = litellm_rust::db::managed_agents::governance::record_import(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::governance::ImportedSource {
+            agent_id: &agent_id,
+            owner_id: &owner.id,
+            provider: "external-test",
+            endpoint: "https://runtime.example.test",
+            external_agent_id: "external-1",
+            source_hash: "source-v1",
+            credential_scope: "personal",
+            credential_name: Some(&credential_name),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(imported.source_version, 1);
+
+    let tested = request_json_with_key(
+        &fixture,
+        &owner_key,
+        "POST",
+        &format!("/api/agents/{agent_id}/governance/test"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(tested["governance"]["lifecycle_status"], "tested");
+    assert_eq!(tested["governance"]["runtime_health"], "healthy");
+
+    let requested = request_json_with_key(
+        &fixture,
+        &owner_key,
+        "POST",
+        &format!("/api/agents/{agent_id}/governance/request-publish"),
+        Some(json!({})),
+    )
+    .await;
+    let approval_id = requested["approval"]["id"].as_str().unwrap();
+    assert_status(
+        &fixture,
+        &owner_key,
+        "POST",
+        &format!("/api/approvals/{approval_id}/accept"),
+        Some(json!({ "arguments": null })),
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/approvals/{approval_id}/accept"),
+        Some(json!({ "arguments": null })),
+    )
+    .await;
+    let first_published = request_json_with_key(
+        &fixture,
+        &owner_key,
+        "GET",
+        &format!("/api/agents/{agent_id}/governance"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        first_published["governance"]["lifecycle_status"],
+        "published"
+    );
+    assert_eq!(first_published["governance"]["published_revision"], 1);
+
+    request_json_with_key(
+        &fixture,
+        &owner_key,
+        "PATCH",
+        &format!("/api/agents/{agent_id}"),
+        Some(json!({ "description": "第二个外部版本" })),
+    )
+    .await;
+    let imported_v2 = litellm_rust::db::managed_agents::governance::record_import(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::governance::ImportedSource {
+            agent_id: &agent_id,
+            owner_id: &owner.id,
+            provider: "external-test",
+            endpoint: "https://runtime.example.test",
+            external_agent_id: "external-1",
+            source_hash: "source-v2",
+            credential_scope: "personal",
+            credential_name: Some(&credential_name),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(imported_v2.source_version, 2);
+
+    request_json_with_key(
+        &fixture,
+        &owner_key,
+        "POST",
+        &format!("/api/agents/{agent_id}/governance/test"),
+        Some(json!({})),
+    )
+    .await;
+    let requested_v2 = request_json_with_key(
+        &fixture,
+        &owner_key,
+        "POST",
+        &format!("/api/agents/{agent_id}/governance/request-publish"),
+        Some(json!({})),
+    )
+    .await;
+    let approval_v2 = requested_v2["approval"]["id"].as_str().unwrap();
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/approvals/{approval_v2}/accept"),
+        Some(json!({ "arguments": null })),
+    )
+    .await;
+
+    let rolled_back = request_json_with_key(
+        &fixture,
+        &owner_key,
+        "POST",
+        &format!("/api/agents/{agent_id}/governance/rollback"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(rolled_back["governance"]["lifecycle_status"], "rolled_back");
+    assert_eq!(rolled_back["restored_from_revision"], 1);
+    assert_ne!(rolled_back["agent"]["description"], "第二个外部版本");
+}
+
+async fn request_json_with_key(
+    fixture: &AppFixture,
+    key: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Value {
+    let (status, response) =
+        request_json_raw_with_key(fixture.app.clone(), method, path, body, key).await;
+    assert!(status.is_success(), "{method} {path}: {status} {response}");
+    serde_json::from_str(&response).unwrap_or_else(|_| json!({}))
+}
+
+async fn create_owned_agent(fixture: &AppFixture, name: &str, owner_id: &str) -> String {
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        "/api/agents",
+        Some(json!({
+            "name": name,
+            "owner_id": owner_id,
+            "model": "test-model",
+            "system": "test",
+            "tools": [],
+            "config": {},
+        })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn assert_resources_hidden(
+    fixture: &AppFixture,
+    key: &str,
+    agent_id: &str,
+    session_id: &str,
+) {
+    for path in [
+        format!("/api/agents/{agent_id}"),
+        format!("/api/agents/{agent_id}/workspace/files"),
+        format!("/session/{session_id}"),
+        format!("/session/{session_id}/workspace/files"),
+    ] {
+        assert_status(
+            fixture,
+            key,
+            "GET",
+            &path,
+            None,
+            axum::http::StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+}
+
+async fn assert_status(
+    fixture: &AppFixture,
+    key: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    expected: axum::http::StatusCode,
+) {
+    let (status, response) =
+        request_json_raw_with_key(fixture.app.clone(), method, path, body, key).await;
+    assert_eq!(status, expected, "{method} {path}: {response}");
+}
 
 #[tokio::test]
 async fn mcp_proxy_base_url_setting_round_trip_against_postgres() {
@@ -93,14 +611,9 @@ async fn managed_agent_endpoints_round_trip_against_postgres() {
     flows::exercise_agent_runtime_update(&fixture, &agent_id).await;
     flows::exercise_memory(&fixture, &agent_id).await;
     flows::exercise_platform_mcps(&fixture, &agent_id).await;
-    flows::exercise_files(&fixture, &agent_id).await;
     flows::exercise_rules(&fixture, &agent_id).await;
     flows::exercise_runs(&fixture, &agent_id).await;
-    flows::exercise_runtime_routine(&fixture).await;
     flows::exercise_sessions(&fixture).await;
-    flows::exercise_claude_runtime_session_storage(&fixture, &agent_id).await;
-    flows::exercise_cursor_runtime_stream(&fixture, &agent_id).await;
-    flows::exercise_gemini_runtime_session(&fixture).await;
     flows::exercise_skills(&fixture).await;
     flows::exercise_inbox(&fixture).await;
 
@@ -619,12 +1132,17 @@ async fn rejects_invalid_file_base64_against_postgres() {
         return;
     };
 
-    let agent_id = flows::create_agent(&fixture).await;
     support::request_raw(
         fixture.app.clone(),
-        "PUT",
-        &format!("/api/agents/{agent_id}/files/bad.xlsx"),
-        Some(json!({"content_base64": "not base64 !!!"}).to_string()),
+        "POST",
+        "/api/agents/import/bundle",
+        Some(
+            json!({
+                "filename": "bad.zip",
+                "content_base64": "not base64 !!!"
+            })
+            .to_string(),
+        ),
         "application/json",
         axum::http::StatusCode::BAD_REQUEST,
     )

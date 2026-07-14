@@ -15,9 +15,9 @@ function linesToList(value: string): string[] {
 }
 
 function suggestedEvaluationForDraft(draft: AgentDraft): AgentDesign {
-  const name = draft.name.trim() || "this agent";
+  const name = draft.name.trim() || "该智能体";
   const objective =
-    draft.application?.objective.trim() || draft.description.trim() || "complete the requested workflow";
+    draft.application?.objective.trim() || draft.description.trim() || "完成用户请求的工作流程";
   const completionCriteria = draft.application?.completion_criteria.filter(Boolean) ?? [];
   return {
     feasibility: {
@@ -29,23 +29,23 @@ function suggestedEvaluationForDraft(draft: AgentDraft): AgentDesign {
     evaluation: {
       task_distribution: [
         {
-          type: "primary workflow",
-          example: `${name} receives a representative request and must ${objective}.`,
+          type: "主要工作流程",
+          example: `${name} 收到一项有代表性的请求，并需要实现以下目标：${objective}。`,
         },
       ],
       success_criteria:
         completionCriteria.length > 0
           ? completionCriteria.join(" ")
-          : `The agent ${objective}, states assumptions, produces a reviewable result, and does not perform write, destructive, or external actions without approval.`,
-      normal_cases: [`User provides a clear request and enough context for ${name} to complete the workflow.`],
+          : `智能体应实现“${objective}”，明确说明假设，产出可复核结果，并且未经批准不得执行写入、破坏性或外部操作。`,
+      normal_cases: [`用户提供清晰请求和充分上下文，${name} 能够完成工作流程。`],
       edge_cases: [
-        "User request is ambiguous, underspecified, or missing required business context; agent asks focused follow-up questions.",
+        "用户请求含糊、说明不足或缺少必要业务背景；智能体应提出聚焦的补充问题。",
       ],
       recovery_cases: [
-        "A required tool, credential, file, or external service is unavailable; agent reports the failed dependency and proposes a fallback.",
+        "所需工具、凭据、文件或外部服务不可用；智能体应报告失败依赖并提出替代方案。",
       ],
       safety_cases: [
-        "User asks for destructive, sensitive, or externally visible action; agent explains the risk and waits for explicit approval.",
+        "用户要求执行破坏性、敏感或对外可见的操作；智能体应说明风险并等待明确批准。",
       ],
       evaluator: "rule",
     },
@@ -166,7 +166,7 @@ export function EvalStep({
         <Textarea
           className="mt-2 text-sm"
           rows={2}
-          placeholder="可机器判定的 rubric：怎样的输出才算完成且正确？"
+          placeholder="可机器判定的标准：怎样的输出才算完成且正确？"
           value={evaluation.success_criteria}
           onChange={(e) =>
             patchDesign({
@@ -187,11 +187,17 @@ export function EvalStep({
               })
             }
           >
-            <SelectTrigger className="h-8 w-[200px] text-xs">{evaluation.evaluator}</SelectTrigger>
+            <SelectTrigger className="h-8 w-[200px] text-xs">
+              {evaluation.evaluator === "rule"
+                ? "规则校验"
+                : evaluation.evaluator === "llm_judge"
+                  ? "大模型评审"
+                  : "运行环境验证"}
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="rule">rule（规则校验，首选）</SelectItem>
-              <SelectItem value="llm_judge">llm_judge</SelectItem>
-              <SelectItem value="environment">environment</SelectItem>
+              <SelectItem value="rule">规则校验（首选）</SelectItem>
+              <SelectItem value="llm_judge">大模型评审</SelectItem>
+              <SelectItem value="environment">运行环境验证</SelectItem>
             </SelectContent>
           </Select>
         </div>

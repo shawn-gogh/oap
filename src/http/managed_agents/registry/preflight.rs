@@ -27,7 +27,7 @@ use crate::{
         mcp_servers, vault_keys,
     },
     errors::GatewayError,
-    http::{agent_runtime_tools::runtime_tools, runtime_resolution::resolve_runtime},
+    http::{agent_runtime_tools::runtime_tools, runtime_resolution::resolve_runtime_for_agent},
     proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
 };
 
@@ -101,7 +101,7 @@ async fn check_runtime(
             detail: "未配置外部 Runtime，将使用内置聊天执行。".to_owned(),
         };
     };
-    let resolved = match resolve_runtime(pool, state, &alias).await {
+    let resolved = match resolve_runtime_for_agent(pool, state, &alias, agent).await {
         Ok(resolved) => resolved,
         Err(error) => {
             return PreflightCheck {
@@ -418,6 +418,16 @@ pub async fn activate(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_edit(&auth, &agent, pool).await?;
+    if let Some(governance) = crate::db::managed_agents::governance::get(pool, &agent_id).await? {
+        if !matches!(
+            governance.lifecycle_status.as_str(),
+            "published" | "rolled_back"
+        ) {
+            return Err(GatewayError::BadRequest(
+                "外部智能体必须通过纳管测试和发布审批后才能激活。".to_owned(),
+            ));
+        }
+    }
     let report = run_preflight(&state, pool, &agent).await?;
     if !report.can_activate {
         return Err(GatewayError::BadRequest(format!(

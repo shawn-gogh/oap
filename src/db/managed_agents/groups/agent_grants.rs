@@ -12,16 +12,18 @@ pub async fn upsert(
     agent_id: &str,
     group_id: &str,
     permission: &str,
+    expires_at: Option<i64>,
     granted_by: &str,
 ) -> Result<AgentGroupGrantRow, GatewayError> {
     let permission = if permission == "edit" { "edit" } else { "use" };
     sqlx::query_as::<_, AgentGroupGrantRow>(
         r#"
         INSERT INTO "LiteLLM_AgentGroupGrantsTable"
-          (id, agent_id, group_id, permission, granted_by, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (id, agent_id, group_id, permission, granted_by, created_at, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (agent_id, group_id)
-          DO UPDATE SET permission = EXCLUDED.permission, granted_by = EXCLUDED.granted_by
+          DO UPDATE SET permission = EXCLUDED.permission, granted_by = EXCLUDED.granted_by,
+                        expires_at = EXCLUDED.expires_at
         RETURNING *
         "#,
     )
@@ -31,9 +33,49 @@ pub async fn upsert(
     .bind(permission)
     .bind(granted_by)
     .bind(now_ms())
+    .bind(expires_at)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
+}
+
+pub async fn upsert_many(
+    pool: &PgPool,
+    agent_id: &str,
+    group_ids: &[String],
+    permission: &str,
+    expires_at: Option<i64>,
+    granted_by: &str,
+) -> Result<Vec<AgentGroupGrantRow>, GatewayError> {
+    let permission = if permission == "edit" { "edit" } else { "use" };
+    let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
+    let mut grants = Vec::with_capacity(group_ids.len());
+    for group_id in group_ids {
+        let grant = sqlx::query_as::<_, AgentGroupGrantRow>(
+            r#"
+            INSERT INTO "LiteLLM_AgentGroupGrantsTable"
+              (id, agent_id, group_id, permission, granted_by, created_at, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (agent_id, group_id)
+              DO UPDATE SET permission = EXCLUDED.permission, granted_by = EXCLUDED.granted_by,
+                            expires_at = EXCLUDED.expires_at
+            RETURNING *
+            "#,
+        )
+        .bind(id("group_grant"))
+        .bind(agent_id)
+        .bind(group_id)
+        .bind(permission)
+        .bind(granted_by)
+        .bind(now_ms())
+        .bind(expires_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(GatewayError::Database)?;
+        grants.push(grant);
+    }
+    tx.commit().await.map_err(GatewayError::Database)?;
+    Ok(grants)
 }
 
 pub async fn list_for_agent(
@@ -44,6 +86,19 @@ pub async fn list_for_agent(
         r#"SELECT * FROM "LiteLLM_AgentGroupGrantsTable" WHERE agent_id = $1 ORDER BY created_at"#,
     )
     .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn list_for_group(
+    pool: &PgPool,
+    group_id: &str,
+) -> Result<Vec<AgentGroupGrantRow>, GatewayError> {
+    sqlx::query_as::<_, AgentGroupGrantRow>(
+        r#"SELECT * FROM "LiteLLM_AgentGroupGrantsTable" WHERE group_id = $1 ORDER BY created_at DESC"#,
+    )
+    .bind(group_id)
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)
@@ -85,6 +140,7 @@ pub async fn has_permission(
           JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = ag_grant.group_id
           JOIN "LiteLLM_GroupsTable" groups ON groups.id = ag_grant.group_id
           WHERE ag_grant.agent_id = $1 AND member.user_id = $2 AND groups.status = 'active'
+            AND (ag_grant.expires_at IS NULL OR ag_grant.expires_at > $4)
             AND ($3 = 'use' OR ag_grant.permission = 'edit')
         )
         "#,
@@ -92,6 +148,7 @@ pub async fn has_permission(
     .bind(agent_id)
     .bind(user_id)
     .bind(permission)
+    .bind(now_ms())
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -105,9 +162,11 @@ pub async fn agent_ids_for_user(pool: &PgPool, user_id: &str) -> Result<Vec<Stri
         JOIN "LiteLLM_GroupMembersTable" member ON member.group_id = ag_grant.group_id
         JOIN "LiteLLM_GroupsTable" groups ON groups.id = ag_grant.group_id
         WHERE member.user_id = $1 AND groups.status = 'active'
+          AND (ag_grant.expires_at IS NULL OR ag_grant.expires_at > $2)
         "#,
     )
     .bind(user_id)
+    .bind(now_ms())
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)

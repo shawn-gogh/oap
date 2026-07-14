@@ -186,6 +186,31 @@ pub async fn get(pool: &PgPool, agent_id: &str) -> Result<Option<ManagedAgentRow
     .map_err(GatewayError::Database)
 }
 
+pub async fn count_by_owner(pool: &PgPool, owner_id: &str) -> Result<i64, GatewayError> {
+    sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM "LiteLLM_ManagedAgentsTable" WHERE owner_id = $1"#,
+    )
+    .bind(owner_id)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn transfer_owner(
+    pool: &PgPool,
+    from_owner_id: &str,
+    to_owner_id: &str,
+) -> Result<u64, GatewayError> {
+    let result =
+        sqlx::query(r#"UPDATE "LiteLLM_ManagedAgentsTable" SET owner_id = $2 WHERE owner_id = $1"#)
+            .bind(from_owner_id)
+            .bind(to_owner_id)
+            .execute(pool)
+            .await
+            .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected())
+}
+
 pub async fn update(
     pool: &PgPool,
     agent_id: &str,
@@ -259,6 +284,50 @@ pub async fn set_status(
     )
     .bind(agent_id)
     .bind(status)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+/// Restores versioned configuration exactly. Unlike PATCH, nullable values
+/// from an old snapshot must overwrite newer values instead of using COALESCE.
+pub async fn restore_snapshot(
+    pool: &PgPool,
+    agent_id: &str,
+    snapshot: &ManagedAgentRow,
+) -> Result<Option<ManagedAgentRow>, GatewayError> {
+    sqlx::query_as::<_, ManagedAgentRow>(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentsTable"
+        SET name = $2, model = $3, system = $4, tools = $5,
+            cadence = $6, interval_seconds = $7, prompt = $8, cron = $9,
+            timezone = $10, vault_keys = $11, setup_commands = $12,
+            max_runtime_minutes = $13, on_failure = $14, config = $15,
+            status = 'active', description = $16, harness = $17,
+            skill_ids = $18, rule_ids = $19
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(agent_id)
+    .bind(&snapshot.name)
+    .bind(&snapshot.model)
+    .bind(&snapshot.system)
+    .bind(&snapshot.tools)
+    .bind(&snapshot.cadence)
+    .bind(snapshot.interval_seconds)
+    .bind(&snapshot.prompt)
+    .bind(&snapshot.cron)
+    .bind(&snapshot.timezone)
+    .bind(&snapshot.vault_keys)
+    .bind(&snapshot.setup_commands)
+    .bind(snapshot.max_runtime_minutes)
+    .bind(&snapshot.on_failure)
+    .bind(&snapshot.config)
+    .bind(&snapshot.description)
+    .bind(&snapshot.harness)
+    .bind(&snapshot.skill_ids)
+    .bind(&snapshot.rule_ids)
     .fetch_optional(pool)
     .await
     .map_err(GatewayError::Database)

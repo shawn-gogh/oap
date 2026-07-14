@@ -38,6 +38,7 @@ import {
   deleteSession,
   getCurrentUser,
   listSessions,
+  logout,
   listInbox,
   type CurrentUser,
 } from "@/lib/api";
@@ -185,13 +186,6 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           group: "访问控制",
         },
         {
-          label: "用户组",
-          href: "/groups/",
-          icon: Users,
-          active: (path: string) => path.startsWith("/groups"),
-          group: "访问控制",
-        },
-        {
           label: "团队 Teams",
           href: "/teams/",
           icon: Users,
@@ -226,7 +220,27 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           active: (path: string) => path.startsWith("/observability"),
           group: "观测",
         },
+        {
+          label: "审计日志",
+          href: "/audit-logs/",
+          icon: ScrollText,
+          active: (path: string) => path.startsWith("/audit-logs"),
+          group: "观测",
+        },
       ],
+    }] : []),
+    ...(currentUser?.can_manage_groups ? [{
+      label: "访问控制",
+      icon: ShieldCheck,
+      home: "/groups/",
+      description: "用户组与授权",
+      items: [{
+        label: "用户组",
+        href: "/groups/",
+        icon: Users,
+        active: (path: string) => path.startsWith("/groups"),
+        group: "访问控制",
+      }],
     }] : []),
     {
       label: "Agent Platform",
@@ -427,8 +441,10 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
             </div>
             <DropdownMenuItem
               onClick={() => {
-                clearStoredMasterKey();
-                router.replace("/login/");
+                void logout().finally(() => {
+                  clearStoredMasterKey();
+                  router.replace("/login/");
+                });
               }}
             >
               <LogOut className="size-4" />
