@@ -134,6 +134,24 @@ test("GET /v1/models returns the configured OpenAI-shaped model list", async (t)
   });
 });
 
+test("permission reply preserves the requested approval scope", async (t) => {
+  const { app, calls } = buildHarness();
+  const { base, close } = await listen(app);
+  t.after(() => close());
+
+  const response = await req(
+    base,
+    "POST",
+    "/v1/sessions/ses_test/permissions/permission_1/reply",
+    { reply: "always" },
+  );
+
+  assert.equal(response.status, 200);
+  const forwarded = calls.ocFetch.at(-1);
+  assert.equal(forwarded.path, "/permission/permission_1/reply");
+  assert.deepEqual(JSON.parse(forwarded.init.body), { reply: "always" });
+});
+
 test("per-agent gpt-5.5 model flows from create through prompt_async", async (t) => {
   const { app, calls } = buildHarness();
   const { base, close } = await listen(app);

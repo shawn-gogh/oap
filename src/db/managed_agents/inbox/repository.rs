@@ -92,7 +92,7 @@ pub async fn expire_pending_for_session(
         r#"
         UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
         SET status = 'expired', resolved_at = $2
-        WHERE kind = 'approval' AND status = 'pending' AND session_id = $1
+        WHERE kind IN ('approval', 'tool_permission') AND status = 'pending' AND session_id = $1
         "#,
     )
     .bind(session_id)
@@ -221,7 +221,7 @@ pub async fn decide_approval(
             feedback = COALESCE($3, feedback),
             args_json = COALESCE($4, args_json),
             resolved_at = $5
-        WHERE id = $1 AND kind = 'approval' AND status = 'pending'
+        WHERE id = $1 AND kind IN ('approval', 'tool_permission') AND status = 'pending'
         "#,
     )
     .bind(item_id)

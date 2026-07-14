@@ -257,6 +257,17 @@ export interface WorkspaceFile {
   path: string;
   size_bytes: number;
   updated_at: number | null;
+  content_type?: string;
+  etag?: string | null;
+}
+
+export interface WorkspaceTrashItem {
+  id: string;
+  paths: string[];
+  deleted_at: number;
+  expires_at: number;
+  size_bytes: number;
+  object_count: number;
 }
 
 export interface AgentRunStart {

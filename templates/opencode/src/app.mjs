@@ -372,24 +372,35 @@ export function createApp({
   }
 
   // Per-turn inactivity watchdog: if the pump sees no events for this session
-  // for IDLE_FALLBACK_MS while a turn is open, synthesize the terminal idle so
-  // clients never hang in "running" forever (e.g. opencode died mid-turn).
+  // for IDLE_FALLBACK_MS while a turn is open, stop the provider turn before
+  // synthesizing idle. Otherwise the UI looks idle while opencode still holds
+  // a running tool call and silently rejects every subsequent prompt.
   function armTurnWatchdog(sessionId, turnId) {
-    const watchdog = setInterval(() => {
+    const watchdog = setInterval(async () => {
       const turn = activeTurns.get(sessionId);
       if (!turn || turn.id !== turnId || turn.terminal) {
         clearInterval(watchdog);
         return;
       }
       if (Date.now() - turn.lastActivity < IDLE_FALLBACK_MS) return;
-      console.warn(`[watchdog] ${sessionId}: no events for ${IDLE_FALLBACK_MS}ms, synthesizing idle`);
+      turn.terminal = true;
+      clearInterval(watchdog);
+      console.warn(`[watchdog] ${sessionId}: no events for ${IDLE_FALLBACK_MS}ms, aborting stale turn`);
+      try {
+        const base = await resolveBaseUrl(sessionId);
+        await ocFetch(base, `/session/${sessionId}/abort`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+      } catch (err) {
+        console.error(`[watchdog] ${sessionId}: abort failed:`, err?.message || err);
+      }
       store.insertSessionEvent(
         sessionId,
         { event: "session.status_idle", data: { stop_reason: { type: "end_turn" } } },
         `turn:${turnId}:idle-fallback`
       );
-      turn.terminal = true;
-      clearInterval(watchdog);
     }, 2000);
   }
 
@@ -619,7 +630,9 @@ export function createApp({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          reply: req.body?.reply === "reject" ? "reject" : "once",
+          reply: ["once", "always", "reject"].includes(req.body?.reply)
+            ? req.body.reply
+            : "once",
           message: req.body?.message || undefined,
         }),
       },

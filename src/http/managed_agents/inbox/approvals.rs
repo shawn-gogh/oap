@@ -15,7 +15,9 @@ use crate::{
     proxy::{auth::master_key::authenticate, state::AppState},
 };
 
-use super::types::{AcceptRequest, ApprovalsResponse, DecisionResponse, RejectRequest};
+use super::types::{
+    AcceptRequest, ApprovalScope, ApprovalsResponse, DecisionResponse, RejectRequest,
+};
 
 pub async fn list_pending(
     State(state): State<Arc<AppState>>,
@@ -74,7 +76,8 @@ pub async fn accept(
         )
         .await?;
     } else if existing.kind == "tool_permission" {
-        reply_tool_permission(&state, &pool, &item_id).await;
+        reply_tool_permission(&state, &pool, &item_id, input.scope).await;
+        publish_approval_reply(&state, &existing);
     } else {
         if live {
             crate::http::managed_agents::improvements::apply_if_improvement(
@@ -108,7 +111,8 @@ pub async fn reject(
             crate::db::managed_agents::governance::reject_publish(&pool, agent_id).await?;
         }
     } else if existing.kind == "tool_permission" {
-        reply_tool_permission(&state, &pool, &item_id).await;
+        reply_tool_permission(&state, &pool, &item_id, ApprovalScope::Once).await;
+        publish_approval_reply(&state, &existing);
     } else {
         resume_linked_session(state, pool, &item_id).await;
     }
@@ -118,10 +122,28 @@ pub async fn reject(
 /// tool_permission items resolve by replying to opencode's own permission
 /// request, not by resuming the chat with a new prompt — the tool call is
 /// paused at the protocol level, not waiting on the next user message.
-async fn reply_tool_permission(state: &Arc<AppState>, pool: &sqlx::PgPool, item_id: &str) {
+async fn reply_tool_permission(
+    state: &Arc<AppState>,
+    pool: &sqlx::PgPool,
+    item_id: &str,
+    scope: ApprovalScope,
+) {
     if let Ok(Some(item)) = repository::get(pool, item_id).await {
-        crate::http::managed_agents::tool_approvals::reply(state, pool, &item).await;
+        crate::http::managed_agents::tool_approvals::reply(state, pool, &item, scope).await;
     }
+}
+
+fn publish_approval_reply(state: &Arc<AppState>, item: &InboxItemRow) {
+    let Some(session_id) = item.session_id.as_deref() else {
+        return;
+    };
+    state.local_session_events.publish(
+        session_id,
+        serde_json::json!({
+            "type": "approval.replied",
+            "approval": { "id": item.id }
+        }),
+    );
 }
 
 async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str) {

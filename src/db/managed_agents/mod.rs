@@ -1,10 +1,10 @@
 pub mod agent_grants;
-pub mod audit;
 pub mod api_keys;
+pub mod audit;
 pub mod eval_runs;
 pub mod files;
-pub mod groups;
 pub mod governance;
+pub mod groups;
 pub mod harnesses;
 pub mod inbox;
 pub mod loops;
@@ -20,12 +20,12 @@ pub mod runtime_events;
 pub mod runtime_refs;
 pub mod saved;
 pub mod sessions;
-pub mod web_sessions;
 pub mod settings;
 pub mod skills;
 pub mod spend_logs;
 pub mod tasks;
 pub mod users;
+pub mod web_sessions;
 
 pub fn id(prefix: &str) -> String {
     format!("{prefix}_{}", uuid::Uuid::new_v4().simple())

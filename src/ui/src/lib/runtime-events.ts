@@ -86,7 +86,11 @@ export function isRuntimeTurnStartEvent(type: string): boolean {
 
 function runtimeToolId(ev: RuntimeAgentEvent): string {
   const id = ev.tool_use_id ?? ev.id;
-  return typeof id === "string" && id ? id : `tool_${Date.now().toString(36)}`;
+  if (typeof id === "string" && id) return id;
+  // No id on the event: key by tool name so repeated status events update one
+  // part instead of spawning a new "pending" row per event.
+  const name = typeof ev.name === "string" && ev.name ? ev.name : "anon";
+  return `tool_${name}`;
 }
 
 function runtimeToolStatus(ev: RuntimeAgentEvent): string {
@@ -189,12 +193,40 @@ export function runtimeEventsToMessages(
     return assistant;
   };
 
+  // Appends to the LAST part when it is the same kind, otherwise starts a new
+  // part — keeping text and tool activity interleaved in the order it actually
+  // happened instead of pooling all text into one part with tools dangling
+  // below the final answer.
   const appendPartText = (message: HarnessMessage, kind: "text" | "thinking", text: string) => {
     if (!text) return;
-    const partId = `${message.info.id}_${kind}`;
+    const last = message.parts.at(-1);
+    if (last && last.type === kind && "text" in last) {
+      last.text = `${last.text}${text}`;
+      return;
+    }
+    message.parts.push({
+      id: `${message.info.id}_${kind}_${message.parts.length}`,
+      messageID: message.info.id,
+      sessionID: sessionId,
+      type: kind,
+      text,
+    });
+  };
+
+  // Keyed upsert for opencode `message.part.*` events, whose parts carry a
+  // stable id and cumulative text (updated = replace, delta = append).
+  const upsertKeyedText = (
+    message: HarnessMessage,
+    kind: "text" | "thinking",
+    key: string,
+    text: string,
+    replace: boolean,
+  ) => {
+    if (!text) return;
+    const partId = `${message.info.id}_part_${key}`;
     const existing = message.parts.find((part) => part.id === partId);
     if (existing && "text" in existing) {
-      existing.text = `${existing.text}${text}`;
+      existing.text = replace ? text : `${existing.text}${text}`;
       return;
     }
     message.parts.push({
@@ -203,6 +235,35 @@ export function runtimeEventsToMessages(
       sessionID: sessionId,
       type: kind,
       text,
+    });
+  };
+
+  const upsertRuntimePartTool = (message: HarnessMessage, part: Record<string, unknown>) => {
+    const state = (part.state && typeof part.state === "object" ? part.state : {}) as Record<string, unknown>;
+    const name = typeof part.tool === "string" && part.tool ? part.tool : "tool";
+    const rawId = part.id ?? part.callID ?? (part as { call_id?: unknown }).call_id;
+    const toolId = typeof rawId === "string" && rawId ? rawId : `part_${name}`;
+    const partId = `${message.info.id}_${toolId}`;
+    const statusValue = typeof state.status === "string" && state.status ? state.status : "running";
+    const existing = message.parts.find((p) => p.id === partId && p.type === "tool");
+    if (existing && existing.type === "tool") {
+      existing.tool = existing.tool || name;
+      existing.state = {
+        ...existing.state,
+        status: statusValue,
+        input: state.input ?? existing.state.input,
+        output: state.output ?? existing.state.output,
+        error: state.error ?? existing.state.error,
+      };
+      return;
+    }
+    message.parts.push({
+      id: partId,
+      messageID: message.info.id,
+      sessionID: sessionId,
+      type: "tool",
+      tool: name,
+      state: { status: statusValue, input: state.input, output: state.output, error: state.error },
     });
   };
 
@@ -292,6 +353,25 @@ export function runtimeEventsToMessages(
       return;
     }
 
+    if (type === "message.part.updated" || type === "message.part.delta") {
+      const part = ev.part && typeof ev.part === "object" ? (ev.part as Record<string, unknown>) : null;
+      if (!part) return;
+      const partType = typeof part.type === "string" ? part.type : "text";
+      // Skip user-authored parts echoed back by the harness.
+      const role = (part as { role?: unknown }).role;
+      if (role === "user") return;
+      const message = ensureAssistant(seed);
+      if (partType === "tool" || part.state !== undefined || part.tool !== undefined) {
+        upsertRuntimePartTool(message, part);
+        return;
+      }
+      const kind = partType === "thinking" || partType === "reasoning" ? "thinking" : "text";
+      const text = runtimeTextValue(part.text ?? ev.delta ?? part.content);
+      const key = typeof part.id === "string" && part.id ? part.id : kind;
+      upsertKeyedText(message, kind, key, text, type === "message.part.updated");
+      return;
+    }
+
     if (!isRuntimeAssistantTextEvent(type) && !isRuntimeThinkingEvent(type)) return;
     const text = runtimeEventText(ev);
     if (!text && type !== "content_block_start") return;
@@ -309,6 +389,20 @@ export function runtimeEventsToMessages(
   if (status === "idle") {
     const lastAssistant = messages.findLast((message) => message.info.role === "assistant" && !message.info.finish);
     if (lastAssistant) lastAssistant.info.finish = "stop";
+  }
+
+  // A finished turn cannot still be running tools: settle any tool part left
+  // in pending/running so the UI never shows spinners under an idle session.
+  for (const message of messages) {
+    if (message.info.role !== "assistant") continue;
+    if (!message.info.finish && status !== "idle") continue;
+    for (const part of message.parts) {
+      if (part.type !== "tool") continue;
+      const partStatus = part.state?.status;
+      if (partStatus === "running" || partStatus === "pending") {
+        part.state = { ...part.state, status: "completed" };
+      }
+    }
   }
   return messages;
 }

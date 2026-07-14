@@ -26,6 +26,16 @@ pub struct ResolveRequest {
 #[derive(Debug, Deserialize)]
 pub struct AcceptRequest {
     pub arguments: Option<Value>,
+    #[serde(default)]
+    pub scope: ApprovalScope,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalScope {
+    #[default]
+    Once,
+    Session,
 }
 
 #[derive(Debug, Deserialize)]

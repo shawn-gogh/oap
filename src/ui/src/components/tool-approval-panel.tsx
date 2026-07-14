@@ -29,10 +29,11 @@ export interface ToolApprovalPanelProps {
   approval: PendingApproval;
   onAccept: (id: string, args: Record<string, unknown>) => void;
   onReject: (id: string, feedback: string) => void;
+  onAcceptAlways?: (id: string, args: Record<string, unknown>) => void;
   busy?: boolean;
 }
 
-export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolApprovalPanelProps) {
+export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways, busy }: ToolApprovalPanelProps) {
   const initial = useMemo<Record<string, string>>(() => {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(approval.arguments ?? {})) out[k] = toStringValue(v);
@@ -107,7 +108,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
         </div>
         <Button variant="outline" size="sm" onClick={copyName}>
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-          {copied ? "Copied" : "Copy tool"}
+          {copied ? "已复制" : "复制工具名"}
         </Button>
       </div>
 
@@ -115,7 +116,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
         <div className="border-b border-border px-4 py-4 bg-muted/10">
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
             <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
-            Suggested Choices
+            建议选项
           </div>
           <div className="flex flex-wrap gap-2">
             {options.map((opt) => {
@@ -158,14 +159,14 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
               disabled={busy || !dirty}
             >
               <RotateCcw className="size-3.5" />
-              Reset
+              重置
             </Button>
           </div>
 
           <div className="space-y-3 p-4">
             {keys.length === 0 ? (
               <div className="rounded-md border border-border bg-muted/20 px-3 py-8 text-center text-sm text-muted-foreground">
-                This action takes no arguments.
+                此操作不需要参数。
               </div>
             ) : (
               keys.map((k) => (
@@ -190,13 +191,25 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
           <div className="flex flex-1 flex-col gap-3 p-4">
             <Button onClick={() => onAccept(approval.id, buildArgs())} disabled={busy}>
               <Send className="size-3.5" />
-              批准并继续
+              仅本次通过
+              <span className="mono ml-1 rounded border border-current/25 px-1 text-[10px] opacity-70">Y</span>
             </Button>
+            {approval.kind === "tool_permission" && onAcceptAlways && (
+              <Button
+                variant="outline"
+                onClick={() => onAcceptAlways(approval.id, buildArgs())}
+                disabled={busy}
+                title="本会话内匹配当前权限规则的后续操作将自动通过"
+              >
+                <Check className="size-3.5" />
+                本会话允许同类操作
+              </Button>
+            )}
 
             <div className="h-px bg-border" />
 
             <label className="text-xs font-medium text-muted-foreground" htmlFor={`reject-${approval.id}`}>
-              Rejection feedback
+              拒绝原因
             </label>
             <textarea
               id={`reject-${approval.id}`}
@@ -215,6 +228,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, busy }: ToolAp
             >
               <XCircle className="size-3.5" />
               拒绝
+              <span className="mono ml-1 rounded border border-current/25 px-1 text-[10px] opacity-70">N</span>
             </Button>
           </div>
         </div>

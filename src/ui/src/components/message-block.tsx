@@ -623,15 +623,125 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
           {todoItems ? (
             <TodoList items={todoItems} />
           ) : (
-            <>
-              {input !== undefined && <ToolKv label="input" value={input} />}
-              {output !== undefined && <ToolKv label="output" value={output} />}
-            </>
+            <RichToolDetails tool={toolName} input={input} output={output} />
           )}
           {errorOut !== undefined && <ToolErrorCard error={errorOut} />}
         </div>
       )}
     </div>
+  );
+}
+
+function inputString(input: unknown, ...keys: string[]): string {
+  if (!input || typeof input !== "object") return "";
+  const record = input as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
+function outputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output && typeof output === "object") {
+    const record = output as Record<string, unknown>;
+    if (typeof record.output === "string") return record.output;
+    if (typeof record.stdout === "string") return record.stdout;
+    if (typeof record.text === "string") return record.text;
+  }
+  return "";
+}
+
+function langForFile(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", rs: "rust",
+    py: "python", go: "go", json: "json", yaml: "yaml", yml: "yaml",
+    md: "markdown", sh: "bash", sql: "sql", css: "css", html: "html", toml: "toml",
+  };
+  return map[ext] ?? "text";
+}
+
+/** Two-block diff (removed lines, then added lines) — no line matching, but
+ * far more readable than raw JSON for edit-style tool calls. */
+function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
+  return (
+    <div className="mono overflow-x-auto rounded-md border border-border text-xs leading-relaxed">
+      {oldText && oldText.split("\n").map((line, i) => (
+        <div key={`d${i}`} className="whitespace-pre bg-red-500/10 px-2 text-red-700 dark:text-red-400">
+          <span className="select-none pr-2 opacity-60">-</span>{line}
+        </div>
+      ))}
+      {newText && newText.split("\n").map((line, i) => (
+        <div key={`a${i}`} className="whitespace-pre bg-emerald-500/10 px-2 text-emerald-700 dark:text-emerald-400">
+          <span className="select-none pr-2 opacity-60">+</span>{line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Structured rendering for common tools (bash → terminal block, edit → diff,
+ * write → highlighted file content); falls back to raw input/output. */
+function RichToolDetails({ tool, input, output }: { tool: string; input: unknown; output: unknown }) {
+  const n = tool.toLowerCase();
+
+  if (n === "bash" || n.endsWith("bash")) {
+    const command = inputString(input, "command");
+    const out = outputText(output);
+    const exit = input && typeof output === "object" && output
+      ? (output as Record<string, unknown>).exit_code ?? (output as Record<string, unknown>).exitCode
+      : undefined;
+    if (command || out) {
+      return (
+        <div className="flex flex-col gap-2">
+          {command && <HighlightedCode code={`$ ${command}`} lang="bash" />}
+          {out && (
+            <pre className="mono max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">{out}</pre>
+          )}
+          {typeof exit === "number" && exit !== 0 && (
+            <span className="mono text-[11px] text-red-600 dark:text-red-400">exit {exit}</span>
+          )}
+        </div>
+      );
+    }
+  }
+
+  if (n.includes("edit") || n.includes("patch")) {
+    const oldText = inputString(input, "oldString", "old_string");
+    const newText = inputString(input, "newString", "new_string");
+    const path = inputString(input, "filePath", "file_path", "path");
+    if (oldText || newText) {
+      return (
+        <div className="flex flex-col gap-1.5">
+          {path && <span className="mono text-[11px] text-muted-foreground">{path}</span>}
+          <DiffView oldText={oldText} newText={newText} />
+        </div>
+      );
+    }
+  }
+
+  if (n.includes("write")) {
+    const content = inputString(input, "content", "text");
+    const path = inputString(input, "filePath", "file_path", "path");
+    if (content) {
+      return (
+        <div className="flex flex-col gap-1.5">
+          {path && <span className="mono text-[11px] text-muted-foreground">{path}</span>}
+          <div className="max-h-64 overflow-auto">
+            <HighlightedCode code={content} lang={langForFile(path)} />
+          </div>
+        </div>
+      );
+    }
+  }
+
+  return (
+    <>
+      {input !== undefined && <ToolKv label="input" value={input} />}
+      {output !== undefined && <ToolKv label="output" value={output} />}
+    </>
   );
 }
 

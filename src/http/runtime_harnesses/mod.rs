@@ -68,7 +68,7 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<HarnessesResponse>, GatewayError> {
-    require_admin(&state, &headers).await?;
+    require_any_gateway_key(&headers, &state).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let harnesses = build_harnesses_list(&state, pool).await?;
     Ok(Json(HarnessesResponse { harnesses }))

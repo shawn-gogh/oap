@@ -498,6 +498,9 @@ async fn assert_resources_hidden(
         format!("/api/agents/{agent_id}/workspace/files"),
         format!("/session/{session_id}"),
         format!("/session/{session_id}/workspace/files"),
+        format!("/session/{session_id}/workspace/browse"),
+        format!("/session/{session_id}/workspace/folders"),
+        format!("/session/{session_id}/workspace/trash"),
     ] {
         assert_status(
             fixture,
@@ -505,6 +508,58 @@ async fn assert_resources_hidden(
             "GET",
             &path,
             None,
+            axum::http::StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+    for (path, body) in [
+        (
+            format!("/session/{session_id}/workspace/files/move"),
+            json!({ "source_path": "a.txt", "destination_path": "b.txt" }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/files/copy"),
+            json!({ "source_path": "a.txt", "destination_path": "b.txt" }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/files/batch-delete"),
+            json!({ "paths": ["a.txt"] }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/folders"),
+            json!({ "path": "private" }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/files/batch-transfer"),
+            json!({
+                "source_paths": ["a.txt"],
+                "destination_directory": "private",
+                "operation": "move"
+            }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/trash"),
+            json!({ "paths": ["a.txt"] }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/trash/restore"),
+            json!({ "ids": ["abc123"] }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/trash/delete"),
+            json!({ "ids": ["abc123"] }),
+        ),
+        (
+            format!("/session/{session_id}/workspace/trash/empty"),
+            json!({}),
+        ),
+    ] {
+        assert_status(
+            fixture,
+            key,
+            "POST",
+            &path,
+            Some(body),
             axum::http::StatusCode::NOT_FOUND,
         )
         .await;
@@ -1292,4 +1347,52 @@ async fn claude_runtime_session_reuses_gateway_mcp_vault_against_postgres() {
 
 async fn create_test_agent(fixture: &AppFixture, body: Value) -> Value {
     request_json(fixture.app.clone(), "POST", "/api/agents", Some(body)).await
+}
+
+#[tokio::test]
+async fn tool_permission_decisions_leave_pending_state_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping managed agent integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    for (decision, expected_status) in [("accept", "accepted"), ("reject", "rejected")] {
+        let item = litellm_rust::db::managed_agents::inbox::repository::create_approval(
+            &fixture.pool,
+            "tool_permission",
+            "工具权限请求：bash".to_owned(),
+            None,
+            None,
+            None,
+            Some(json!({ "request_id": format!("request-{decision}") })),
+        )
+        .await
+        .unwrap();
+
+        let response = request_json(
+            fixture.app.clone(),
+            "POST",
+            &format!("/api/approvals/{}/{decision}", item.id),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(response["live"], true);
+
+        let decided =
+            litellm_rust::db::managed_agents::inbox::repository::get(&fixture.pool, &item.id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(decided.status, expected_status);
+    }
+
+    let pending = litellm_rust::db::managed_agents::inbox::repository::pending_approvals(
+        &fixture.pool,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(pending.is_empty());
 }

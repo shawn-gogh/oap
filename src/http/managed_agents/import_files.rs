@@ -278,6 +278,27 @@ pub async fn import_agent_bundle(
     ))
 }
 
+/// Vendor/build directories that never carry agent definitions or knowledge
+/// content — skipped so e.g. a `node_modules` folder tagging along in a zip
+/// doesn't blow the entry-count guard or the size guard.
+const IGNORED_DIR_NAMES: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".cache",
+];
+
+fn is_ignored_path(path: &str) -> bool {
+    path.split('/')
+        .any(|segment| IGNORED_DIR_NAMES.contains(&segment))
+}
+
 /// Extracts a zip into (normalized relative path, bytes) pairs with basic
 /// zip-bomb/path-traversal guards. If every entry shares a single top-level
 /// directory (the common "zip of a folder" layout), that prefix is stripped.
@@ -286,11 +307,6 @@ fn unpack_bundle(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, GatewayError> {
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|error| GatewayError::InvalidJsonMessage(format!("invalid zip: {error}")))?;
-    if archive.len() > MAX_BUNDLE_ENTRIES {
-        return Err(GatewayError::InvalidJsonMessage(format!(
-            "bundle has too many entries (max {MAX_BUNDLE_ENTRIES})"
-        )));
-    }
     let mut total: u64 = 0;
     let mut entries = Vec::new();
     for index in 0..archive.len() {
@@ -308,8 +324,17 @@ fn unpack_bundle(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, GatewayError> {
         };
         let path = path.to_string_lossy().replace('\\', "/");
         let basename = path.rsplit('/').next().unwrap_or_default().to_owned();
-        if path.starts_with("__MACOSX/") || basename == ".DS_Store" || basename.is_empty() {
+        if path.starts_with("__MACOSX/")
+            || basename == ".DS_Store"
+            || basename.is_empty()
+            || is_ignored_path(&path)
+        {
             continue;
+        }
+        if entries.len() >= MAX_BUNDLE_ENTRIES {
+            return Err(GatewayError::InvalidJsonMessage(format!(
+                "bundle has too many entries (max {MAX_BUNDLE_ENTRIES})"
+            )));
         }
         total = total.saturating_add(file.size());
         if total > MAX_BUNDLE_BYTES {

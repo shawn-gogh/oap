@@ -21,7 +21,7 @@ use sqlx::PgPool;
 use crate::{
     db::managed_agents::{inbox, registry, sessions},
     errors::GatewayError,
-    http::runtime_resolution::resolve_runtime,
+    http::{managed_agents::inbox::types::ApprovalScope, runtime_resolution::resolve_runtime},
     proxy::{auth::master_key::authenticate, state::AppState},
 };
 
@@ -90,6 +90,7 @@ pub async fn asked(
             "type": "approval.asked",
             "approval": {
                 "id": item.id,
+                "kind": item.kind,
                 "title": item.title,
                 "session_id": item.session_id,
                 "args_json": item.args_json,
@@ -105,7 +106,12 @@ pub async fn asked(
 /// resumes (or is permanently denied). Fire-and-forget: a failure here just
 /// leaves the tool call blocked in opencode until it times out on its own —
 /// safer than silently letting it through.
-pub async fn reply(state: &Arc<AppState>, pool: &PgPool, item: &inbox::schema::InboxItemRow) {
+pub async fn reply(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    item: &inbox::schema::InboxItemRow,
+    scope: ApprovalScope,
+) {
     let Some(session_id) = item.session_id.as_deref() else {
         return;
     };
@@ -141,19 +147,46 @@ pub async fn reply(state: &Arc<AppState>, pool: &PgPool, item: &inbox::schema::I
         tracing::warn!(item_id = %item.id, "tool_permission reply: missing request_id");
         return;
     };
-    // opencode's ReplyBody: "once" (allow this call only) | "always" (allow
-    // this pattern for the rest of the session) | "reject". LAP only ever
-    // sends "once"/"reject" — never "always" — so a single human decision
-    // can't silently grant standing trust for future, unreviewed calls.
-    let reply_value = if item.status == "accepted" {
-        "once"
-    } else {
-        "reject"
-    };
+    let reply_value = permission_reply_value(&item.status, scope);
     let base = resolved.credential.api_base.trim_end_matches('/');
     let url = format!("{base}/v1/sessions/{provider_session_id}/permissions/{request_id}/reply");
     let body = serde_json::json!({ "reply": reply_value, "message": item.feedback });
     if let Err(error) = state.http.post(&url).json(&body).send().await {
         tracing::warn!(item_id = %item.id, %error, "tool_permission reply: request failed");
+    }
+}
+
+fn permission_reply_value(status: &str, scope: ApprovalScope) -> &'static str {
+    if status != "accepted" {
+        return "reject";
+    }
+    match scope {
+        ApprovalScope::Once => "once",
+        ApprovalScope::Session => "always",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_accepted_scope_to_opencode_reply() {
+        assert_eq!(
+            permission_reply_value("accepted", ApprovalScope::Once),
+            "once"
+        );
+        assert_eq!(
+            permission_reply_value("accepted", ApprovalScope::Session),
+            "always"
+        );
+    }
+
+    #[test]
+    fn rejection_never_grants_permission() {
+        assert_eq!(
+            permission_reply_value("rejected", ApprovalScope::Session),
+            "reject"
+        );
     }
 }

@@ -29,6 +29,7 @@ pub struct ObjectMeta {
     pub key: String,
     pub size: i64,
     pub last_modified_ms: Option<i64>,
+    pub etag: Option<String>,
 }
 
 fn env_or(configured: Option<&str>, var: &str) -> Option<String> {
@@ -176,6 +177,7 @@ impl ObjectStorageClient {
                     key: obj.key()?.to_owned(),
                     size: obj.size().unwrap_or(0),
                     last_modified_ms: obj.last_modified().map(|t| t.secs() * 1000),
+                    etag: obj.e_tag().map(|value| value.trim_matches('"').to_owned()),
                 })
             }));
             if resp.is_truncated().unwrap_or(false) {
@@ -193,8 +195,17 @@ impl ObjectStorageClient {
         key: &str,
         dst_bucket: &str,
     ) -> Result<(), GatewayError> {
-        // copy_source is a URL path, so the key must be percent-encoded.
-        let encoded_key: String = key
+        self.copy_object_as(src_bucket, key, dst_bucket, key).await
+    }
+
+    pub async fn copy_object_as(
+        &self,
+        src_bucket: &str,
+        src_key: &str,
+        dst_bucket: &str,
+        dst_key: &str,
+    ) -> Result<(), GatewayError> {
+        let encoded_key: String = src_key
             .split('/')
             .map(urlencoding_encode)
             .collect::<Vec<_>>()
@@ -203,11 +214,15 @@ impl ObjectStorageClient {
             .copy_object()
             .copy_source(format!("{src_bucket}/{encoded_key}"))
             .bucket(dst_bucket)
-            .key(key)
+            .key(dst_key)
             .send()
             .await
             .map(|_| ())
-            .map_err(|e| GatewayError::SandboxError(format!("copy object {key} failed: {e}")))
+            .map_err(|e| {
+                GatewayError::SandboxError(format!(
+                    "copy object {src_key} to {dst_key} failed: {e}"
+                ))
+            })
     }
 
     /// Copies every object from `src_bucket` into `dst_bucket`. A missing
@@ -256,6 +271,23 @@ impl ObjectStorageClient {
             .await
             .map(|_| ())
             .map_err(|e| GatewayError::SandboxError(format!("put object {key} failed: {e}")))
+    }
+
+    pub async fn get_bytes(&self, bucket: &str, key: &str) -> Result<Vec<u8>, GatewayError> {
+        let response = self
+            .internal
+            .get_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| GatewayError::SandboxError(format!("get object {key} failed: {e}")))?;
+        response
+            .body
+            .collect()
+            .await
+            .map(|bytes| bytes.into_bytes().to_vec())
+            .map_err(|e| GatewayError::SandboxError(format!("read object {key} failed: {e}")))
     }
 
     /// Deletes every object in the bucket, then the bucket itself. Used when

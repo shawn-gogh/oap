@@ -32,6 +32,7 @@ import {
   DEFAULT_VAULT_USER,
   listAgents,
   listAgentRuntimes,
+  listRuntimeHarnesses,
   updateAgent,
   deleteAgent,
   listRules,
@@ -44,6 +45,7 @@ import {
   storeMemory,
   deleteMemory,
 } from "@/lib/api";
+import { selectableAgentRuntimes } from "@/lib/agent-runtime-options";
 import { DEFAULT_TIMEZONE } from "@/lib/schedule";
 import type {
   Agent,
@@ -54,6 +56,7 @@ import type {
   Memory,
   VaultKeyEntry,
   PlatformMcp,
+  RuntimeHarness,
 } from "@/lib/types";
 import { useMattermostAppFlow } from "./mattermost-app-flow";
 import { useWebhookAppFlow } from "./webhook-app-flow";
@@ -104,6 +107,7 @@ export default function AgentsPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [platformMcps, setPlatformMcps] = useState<PlatformMcp[]>([]);
   const [runtimes, setRuntimes] = useState<AgentRuntime[]>([]);
+  const [runtimeHarnesses, setRuntimeHarnesses] = useState<RuntimeHarness[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -143,6 +147,7 @@ export default function AgentsPage() {
     listSkills().then(setSkills).catch(() => setSkills([]));
     listPlatformMcps().then(setPlatformMcps).catch(() => setPlatformMcps([]));
     listAgentRuntimes().then(setRuntimes).catch(() => setRuntimes([]));
+    listRuntimeHarnesses().then(setRuntimeHarnesses).catch(() => setRuntimeHarnesses([]));
     listVaultKeysForUser(DEFAULT_VAULT_USER)
       .then(setStoredKeyEntries)
       .catch(() => setStoredKeyEntries([]));
@@ -423,7 +428,7 @@ export default function AgentsPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {runtimeOptions(runtimes).map((runtime) => (
+                  {selectableAgentRuntimes(runtimes, runtimeHarnesses, form.runtime).map((runtime) => (
                     <SelectItem key={runtime.id} value={runtime.id}>
                       {runtime.name}
                     </SelectItem>
@@ -799,21 +804,6 @@ export default function AgentsPage() {
       {webhookFlow.dialog}
     </div>
   );
-}
-
-function runtimeOptions(runtimes: AgentRuntime[]): AgentRuntime[] {
-  if (runtimes.length > 0) return runtimes;
-  return [
-    {
-      id: "claude_managed_agents",
-      name: "自托管开放 Harness",
-      default_api_base: "",
-      credential_provider_id: "anthropic",
-      credential_provider_name: "Anthropic",
-      tools: [],
-      connected: false,
-    },
-  ];
 }
 
 function vaultKeySignature(value: string): string {

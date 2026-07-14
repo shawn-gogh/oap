@@ -20,6 +20,7 @@ import type {
   TaskSessionAttempt,
   VaultKeyEntry,
   WorkspaceFile,
+  WorkspaceTrashItem,
 } from "./types";
 import { preferredModel } from "./model-options";
 
@@ -1284,6 +1285,7 @@ export async function getSpendLog(requestId: string): Promise<SpendLog> {
 
 export interface PendingApproval {
   id: string;
+  kind: InboxKind;
   tool: string;
   arguments: Record<string, unknown>;
   createdAt: number;
@@ -1292,6 +1294,7 @@ export interface PendingApproval {
 
 interface RawPendingApproval {
   id: string;
+  kind?: InboxKind;
   tool?: string;
   title?: string;
   arguments?: Record<string, unknown>;
@@ -1308,6 +1311,7 @@ export async function listApprovals(sessionId?: string): Promise<PendingApproval
   const data = await jsonOrThrow<{ approvals: RawPendingApproval[] }>(res);
   return (data.approvals ?? []).map((approval) => ({
     id: approval.id,
+    kind: approval.kind ?? "approval",
     tool: approval.tool ?? approval.title ?? "approval",
     arguments: approval.arguments ?? parseArgsJson(approval.args_json) ?? {},
     createdAt: approval.createdAt ?? approval.created_at ?? 0,
@@ -1315,11 +1319,17 @@ export async function listApprovals(sessionId?: string): Promise<PendingApproval
   }));
 }
 
-export async function acceptApproval(id: string, args?: Record<string, unknown>): Promise<void> {
+export type ApprovalScope = "once" | "session";
+
+export async function acceptApproval(
+  id: string,
+  args?: Record<string, unknown>,
+  scope: ApprovalScope = "once",
+): Promise<void> {
   const res = await req(`/api/approvals/${encodeURIComponent(id)}/accept`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(args ? { arguments: args } : {}),
+    body: JSON.stringify({ arguments: args, scope }),
   });
   await jsonOrThrow(res);
 }
@@ -2747,6 +2757,50 @@ export async function listWorkspaceFiles(sessionId: string): Promise<WorkspaceFi
   return jsonOrThrow<WorkspaceFile[]>(res);
 }
 
+export interface WorkspaceBrowseResponse {
+  files: WorkspaceFile[];
+  folders: string[];
+  total: number;
+  next_cursor: number | null;
+}
+
+export async function browseWorkspaceFiles(
+  sessionId: string,
+  options: {
+    prefix?: string;
+    query?: string;
+    cursor?: number;
+    limit?: number;
+    sortBy?: "name" | "size" | "updated";
+    direction?: "asc" | "desc";
+  } = {},
+): Promise<WorkspaceBrowseResponse> {
+  const query = new URLSearchParams();
+  if (options.prefix) query.set("prefix", options.prefix);
+  if (options.query) query.set("query", options.query);
+  if (options.cursor) query.set("cursor", String(options.cursor));
+  query.set("limit", String(options.limit ?? 50));
+  query.set("sort_by", options.sortBy ?? "name");
+  query.set("direction", options.direction ?? "asc");
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/browse?${query.toString()}`,
+  );
+  return jsonOrThrow<WorkspaceBrowseResponse>(res);
+}
+
+export async function listWorkspaceFolders(sessionId: string): Promise<string[]> {
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/folders`);
+  return jsonOrThrow<string[]>(res);
+}
+
+export async function createWorkspaceFolder(sessionId: string, path: string): Promise<void> {
+  await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/folders`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+}
+
 export async function requestWorkspaceUploadUrl(
   sessionId: string,
   path: string,
@@ -2767,19 +2821,182 @@ export async function workspaceFileDownloadUrl(sessionId: string, path: string):
   return data.url;
 }
 
-export async function uploadWorkspaceFile(sessionId: string, file: File, path: string): Promise<void> {
+export async function uploadWorkspaceFile(
+  sessionId: string,
+  file: File,
+  path: string,
+  options: {
+    signal?: AbortSignal;
+    onProgress?: (loaded: number, total: number) => void;
+  } = {},
+): Promise<void> {
   const { url } = await requestWorkspaceUploadUrl(sessionId, path);
-  const res = await fetch(url, { method: "PUT", body: file });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, body);
-  }
+  if (options.signal?.aborted) throw new DOMException("上传已取消", "AbortError");
+  await new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const abort = () => request.abort();
+    const cleanup = () => options.signal?.removeEventListener("abort", abort);
+    request.open("PUT", url);
+    if (file.type) request.setRequestHeader("content-type", file.type);
+    request.upload.onprogress = (event) => {
+      options.onProgress?.(event.loaded, event.lengthComputable ? event.total : file.size);
+    };
+    request.onload = () => {
+      cleanup();
+      if (request.status >= 200 && request.status < 300) {
+        options.onProgress?.(file.size, file.size);
+        resolve();
+      } else {
+        reject(new ApiError(request.status, request.responseText));
+      }
+    };
+    request.onerror = () => {
+      cleanup();
+      reject(new Error("上传连接失败，请检查网络后重试。"));
+    };
+    request.onabort = () => {
+      cleanup();
+      reject(new DOMException("上传已取消", "AbortError"));
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    request.send(file);
+  });
 }
 
 export async function deleteWorkspaceFile(sessionId: string, path: string): Promise<void> {
   await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/files?path=${encodeURIComponent(path)}`, {
     method: "DELETE",
   });
+}
+
+export async function moveWorkspacePath(
+  sessionId: string,
+  sourcePath: string,
+  destinationPath: string,
+  overwrite = false,
+): Promise<number> {
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/files/move`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      source_path: sourcePath,
+      destination_path: destinationPath,
+      overwrite,
+    }),
+  });
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function copyWorkspacePath(
+  sessionId: string,
+  sourcePath: string,
+  destinationPath: string,
+  overwrite = false,
+): Promise<number> {
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/files/copy`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      source_path: sourcePath,
+      destination_path: destinationPath,
+      overwrite,
+    }),
+  });
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function batchDeleteWorkspacePaths(
+  sessionId: string,
+  paths: string[],
+): Promise<number> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/files/batch-delete`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths }),
+    },
+  );
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function trashWorkspacePaths(
+  sessionId: string,
+  paths: string[],
+): Promise<number> {
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/trash`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function listWorkspaceTrash(sessionId: string): Promise<WorkspaceTrashItem[]> {
+  const res = await reqHarness(`/session/${encodeURIComponent(sessionId)}/workspace/trash`);
+  return jsonOrThrow<WorkspaceTrashItem[]>(res);
+}
+
+export async function restoreWorkspaceTrash(
+  sessionId: string,
+  ids: string[],
+  overwrite = false,
+): Promise<number> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/trash/restore`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids, overwrite }),
+    },
+  );
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function deleteWorkspaceTrash(
+  sessionId: string,
+  ids: string[],
+): Promise<number> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/trash/delete`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids }),
+    },
+  );
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function emptyWorkspaceTrash(sessionId: string): Promise<number> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/trash/empty`,
+    { method: "POST" },
+  );
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
+}
+
+export async function batchTransferWorkspacePaths(
+  sessionId: string,
+  sourcePaths: string[],
+  destinationDirectory: string,
+  operation: "move" | "copy",
+  overwrite = false,
+): Promise<number> {
+  const res = await reqHarness(
+    `/session/${encodeURIComponent(sessionId)}/workspace/files/batch-transfer`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source_paths: sourcePaths,
+        destination_directory: destinationDirectory,
+        operation,
+        overwrite,
+      }),
+    },
+  );
+  return (await jsonOrThrow<{ affected: number }>(res)).affected;
 }
 
 // ── Skills list (DB-backed, /api/skills) ──────────────────────────────────────

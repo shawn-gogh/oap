@@ -222,4 +222,44 @@ fn session_routes() -> Router<Arc<AppState>> {
             "/session/{session_id}/workspace/files/download-url",
             get(sessions::download_url),
         )
+        .route(
+            "/session/{session_id}/workspace/files/move",
+            post(sessions::move_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/copy",
+            post(sessions::copy_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/batch-delete",
+            post(sessions::batch_delete_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/browse",
+            get(sessions::browse_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/folders",
+            get(sessions::list_folders).post(sessions::create_folder),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/batch-transfer",
+            post(sessions::batch_transfer_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash",
+            get(sessions::list_workspace_trash).post(sessions::trash_workspace_paths),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash/restore",
+            post(sessions::restore_workspace_trash),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash/delete",
+            post(sessions::delete_workspace_trash),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash/empty",
+            post(sessions::empty_workspace_trash),
+        )
 }

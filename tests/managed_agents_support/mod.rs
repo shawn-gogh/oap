@@ -39,9 +39,7 @@ pub struct AppFixture {
 
 impl AppFixture {
     pub async fn new() -> Option<Self> {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())?;
+        let database_url = test_database_url()?;
         let pool = managed_agents_pool::connect(&database_url).await.unwrap();
         managed_agents_pool::migrate(&pool).await.unwrap();
         reset_tables(&pool).await;
@@ -57,9 +55,7 @@ impl AppFixture {
     }
 
     pub async fn new_with_litellm_key_info() -> Option<Self> {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())?;
+        let database_url = test_database_url()?;
         let pool = managed_agents_pool::connect(&database_url).await.unwrap();
         managed_agents_pool::migrate(&pool).await.unwrap();
         reset_tables(&pool).await;
@@ -82,6 +78,22 @@ impl AppFixture {
             _litellm: Some(litellm),
         })
     }
+}
+
+fn test_database_url() -> Option<String> {
+    let database_url = std::env::var("TEST_DATABASE_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())?;
+    let database_name = database_url
+        .split('?')
+        .next()
+        .and_then(|url| url.rsplit('/').next())
+        .unwrap_or_default();
+    assert!(
+        database_name.ends_with("_test"),
+        "TEST_DATABASE_URL must reference a database whose name ends with _test"
+    );
+    Some(database_url)
 }
 
 fn build_state(

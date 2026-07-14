@@ -57,6 +57,7 @@ pub async fn request_human_approval(
                 "type": "approval.asked",
                 "approval": {
                     "id": item.id,
+                    "kind": item.kind,
                     "title": item.title,
                     "session_id": item.session_id,
                     "args_json": item.args_json,

@@ -209,6 +209,26 @@ function InboxInner() {
     [items, load, router, tab],
   );
 
+  const onAcceptAlways = useCallback(
+    async (id: string, args: Record<string, unknown>) => {
+      setBusy(true);
+      const sessionId = items?.find((item) => item.id === id)?.sessionId ?? null;
+      try {
+        await acceptApproval(id, args, "session");
+        if (sessionId) {
+          router.push(`/chat/?id=${encodeURIComponent(sessionId)}&resumed=true`);
+          return;
+        }
+        await load(tab);
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [items, load, router, tab],
+  );
+
   const onResolve = useCallback(
     async (id: string) => {
       setBusy(true);
@@ -436,12 +456,14 @@ function InboxInner() {
                       key={selected.id}
                       approval={{
                         id: selected.id,
+                        kind: selected.kind,
                         tool: selected.title,
                         arguments: selected.args ?? {},
                         createdAt: selected.createdAt,
                         sessionId: selected.sessionId,
                       }}
                       onAccept={onAccept}
+                      onAcceptAlways={onAcceptAlways}
                       onReject={onReject}
                       busy={busy}
                     />

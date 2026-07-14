@@ -42,7 +42,12 @@ pub(crate) use runtime_sdk::lap_from_credential;
 use runtime_sdk::{register_runtime_session, runtime_sdk_client};
 use storage::{auth_db, db, owned_session, persist_message, resolve_session_request, session};
 pub use types::{CreateSessionRequest, MessageResponse, PromptRequest, SessionResponse};
-pub use workspace_api::{create_upload_url, delete_file, download_url, list_files};
+pub use workspace_api::{
+    batch_delete_files, batch_transfer_files, browse_files, copy_files, create_folder,
+    create_upload_url, delete_file, delete_workspace_trash, download_url, empty_workspace_trash,
+    list_files, list_folders, list_workspace_trash, move_files, restore_workspace_trash,
+    trash_workspace_paths,
+};
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
