@@ -6,6 +6,7 @@ pub mod import_files;
 mod import_types;
 pub mod improvements;
 pub mod inbox;
+pub mod mattermost;
 pub mod memory;
 pub mod registry;
 pub mod routes;

@@ -55,6 +55,7 @@ import type {
   VaultKeyEntry,
   PlatformMcp,
 } from "@/lib/types";
+import { useMattermostAppFlow } from "./mattermost-app-flow";
 import { useWebhookAppFlow } from "./webhook-app-flow";
 import { ImportAgentDialog } from "./import-agent-dialog";
 import { AgentsTable } from "./agents-table";
@@ -118,6 +119,7 @@ export default function AgentsPage() {
   const [memValue, setMemValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [byoConfiguredAgents, setByoConfiguredAgents] = useState<Set<string>>(new Set());
+  const mattermostFlow = useMattermostAppFlow(setAgents);
   const webhookFlow = useWebhookAppFlow(setAgents);
 
   const load = async () => {
@@ -374,6 +376,7 @@ export default function AgentsPage() {
                 onRun={openAgent}
                 onEdit={openEdit}
                 onDelete={remove}
+                onMattermost={mattermostFlow.openMattermost}
                 onWebhook={webhookFlow.openWebhook}
                 onOpenDetail={(agent) =>
                   router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`)
@@ -792,6 +795,7 @@ export default function AgentsPage() {
         onOpenChange={setImportOpen}
         onImported={(imported) => setAgents((current) => [...imported, ...(current ?? [])])}
       />
+      {mattermostFlow.dialog}
       {webhookFlow.dialog}
     </div>
   );

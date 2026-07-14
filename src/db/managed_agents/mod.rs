@@ -6,6 +6,7 @@ pub mod groups;
 pub mod harnesses;
 pub mod inbox;
 pub mod loops;
+pub mod mattermost;
 pub mod memory;
 pub mod messages;
 pub mod pool;

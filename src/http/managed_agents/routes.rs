@@ -16,6 +16,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(skill_routes())
         .merge(inbox_routes())
         .merge(webhook_routes())
+        .merge(mattermost_routes())
 }
 
 fn agent_routes() -> Router<Arc<AppState>> {
@@ -232,4 +233,16 @@ fn inbox_routes() -> Router<Arc<AppState>> {
 
 fn webhook_routes() -> Router<Arc<AppState>> {
     Router::new().route("/api/agents/{agent_id}/webhook", post(webhook::events))
+}
+
+fn mattermost_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/api/agents/{agent_id}/mattermost/events",
+            post(super::mattermost::events),
+        )
+        .route(
+            "/api/agents/{agent_id}/mattermost/connect",
+            post(super::mattermost::connect),
+        )
 }
