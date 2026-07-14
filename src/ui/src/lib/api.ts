@@ -2100,6 +2100,30 @@ export async function updateAgent(id: string, fields: Partial<Agent>): Promise<A
   return jsonOrThrow<Agent>(res);
 }
 
+export interface MattermostConnectRequest {
+  server_url: string;
+  bot_token: string;
+  webhook_token: string;
+}
+
+export interface MattermostConnectResponse {
+  status: string;
+  bot_user_id: string;
+  agent: Agent;
+}
+
+export async function connectMattermost(
+  agentId: string,
+  input: MattermostConnectRequest,
+): Promise<MattermostConnectResponse> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/mattermost/connect`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<MattermostConnectResponse>(res);
+}
+
 export async function listRoutines(agentId?: string): Promise<Routine[]> {
   const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   const res = await req(`/api/routines${query}`);

@@ -17,6 +17,7 @@ import {
   ChevronDown,
   ChevronUp,
   ChevronsUpDown,
+  MessageSquare,
   Pencil,
   Play,
   Search,
@@ -45,6 +46,7 @@ import {
   providerLabel,
   runtimeFromAgent,
 } from "./agent-row-utils";
+import { mattermostActionClass, mattermostActionLabel, mattermostConfig } from "./mattermost-app-flow";
 import { webhookActionClass, webhookActionLabel, webhookConfig } from "./webhook-app-flow";
 
 interface AgentsTableProps {
@@ -54,6 +56,7 @@ interface AgentsTableProps {
   onRun: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
+  onMattermost: (agent: Agent) => void;
   onWebhook: (agent: Agent) => void;
   onOpenDetail: (agent: Agent) => void;
 }
@@ -70,6 +73,7 @@ interface AgentTableRow {
   model: string;
   schedule: string;
   access: string;
+  mattermost: string;
   webhook: string;
   mcpCount: number;
   searchText: string;
@@ -82,6 +86,7 @@ export function AgentsTable({
   onRun,
   onEdit,
   onDelete,
+  onMattermost,
   onWebhook,
   onOpenDetail,
 }: AgentsTableProps) {
@@ -142,6 +147,12 @@ export function AgentsTable({
         ),
       },
       {
+        id: "mattermost",
+        accessorKey: "mattermost",
+        header: SortableHeader,
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.mattermost}</span>,
+      },
+      {
         id: "webhook",
         accessorKey: "webhook",
         header: SortableHeader,
@@ -157,12 +168,13 @@ export function AgentsTable({
             onRun={onRun}
             onEdit={onEdit}
             onDelete={onDelete}
+            onMattermost={onMattermost}
             onWebhook={onWebhook}
           />
         ),
       },
     ],
-    [onDelete, onEdit, onOpenDetail, onRun, onWebhook],
+    [onDelete, onEdit, onOpenDetail, onRun, onMattermost, onWebhook],
   );
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -346,19 +358,32 @@ function ActionsCell({
   onRun,
   onEdit,
   onDelete,
+  onMattermost,
   onWebhook,
 }: {
   agent: Agent;
   onRun: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
+  onMattermost: (agent: Agent) => void;
   onWebhook: (agent: Agent) => void;
 }) {
+  const mattermost = mattermostConfig(agent);
   const webhook = webhookConfig(agent);
   return (
     <div className="flex justify-end gap-1">
       <Button size="icon-sm" onClick={() => onRun(agent)} aria-label="运行" title="运行">
         <Play className="size-3.5" />
+      </Button>
+      <Button
+        size="icon-sm"
+        variant="outline"
+        className={mattermostActionClass(mattermost)}
+        onClick={() => onMattermost(agent)}
+        aria-label={mattermostActionLabel(mattermost)}
+        title={mattermost.status === "connected" ? mattermost.server_url : undefined}
+      >
+        <MessageSquare className="size-3.5" />
       </Button>
       <Button
         size="icon-sm"
@@ -443,6 +468,7 @@ function toTableRow(
       : source?.credential_mode === "shared"
         ? "Shared key"
         : "Workspace";
+  const mattermost = mattermostActionLabel(mattermostConfig(agent));
   const webhook = webhookActionLabel(webhookConfig(agent));
   return {
     agent,
@@ -456,6 +482,7 @@ function toTableRow(
     model: String(agent.model ?? ""),
     schedule: scheduleLabel(agent.cron, agent.timezone),
     access,
+    mattermost,
     webhook,
     mcpCount: platformMcpIds(agent).length,
     searchText: [
@@ -468,6 +495,7 @@ function toTableRow(
       runtimeId,
       runtimeName,
       access,
+      mattermost,
       webhook,
     ]
       .filter(Boolean)
@@ -497,6 +525,7 @@ function headerLabel(id: string) {
     model: "Model",
     schedule: "Schedule",
     access: "Access",
+    mattermost: "Mattermost",
     webhook: "Webhook",
   };
   return labels[id] ?? id;
@@ -509,6 +538,7 @@ function columnWidthClass(id: string) {
     model: "w-[10%]",
     schedule: "w-[8%]",
     access: "w-[7%]",
+    mattermost: "w-[7%]",
     webhook: "w-[7%]",
     actions: "w-[20%]",
   };
