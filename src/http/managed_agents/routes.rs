@@ -65,6 +65,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::registry::resume::resume),
         )
         .route(
+            "/api/agents/{agent_id}/restore",
+            post(super::registry::restore::restore),
+        )
+        .route(
             "/api/agents/{agent_id}/preflight",
             get(super::registry::preflight::preflight),
         )

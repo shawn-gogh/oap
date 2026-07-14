@@ -8,3 +8,5 @@ pub mod resume;
 pub mod revisions;
 pub mod types;
 pub mod update;
+pub mod restore;
+pub mod cleanup;

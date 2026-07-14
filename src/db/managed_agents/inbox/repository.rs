@@ -56,7 +56,7 @@ pub async fn pending_approvals(
         r#"
         SELECT i.*
         FROM "LiteLLM_ManagedAgentInboxItemsTable" i
-        WHERE i.kind IN ('approval', 'tool_permission') AND i.status = 'pending'
+        WHERE i.kind IN ('approval', 'tool_permission', 'unlisted_data_egress') AND i.status = 'pending'
           AND ($1::TEXT IS NULL OR i.session_id = $1)
           AND (i.session_id IS NULL OR EXISTS (
                 SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
@@ -92,7 +92,7 @@ pub async fn expire_pending_for_session(
         r#"
         UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
         SET status = 'expired', resolved_at = $2
-        WHERE kind IN ('approval', 'tool_permission') AND status = 'pending' AND session_id = $1
+        WHERE kind IN ('approval', 'tool_permission', 'unlisted_data_egress') AND status = 'pending' AND session_id = $1
         "#,
     )
     .bind(session_id)
@@ -221,7 +221,7 @@ pub async fn decide_approval(
             feedback = COALESCE($3, feedback),
             args_json = COALESCE($4, args_json),
             resolved_at = $5
-        WHERE id = $1 AND kind IN ('approval', 'tool_permission') AND status = 'pending'
+        WHERE id = $1 AND kind IN ('approval', 'tool_permission', 'unlisted_data_egress') AND status = 'pending'
         "#,
     )
     .bind(item_id)

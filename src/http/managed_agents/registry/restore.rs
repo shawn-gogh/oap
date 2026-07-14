@@ -14,7 +14,7 @@ use crate::{
 
 use super::types::DeleteResponse;
 
-pub async fn delete(
+pub async fn restore(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
@@ -26,8 +26,7 @@ pub async fn delete(
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_access(&auth, &existing)?;
 
-    let now = crate::db::managed_agents::now_ms();
-    if !registry::repository::soft_delete(pool, &agent_id, now).await? {
+    if !registry::repository::restore(pool, &agent_id).await? {
         return Err(GatewayError::NotFound("not found".to_owned()));
     }
 

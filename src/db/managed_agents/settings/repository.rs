@@ -22,6 +22,27 @@ pub async fn set_mcp_proxy_base_url(
     Ok(Some(value.to_owned()))
 }
 
+pub const OUTBOUND_DOMAIN_WHITELIST_KEY: &str = "outbound_domain_whitelist";
+
+pub async fn get_outbound_domain_whitelist(pool: &PgPool) -> Result<Option<String>, GatewayError> {
+    get_value(pool, OUTBOUND_DOMAIN_WHITELIST_KEY).await
+}
+
+pub async fn set_outbound_domain_whitelist(
+    pool: &PgPool,
+    value: Option<&str>,
+    actor: &str,
+) -> Result<Option<String>, GatewayError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        delete_value(pool, OUTBOUND_DOMAIN_WHITELIST_KEY).await?;
+        return Ok(None);
+    };
+
+    upsert_value(pool, OUTBOUND_DOMAIN_WHITELIST_KEY, value, actor).await?;
+    Ok(Some(value.to_owned()))
+}
+
+
 async fn get_value(pool: &PgPool, key: &str) -> Result<Option<String>, GatewayError> {
     sqlx::query_scalar::<_, String>(
         r#"

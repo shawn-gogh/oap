@@ -33,6 +33,7 @@ pub struct AppState {
     pub object_storage: Option<ObjectStorageClient>,
     pub local_session_events: LocalSessionEvents,
     pub provider_consumers: ProviderConsumers,
+    pub transient_approvals: TransientApprovals,
     mcp_proxy_base_url: RwLock<Option<String>>,
 }
 
@@ -150,6 +151,7 @@ impl AppState {
             object_storage,
             local_session_events: LocalSessionEvents::default(),
             provider_consumers: ProviderConsumers::default(),
+            transient_approvals: TransientApprovals::default(),
             mcp_proxy_base_url: RwLock::new(None),
         })
     }
@@ -195,3 +197,49 @@ fn callbacks(config: &GatewayConfig, db: Option<PgPool>) -> CallbackManager {
         &config.general_settings,
     ))])
 }
+
+#[derive(Debug)]
+pub struct TransientApprovalState {
+    pub row: crate::db::managed_agents::inbox::schema::InboxItemRow,
+    pub provider_session_id: String,
+    pub runtime: String,
+}
+
+
+#[derive(Debug, Default)]
+pub struct TransientApprovals {
+    items: Mutex<HashMap<String, TransientApprovalState>>,
+}
+
+impl TransientApprovals {
+    pub fn insert(&self, id: String, state: TransientApprovalState) {
+        let mut guard = self.items.lock().expect("transient approvals lock");
+        guard.insert(id, state);
+    }
+
+    pub fn remove(&self, id: &str) -> Option<TransientApprovalState> {
+        let mut guard = self.items.lock().expect("transient approvals lock");
+        guard.remove(id)
+    }
+
+    pub fn get_row(&self, id: &str) -> Option<crate::db::managed_agents::inbox::schema::InboxItemRow> {
+        let guard = self.items.lock().expect("transient approvals lock");
+        guard.get(id).map(|state| state.row.clone())
+    }
+
+    pub fn list_pending(&self, session_id: Option<&str>) -> Vec<crate::db::managed_agents::inbox::schema::InboxItemRow> {
+        let guard = self.items.lock().expect("transient approvals lock");
+        guard
+            .values()
+            .filter(|state| {
+                if let Some(sid) = session_id {
+                    state.row.session_id.as_deref() == Some(sid)
+                } else {
+                    true
+                }
+            })
+            .map(|state| state.row.clone())
+            .collect()
+    }
+}
+

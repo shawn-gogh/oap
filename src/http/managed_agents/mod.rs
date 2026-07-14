@@ -91,6 +91,12 @@ pub(crate) fn assert_agent_runnable(agent: &ManagedAgentRow) -> Result<(), Gatew
             agent.id, agent.id
         )));
     }
+    if agent.status == "archived_pending_delete" {
+        return Err(GatewayError::BadRequest(format!(
+            "agent {} 已被软删除并处于归档挂起状态",
+            agent.id
+        )));
+    }
     Ok(())
 }
 

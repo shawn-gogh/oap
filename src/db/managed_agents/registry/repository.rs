@@ -154,7 +154,7 @@ pub async fn list(
         sqlx::query_as::<_, ManagedAgentRow>(
             r#"
             SELECT * FROM "LiteLLM_ManagedAgentsTable"
-            WHERE owner_id = $1
+            WHERE owner_id = $1 AND status != 'archived_pending_delete'
             ORDER BY created_at ASC
             "#,
         )
@@ -165,6 +165,7 @@ pub async fn list(
         sqlx::query_as::<_, ManagedAgentRow>(
             r#"
             SELECT * FROM "LiteLLM_ManagedAgentsTable"
+            WHERE status != 'archived_pending_delete'
             ORDER BY created_at ASC
             "#,
         )
@@ -342,3 +343,44 @@ pub async fn delete(pool: &PgPool, agent_id: &str) -> Result<bool, GatewayError>
 
     Ok(result.rows_affected() > 0)
 }
+
+pub async fn soft_delete(
+    pool: &PgPool,
+    agent_id: &str,
+    deleted_at: i64,
+) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentsTable"
+        SET status = 'archived_pending_delete',
+            config = jsonb_set(config, '{deleted_at}', to_jsonb($2::BIGINT), true)
+        WHERE id = $1 AND status != 'archived_pending_delete'
+        "#,
+    )
+    .bind(agent_id)
+    .bind(deleted_at)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn restore(
+    pool: &PgPool,
+    agent_id: &str,
+) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentsTable"
+        SET status = 'active',
+            config = config - 'deleted_at'
+        WHERE id = $1 AND status = 'archived_pending_delete'
+        "#,
+    )
+    .bind(agent_id)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() > 0)
+}
+

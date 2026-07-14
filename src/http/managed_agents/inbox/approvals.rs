@@ -31,24 +31,42 @@ pub async fn list_pending(
         .map(String::as_str)
         .filter(|value| !value.trim().is_empty());
     let owner = (!auth.is_admin).then_some(auth.user_id.as_str());
-    Ok(Json(ApprovalsResponse {
-        approvals: repository::pending_approvals(pool, session_id, owner).await?,
-    }))
+
+    let mut approvals = repository::pending_approvals(pool, session_id, owner).await?;
+    let transient = state.transient_approvals.list_pending(session_id);
+    let mut transient_filtered = Vec::new();
+    for item in transient {
+        if auth.is_admin || repository::approval_scope_owned_by(pool, &item, &auth.user_id).await? {
+            transient_filtered.push(item);
+        }
+    }
+    approvals.extend(transient_filtered);
+
+    Ok(Json(ApprovalsResponse { approvals }))
 }
 
 /// Approvals authorize agent side effects, so deciding one requires owning
 /// the linked session or agent (admins pass). Unknown items and items the
 /// caller can't see both surface as not-found.
 async fn owned_approval(
+    state: &crate::proxy::state::AppState,
     pool: &sqlx::PgPool,
     auth: &crate::proxy::auth::master_key::AuthContext,
     item_id: &str,
-) -> Result<InboxItemRow, GatewayError> {
+) -> Result<(InboxItemRow, bool), GatewayError> {
+    // 1. Check transient approvals first
+    if let Some(row) = state.transient_approvals.get_row(item_id) {
+        if auth.is_admin || repository::approval_scope_owned_by(pool, &row, &auth.user_id).await? {
+            return Ok((row, true));
+        }
+        return Err(GatewayError::NotFound("approval not found".to_owned()));
+    }
+    // 2. Check DB approvals
     let item = repository::get(pool, item_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
     if auth.is_admin || repository::approval_scope_owned_by(pool, &item, &auth.user_id).await? {
-        return Ok(item);
+        return Ok((item, false));
     }
     Err(GatewayError::NotFound("approval not found".to_owned()))
 }
@@ -61,7 +79,29 @@ pub async fn accept(
 ) -> Result<Json<DecisionResponse>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
-    let existing = owned_approval(&pool, &auth, &item_id).await?;
+    let (existing, is_transient) = owned_approval(&state, &pool, &auth, &item_id).await?;
+
+    if is_transient {
+        if let Some(removed) = state.transient_approvals.remove(&item_id) {
+            let mut row = removed.row;
+            row.status = "accepted".to_owned();
+            row.args_json = input.arguments.map(|v| v.to_string());
+
+            crate::http::managed_agents::tool_approvals::reply_direct(
+                &state,
+                &pool,
+                &row,
+                input.scope,
+                &removed.provider_session_id,
+                &removed.runtime,
+            )
+            .await;
+
+            publish_approval_reply(&state, &row);
+        }
+        return Ok(Json(DecisionResponse { ok: true, live: true }));
+    }
+
     let publish_approval = crate::http::managed_agents::governance::is_publish_approval(&existing);
     if publish_approval && !auth.is_admin {
         return Err(GatewayError::NotFound("approval not found".to_owned()));
@@ -100,7 +140,29 @@ pub async fn reject(
 ) -> Result<Json<DecisionResponse>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
-    let existing = owned_approval(&pool, &auth, &item_id).await?;
+    let (existing, is_transient) = owned_approval(&state, &pool, &auth, &item_id).await?;
+
+    if is_transient {
+        if let Some(removed) = state.transient_approvals.remove(&item_id) {
+            let mut row = removed.row;
+            row.status = "rejected".to_owned();
+            row.feedback = input.feedback;
+
+            crate::http::managed_agents::tool_approvals::reply_direct(
+                &state,
+                &pool,
+                &row,
+                ApprovalScope::Once,
+                &removed.provider_session_id,
+                &removed.runtime,
+            )
+            .await;
+
+            publish_approval_reply(&state, &row);
+        }
+        return Ok(Json(DecisionResponse { ok: true, live: true }));
+    }
+
     let publish_approval = crate::http::managed_agents::governance::is_publish_approval(&existing);
     if publish_approval && !auth.is_admin {
         return Err(GatewayError::NotFound("approval not found".to_owned()));

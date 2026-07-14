@@ -98,6 +98,7 @@ async fn serve_gateway(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>
     litellm_rust::http::managed_agents::routines::scheduler::spawn(state.clone());
     litellm_rust::http::managed_agents::tasks::timeout::spawn(state.clone());
     litellm_rust::http::managed_agents::evolution::spawn(state.clone());
+    litellm_rust::http::managed_agents::registry::cleanup::spawn(state.clone());
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
     let app: AxumRouter = router(state).layer(TraceLayer::new_for_http());

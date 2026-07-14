@@ -1396,3 +1396,311 @@ async fn tool_permission_decisions_leave_pending_state_against_postgres() {
     .unwrap();
     assert!(pending.is_empty());
 }
+
+#[tokio::test]
+async fn transient_tool_permission_flow_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping managed agent integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let agent_body = json!({
+        "name": "transient-tester",
+        "description": "test agent",
+        "model": "claude-sonnet-4-6",
+        "mcp_server_ids": []
+    });
+    let agent = create_test_agent(&fixture, agent_body).await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let session_body = json!({
+        "agent_id": agent_id,
+        "runtime": "opencode",
+        "provider_session_id": "test-provider-session-123"
+    });
+    let session = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/session",
+        Some(session_body),
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap();
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/tool-approvals")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer sk-local");
+    let body = json!({
+        "session_id": "test-provider-session-123",
+        "request_id": "req-abc",
+        "permission": "Permission.Service.ask",
+        "patterns": ["*.txt"],
+        "metadata": {}
+    });
+    
+    use tower::ServiceExt;
+    let req_body = axum::body::Body::from(serde_json::to_vec(&body).unwrap());
+    let response = fixture.app.clone().oneshot(req.body(req_body).unwrap()).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    
+    let res_body = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+    let res_json: serde_json::Value = serde_json::from_slice(&res_body).unwrap();
+    let approval_id = res_json["id"].as_str().unwrap();
+
+    let list_response = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/approvals?session_id={session_id}"),
+        None,
+    )
+    .await;
+    let approvals = list_response["approvals"].as_array().unwrap();
+    assert!(approvals.iter().any(|appr| appr["id"] == approval_id));
+
+    let accept_response = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/approvals/{approval_id}/accept"),
+        Some(json!({ "scope": "once" })),
+    )
+    .await;
+    assert_eq!(accept_response["live"], true);
+
+    let list_response_after = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/approvals?session_id={session_id}"),
+        None,
+    )
+    .await;
+    let approvals_after = list_response_after["approvals"].as_array().unwrap();
+    assert!(!approvals_after.iter().any(|appr| appr["id"] == approval_id));
+}
+
+#[tokio::test]
+async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping managed agent integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    litellm_rust::db::managed_agents::settings::repository::set_outbound_domain_whitelist(
+        &fixture.pool,
+        Some("google.com, *.github.com"),
+        "test-actor"
+    )
+    .await
+    .unwrap();
+
+    let agent_body = json!({
+        "name": "egress-tester",
+        "description": "test agent",
+        "model": "claude-sonnet-4-6",
+        "mcp_server_ids": []
+    });
+    let agent = create_test_agent(&fixture, agent_body).await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let session_body = json!({
+        "agent_id": agent_id,
+        "runtime": "opencode",
+        "provider_session_id": "test-provider-session-egress"
+    });
+    let session = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/session",
+        Some(session_body),
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap();
+
+    let req1 = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/tool-approvals")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer sk-local");
+    let body1 = json!({
+        "session_id": "test-provider-session-egress",
+        "request_id": "req-1",
+        "permission": "web_request",
+        "patterns": ["https://google.com/search"],
+        "metadata": {}
+    });
+    use tower::ServiceExt;
+    let req_body1 = axum::body::Body::from(serde_json::to_vec(&body1).unwrap());
+    let response1 = fixture.app.clone().oneshot(req1.body(req_body1).unwrap()).await.unwrap();
+    assert_eq!(response1.status(), axum::http::StatusCode::OK);
+
+    let list_response = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/approvals?session_id={session_id}"),
+        None,
+    )
+    .await;
+    let approvals = list_response["approvals"].as_array().unwrap();
+    assert!(approvals.is_empty());
+
+    let req2 = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/tool-approvals")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer sk-local");
+    let body2 = json!({
+        "session_id": "test-provider-session-egress",
+        "request_id": "req-2",
+        "permission": "web_request",
+        "patterns": ["https://malicious.com/steal"],
+        "metadata": {}
+    });
+    let req_body2 = axum::body::Body::from(serde_json::to_vec(&body2).unwrap());
+    let response2 = fixture.app.clone().oneshot(req2.body(req_body2).unwrap()).await.unwrap();
+    assert_eq!(response2.status(), axum::http::StatusCode::OK);
+    
+    let res_body2 = axum::body::to_bytes(response2.into_body(), 10000).await.unwrap();
+    let res_json2: serde_json::Value = serde_json::from_slice(&res_body2).unwrap();
+    let approval_id = res_json2["id"].as_str().unwrap();
+
+    let list_response2 = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/approvals?session_id={session_id}"),
+        None,
+    )
+    .await;
+    let approvals2 = list_response2["approvals"].as_array().unwrap();
+    assert_eq!(approvals2.len(), 1);
+    assert_eq!(approvals2[0]["id"], approval_id);
+    assert_eq!(approvals2[0]["kind"], "unlisted_data_egress");
+
+    let accept_response = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/approvals/{approval_id}/accept"),
+        Some(json!({ "scope": "once" })),
+    )
+    .await;
+    assert_eq!(accept_response["live"], true);
+
+    let list_response3 = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/approvals?session_id={session_id}"),
+        None,
+    )
+    .await;
+    let approvals3 = list_response3["approvals"].as_array().unwrap();
+    assert!(approvals3.is_empty());
+}
+
+#[tokio::test]
+async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping managed agent integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let agent_body = json!({
+        "name": "soft-delete-tester",
+        "description": "test agent",
+        "model": "claude-sonnet-4-6",
+        "mcp_server_ids": []
+    });
+    let agent = create_test_agent(&fixture, agent_body).await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let list_response = request_json(
+        fixture.app.clone(),
+        "GET",
+        "/api/agents",
+        None,
+    )
+    .await;
+    let agents = list_response["agents"].as_array().unwrap();
+    assert!(agents.iter().any(|a| a["id"] == agent_id));
+
+    let delete_response = request_json(
+        fixture.app.clone(),
+        "DELETE",
+        &format!("/api/agents/{agent_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(delete_response["ok"], true);
+
+    let list_response_after = request_json(
+        fixture.app.clone(),
+        "GET",
+        "/api/agents",
+        None,
+    )
+    .await;
+    let agents_after = list_response_after["agents"].as_array().unwrap();
+    assert!(!agents_after.iter().any(|a| a["id"] == agent_id));
+
+    let db_agent = litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, agent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(db_agent.status, "archived_pending_delete");
+    assert!(db_agent.config.get("deleted_at").is_some());
+
+    let restore_response = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/restore"),
+        None,
+    )
+    .await;
+    assert_eq!(restore_response["ok"], true);
+
+    let list_response_restored = request_json(
+        fixture.app.clone(),
+        "GET",
+        "/api/agents",
+        None,
+    )
+    .await;
+    let agents_restored = list_response_restored["agents"].as_array().unwrap();
+    assert!(agents_restored.iter().any(|a| a["id"] == agent_id));
+
+    let _ = request_json(
+        fixture.app.clone(),
+        "DELETE",
+        &format!("/api/agents/{agent_id}"),
+        None,
+    )
+    .await;
+
+    let eight_days_ago = litellm_rust::db::managed_agents::now_ms() - (8 * 24 * 60 * 60 * 1000);
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentsTable"
+        SET config = jsonb_set(config, '{deleted_at}', to_jsonb($2::BIGINT), true)
+        WHERE id = $1
+        "#
+    )
+    .bind(agent_id)
+    .bind(eight_days_ago)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+
+    litellm_rust::http::managed_agents::registry::cleanup::run_cleanup_once(&fixture.state)
+        .await
+        .unwrap();
+
+    let deleted_agent = litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, agent_id)
+        .await
+        .unwrap();
+    assert!(deleted_agent.is_none());
+}
+
+
+

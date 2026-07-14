@@ -60,6 +60,13 @@ pub async fn asked(
         None => None,
     };
 
+    let (Some(runtime), Some(provider_session_id)) = (
+        session.runtime.as_deref(),
+        session.provider_session_id.as_deref(),
+    ) else {
+        return Err(GatewayError::NotFound(format!("session missing runtime/provider_session_id")));
+    };
+
     let title = format!("工具权限请求：{}", input.permission);
     let body = if input.patterns.is_empty() {
         None
@@ -73,16 +80,101 @@ pub async fn asked(
         "metadata": input.metadata,
     });
 
-    let item = inbox::repository::create_approval(
-        pool,
-        "tool_permission",
+    // Check if this is an outbound HTTP/network request (Data Egress)
+    let outbound_domain = is_outbound_request(&input.permission, &input.patterns);
+    if let Some(domain) = outbound_domain {
+        let whitelist = crate::db::managed_agents::settings::repository::get_outbound_domain_whitelist(pool)
+            .await?
+            .unwrap_or_default();
+
+        if match_whitelist(&domain, &whitelist) {
+            // MATCHED! Auto-approve and reply accepted immediately
+            let id = crate::db::managed_agents::id("appr");
+            let created_at = crate::db::managed_agents::now_ms();
+            let item = crate::db::managed_agents::inbox::schema::InboxItemRow {
+                id: id.clone(),
+                kind: "tool_permission".to_owned(),
+                title: format!("自动授权数据外发：{}", domain),
+                session_id: Some(session.id.clone()),
+                agent: agent_name,
+                body: Some(format!("匹配出站白名单：{}", domain)),
+                args_json: Some(args.to_string()),
+                status: "accepted".to_owned(),
+                feedback: None,
+                created_at,
+                resolved_at: Some(created_at),
+            };
+
+            reply_direct(
+                &state,
+                pool,
+                &item,
+                ApprovalScope::Once,
+                &provider_session_id,
+                &runtime,
+            )
+            .await;
+
+            return Ok(Json(serde_json::json!({ "id": item.id })));
+        } else {
+            // NOT MATCHED! Create a persistent database-backed approval (治理级)
+            let title = format!("数据外发审批请求：{}", domain);
+            let body = Some(format!("检测到非白名单出站请求：{}。需要安全管理审批。", domain));
+            let item = inbox::repository::create_approval(
+                pool,
+                "unlisted_data_egress",
+                title,
+                Some(session.id.clone()),
+                agent_name,
+                body,
+                Some(args),
+            )
+            .await?;
+
+            state.local_session_events.publish(
+                &session.id,
+                serde_json::json!({
+                    "type": "approval.asked",
+                    "approval": {
+                        "id": item.id,
+                        "kind": item.kind,
+                        "title": item.title,
+                        "session_id": item.session_id,
+                        "args_json": item.args_json,
+                        "created_at": item.created_at,
+                    }
+                }),
+            );
+
+            return Ok(Json(serde_json::json!({ "id": item.id })));
+        }
+    }
+
+    // Normal transient flow for other tool calls (e.g. bash execution, local file ops)
+    let id = crate::db::managed_agents::id("appr");
+    let created_at = crate::db::managed_agents::now_ms();
+    let item = crate::db::managed_agents::inbox::schema::InboxItemRow {
+        id: id.clone(),
+        kind: "tool_permission".to_owned(),
         title,
-        Some(session.id.clone()),
-        agent_name,
+        session_id: Some(session.id.clone()),
+        agent: agent_name,
         body,
-        Some(args),
-    )
-    .await?;
+        args_json: Some(args.to_string()),
+        status: "pending".to_owned(),
+        feedback: None,
+        created_at,
+        resolved_at: None,
+    };
+
+    state.transient_approvals.insert(
+        id.clone(),
+        crate::proxy::state::TransientApprovalState {
+            row: item.clone(),
+            provider_session_id: provider_session_id.to_owned(),
+            runtime: runtime.to_owned(),
+        },
+    );
 
     state.local_session_events.publish(
         &session.id,
@@ -99,8 +191,47 @@ pub async fn asked(
         }),
     );
 
+    // Spawn 5-minute timeout task with default reject
+    let state_clone = state.clone();
+    let item_id = item.id.clone();
+    let session_id = session.id.clone();
+    let provider_session_id_clone = provider_session_id.to_owned();
+    let runtime_clone = runtime.to_owned();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        if let Some(removed) = state_clone.transient_approvals.remove(&item_id) {
+            let mut rejected_row = removed.row;
+            rejected_row.status = "rejected".to_owned();
+            rejected_row.feedback = Some("timeout".to_owned());
+
+            let pool = match &state_clone.db {
+                Some(p) => p,
+                None => return,
+            };
+
+            reply_direct(
+                &state_clone,
+                pool,
+                &rejected_row,
+                ApprovalScope::Once,
+                &provider_session_id_clone,
+                &runtime_clone,
+            )
+            .await;
+
+            state_clone.local_session_events.publish(
+                &session_id,
+                serde_json::json!({
+                    "type": "approval.replied",
+                    "approval": { "id": item_id }
+                }),
+            );
+        }
+    });
+
     Ok(Json(serde_json::json!({ "id": item.id })))
 }
+
 
 /// Replies to opencode's own permission request so the paused tool call
 /// resumes (or is permanently denied). Fire-and-forget: a failure here just
@@ -126,6 +257,17 @@ pub async fn reply(
         tracing::warn!(item_id = %item.id, "tool_permission reply: session missing runtime/provider_session_id");
         return;
     };
+    reply_direct(state, pool, item, scope, provider_session_id, runtime).await;
+}
+
+pub async fn reply_direct(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    item: &inbox::schema::InboxItemRow,
+    scope: ApprovalScope,
+    provider_session_id: &str,
+    runtime: &str,
+) {
     let resolved = match resolve_runtime(pool, state, runtime).await {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -189,4 +331,87 @@ mod tests {
             "reject"
         );
     }
+
+    #[test]
+    fn test_is_outbound_request() {
+        assert_eq!(
+            is_outbound_request("web_request", &["api.github.com".to_owned()]),
+            Some("api.github.com".to_owned())
+        );
+        assert_eq!(
+            is_outbound_request("web_request", &["https://google.com/search".to_owned()]),
+            Some("google.com".to_owned())
+        );
+        assert_eq!(
+            is_outbound_request("read_file", &["/tmp/a.txt".to_owned()]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_match_whitelist() {
+        assert!(match_whitelist("api.github.com", "api.github.com"));
+        assert!(match_whitelist("api.github.com", "*.github.com"));
+        assert!(match_whitelist("github.com", "*.github.com"));
+        assert!(!match_whitelist("google.com", "*.github.com"));
+        assert!(match_whitelist("google.com", "*"));
+    }
 }
+
+fn is_outbound_request(permission: &str, patterns: &[String]) -> Option<String> {
+    let is_net = permission.eq_ignore_ascii_case("outbound_request")
+        || permission.eq_ignore_ascii_case("web_request")
+        || permission.to_lowercase().contains("network")
+        || permission.to_lowercase().contains("egress");
+
+    if is_net || patterns.iter().any(|p| p.contains("://") || p.contains(".")) {
+        for p in patterns {
+            if let Some(host) = extract_host(p) {
+                return Some(host);
+            }
+        }
+    }
+    None
+}
+
+fn extract_host(pattern: &str) -> Option<String> {
+    if pattern.starts_with('/') || pattern.starts_with("./") || pattern.starts_with("../") {
+        return None;
+    }
+    let url_str = if pattern.contains("://") {
+        pattern.to_owned()
+    } else {
+        format!("https://{}", pattern)
+    };
+    if let Ok(url) = reqwest::Url::parse(&url_str) {
+        if let Some(host) = url.host_str() {
+            if host == "localhost" || host.contains('.') {
+                return Some(host.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn match_whitelist(domain: &str, whitelist: &str) -> bool {
+    let domain = domain.to_lowercase();
+    for entry in whitelist.split(&[',', ' ', ';'][..]) {
+        let entry = entry.trim().to_lowercase();
+        if entry.is_empty() {
+            continue;
+        }
+        if entry == "*" {
+            return true;
+        }
+        if entry.starts_with("*.") {
+            let suffix = &entry[2..];
+            if domain == suffix || domain.ends_with(&format!(".{}", suffix)) {
+                return true;
+            }
+        } else if domain == entry {
+            return true;
+        }
+    }
+    false
+}
+
