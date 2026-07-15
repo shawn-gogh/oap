@@ -1398,7 +1398,7 @@ async fn tool_permission_decisions_leave_pending_state_against_postgres() {
 }
 
 #[tokio::test]
-async fn transient_tool_permission_flow_against_postgres() {
+async fn persisted_runtime_permission_flow_against_postgres() {
     let _guard = DB_TEST_LOCK.lock().await;
     let Some(fixture) = AppFixture::new().await else {
         eprintln!("skipping managed agent integration test: TEST_DATABASE_URL is not set");
@@ -1413,20 +1413,29 @@ async fn transient_tool_permission_flow_against_postgres() {
     });
     let agent = create_test_agent(&fixture, agent_body).await;
     let agent_id = agent["id"].as_str().unwrap();
+    let provider_session_id = format!(
+        "runtime-permission-test-{}",
+        litellm_rust::db::managed_agents::now_ms()
+    );
 
-    let session_body = json!({
-        "agent_id": agent_id,
-        "runtime": "opencode",
-        "provider_session_id": "test-provider-session-123"
-    });
-    let session = request_json(
-        fixture.app.clone(),
-        "POST",
-        "/session",
-        Some(session_body),
+    let session = litellm_rust::db::managed_agents::sessions::repository::create_runtime(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::sessions::repository::CreateRuntimeSession {
+            runtime: "opencode",
+            agent_id,
+            title: "runtime permission test",
+            timezone: None,
+            runtime_agent_ref_id: None,
+            environment: json!({}),
+            provider_session_id: Some(&provider_session_id),
+            provider_run_id: None,
+            owner_id: Some("admin"),
+            task_id: None,
+        },
     )
-    .await;
-    let session_id = session["id"].as_str().unwrap();
+    .await
+    .unwrap();
+    let session_id = session.id;
 
     let req = axum::http::Request::builder()
         .method("POST")
@@ -1434,7 +1443,7 @@ async fn transient_tool_permission_flow_against_postgres() {
         .header("content-type", "application/json")
         .header("authorization", "Bearer sk-local");
     let body = json!({
-        "session_id": "test-provider-session-123",
+        "session_id": &provider_session_id,
         "request_id": "req-abc",
         "permission": "Permission.Service.ask",
         "patterns": ["*.txt"],
@@ -1458,7 +1467,14 @@ async fn transient_tool_permission_flow_against_postgres() {
     )
     .await;
     let approvals = list_response["approvals"].as_array().unwrap();
-    assert!(approvals.iter().any(|appr| appr["id"] == approval_id));
+    let pending = approvals
+        .iter()
+        .find(|approval| approval["id"] == approval_id)
+        .unwrap();
+    assert_eq!(pending["kind"], "runtime_permission");
+    assert_eq!(pending["enforcement_owner"], "runtime");
+    assert_eq!(pending["effect_handler"], "runtime_permission");
+    assert!(pending["expires_at"].as_i64().is_some());
 
     let accept_response = request_json(
         fixture.app.clone(),
@@ -1468,6 +1484,7 @@ async fn transient_tool_permission_flow_against_postgres() {
     )
     .await;
     assert_eq!(accept_response["live"], true);
+    assert_eq!(accept_response["delivery_status"], "delivery_failed");
 
     let list_response_after = request_json(
         fixture.app.clone(),
@@ -1504,20 +1521,29 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     });
     let agent = create_test_agent(&fixture, agent_body).await;
     let agent_id = agent["id"].as_str().unwrap();
+    let provider_session_id = format!(
+        "egress-approval-test-{}",
+        litellm_rust::db::managed_agents::now_ms()
+    );
 
-    let session_body = json!({
-        "agent_id": agent_id,
-        "runtime": "opencode",
-        "provider_session_id": "test-provider-session-egress"
-    });
-    let session = request_json(
-        fixture.app.clone(),
-        "POST",
-        "/session",
-        Some(session_body),
+    let session = litellm_rust::db::managed_agents::sessions::repository::create_runtime(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::sessions::repository::CreateRuntimeSession {
+            runtime: "opencode",
+            agent_id,
+            title: "egress approval test",
+            timezone: None,
+            runtime_agent_ref_id: None,
+            environment: json!({}),
+            provider_session_id: Some(&provider_session_id),
+            provider_run_id: None,
+            owner_id: Some("admin"),
+            task_id: None,
+        },
     )
-    .await;
-    let session_id = session["id"].as_str().unwrap();
+    .await
+    .unwrap();
+    let session_id = session.id;
 
     let req1 = axum::http::Request::builder()
         .method("POST")
@@ -1525,7 +1551,7 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
         .header("content-type", "application/json")
         .header("authorization", "Bearer sk-local");
     let body1 = json!({
-        "session_id": "test-provider-session-egress",
+        "session_id": &provider_session_id,
         "request_id": "req-1",
         "permission": "web_request",
         "patterns": ["https://google.com/search"],
@@ -1552,7 +1578,7 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
         .header("content-type", "application/json")
         .header("authorization", "Bearer sk-local");
     let body2 = json!({
-        "session_id": "test-provider-session-egress",
+        "session_id": &provider_session_id,
         "request_id": "req-2",
         "permission": "web_request",
         "patterns": ["https://malicious.com/steal"],
@@ -1576,7 +1602,29 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     let approvals2 = list_response2["approvals"].as_array().unwrap();
     assert_eq!(approvals2.len(), 1);
     assert_eq!(approvals2[0]["id"], approval_id);
-    assert_eq!(approvals2[0]["kind"], "unlisted_data_egress");
+    assert_eq!(approvals2[0]["kind"], "data_egress");
+    assert_eq!(approvals2[0]["required_role"], "admin");
+
+    let egress_item = litellm_rust::db::managed_agents::inbox::repository::get(
+        &fixture.pool,
+        approval_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let non_admin = litellm_rust::proxy::auth::master_key::AuthContext {
+        user_id: "admin".to_owned(),
+        is_admin: false,
+    };
+    assert!(
+        !litellm_rust::http::managed_agents::inbox::approvals::can_decide(
+            &fixture.pool,
+            &non_admin,
+            &egress_item,
+        )
+        .await
+        .unwrap()
+    );
 
     let accept_response = request_json(
         fixture.app.clone(),
@@ -1586,6 +1634,7 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     )
     .await;
     assert_eq!(accept_response["live"], true);
+    assert_eq!(accept_response["delivery_status"], "delivery_failed");
 
     let list_response3 = request_json(
         fixture.app.clone(),
@@ -1596,6 +1645,113 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     .await;
     let approvals3 = list_response3["approvals"].as_array().unwrap();
     assert!(approvals3.is_empty());
+}
+
+#[tokio::test]
+async fn approval_timeout_persists_denial_delivery_and_escalation_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping managed agent integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let agent = create_test_agent(
+        &fixture,
+        json!({
+            "name": "approval-timeout-tester",
+            "description": "test agent",
+            "model": "claude-sonnet-4-6",
+            "mcp_server_ids": []
+        }),
+    )
+    .await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let session = litellm_rust::db::managed_agents::sessions::repository::create_runtime(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::sessions::repository::CreateRuntimeSession {
+            runtime: "opencode",
+            agent_id,
+            title: "approval timeout test",
+            timezone: None,
+            runtime_agent_ref_id: None,
+            environment: json!({}),
+            provider_session_id: Some("timeout-provider-session"),
+            provider_run_id: None,
+            owner_id: Some("admin"),
+            task_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let runtime_permission =
+        litellm_rust::db::managed_agents::inbox::repository::create_approval(
+            &fixture.pool,
+            "runtime_permission",
+            "runtime permission timeout".to_owned(),
+            Some(session.id),
+            Some(agent_id.to_owned()),
+            None,
+            Some(json!({ "request_id": "timeout-request" })),
+        )
+        .await
+        .unwrap();
+    let business = litellm_rust::db::managed_agents::inbox::repository::create_approval(
+        &fixture.pool,
+        "business_decision",
+        "business escalation".to_owned(),
+        None,
+        Some(agent_id.to_owned()),
+        None,
+        Some(json!({})),
+    )
+    .await
+    .unwrap();
+    let now = litellm_rust::db::managed_agents::now_ms();
+    sqlx::query(
+        r#"UPDATE "LiteLLM_ManagedAgentInboxItemsTable" SET expires_at = $2 WHERE id = $1"#,
+    )
+    .bind(&runtime_permission.id)
+    .bind(now - 1)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "LiteLLM_ManagedAgentInboxItemsTable" SET escalate_at = $2 WHERE id = $1"#,
+    )
+    .bind(&business.id)
+    .bind(now - 1)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+
+    let expired = litellm_rust::http::managed_agents::inbox::timeout::run_due_once(
+        fixture.state.clone(),
+        now,
+    )
+    .await
+    .unwrap();
+    assert_eq!(expired, 1);
+
+    let timed_out = litellm_rust::db::managed_agents::inbox::repository::get(
+        &fixture.pool,
+        &runtime_permission.id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(timed_out.status, "expired");
+    assert_eq!(timed_out.delivery_status, "delivery_failed");
+    assert_eq!(timed_out.delivery_attempts, 1);
+
+    let escalated = litellm_rust::db::managed_agents::inbox::repository::get(
+        &fixture.pool,
+        &business.id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(escalated.escalated_at.is_some());
+    assert_eq!(escalated.escalation_role.as_deref(), Some("group_admin"));
 }
 
 #[tokio::test]
@@ -1701,6 +1857,3 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
         .unwrap();
     assert!(deleted_agent.is_none());
 }
-
-
-

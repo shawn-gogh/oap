@@ -10,6 +10,7 @@ import {
   ApiError,
   clearStoredMasterKey,
   loginWithAccessKey,
+  setStoredMasterKey,
 } from "@/lib/api";
 
 export default function LoginPage() {
@@ -40,6 +41,7 @@ function LoginForm() {
     setSubmitting(true);
     try {
       await loginWithAccessKey(key.trim());
+      setStoredMasterKey(key.trim());
       router.replace(next);
     } catch (e) {
       clearStoredMasterKey();

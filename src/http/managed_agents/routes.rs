@@ -261,6 +261,10 @@ fn inbox_routes() -> Router<Arc<AppState>> {
             "/api/approvals/{item_id}/reject",
             post(super::inbox::approvals::reject),
         )
+        .route(
+            "/api/approvals/{item_id}/retry",
+            post(super::inbox::approvals::retry),
+        )
         .route("/api/tool-approvals", post(super::tool_approvals::asked))
 }
 

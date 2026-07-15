@@ -323,7 +323,29 @@ async fn enqueue_prompt_text_with_runtime_model(
         .track_run(row.agent_id.as_deref().unwrap_or(&row.harness), &session_id);
 
     if row.runtime.is_some() {
-        execute_runtime_prompt(state, &pool, row, prompt, runtime_model).await?;
+        sessions::repository::set_status(&pool, &row.id, "running").await?;
+        runtime_lifecycle::emit_runtime_stage(&state, &pool, &row.id, "accepted").await?;
+        let task_pool = pool.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                execute_runtime_prompt(state.clone(), &pool, row, prompt, runtime_model).await
+            {
+                let _ = crate::db::managed_agents::tasks::repository::fail_for_session(
+                    &task_pool,
+                    &session_id,
+                    &error.to_string(),
+                )
+                .await;
+                let _ = runtime_lifecycle::mark_session_error(
+                    &state,
+                    &task_pool,
+                    &session_id,
+                    error.to_string(),
+                )
+                .await;
+                record_prompt_error(&state, &session_id, error);
+            }
+        });
         return Ok(());
     }
 

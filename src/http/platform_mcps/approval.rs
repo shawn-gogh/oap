@@ -40,7 +40,7 @@ pub async fn request_human_approval(
 
     let item = inbox::repository::create_approval(
         pool,
-        "approval",
+        "business_decision",
         title,
         session_id
             .map(str::to_owned)

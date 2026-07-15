@@ -63,6 +63,7 @@ export function ApprovalDock({ approvals, onAccept, onReject, onAcceptAlways, bu
           onReject={onReject}
           onAcceptAlways={onAcceptAlways}
           busy={busy}
+          canDecide={current.canDecide}
         />
       </div>
     </div>

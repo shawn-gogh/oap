@@ -14,8 +14,8 @@ use crate::{
 
 use super::{
     runtime_lifecycle::{
-        drain_provider_stream, mark_session_error, persist_send_response_events,
-        provider_run_status, update_agent_run_status,
+        mark_session_error, mark_session_status, persist_send_response_events, provider_run_status,
+        update_agent_run_status,
     },
     runtime_provision::provision_runtime_session,
     runtime_sdk::{agent_sdk_error, register_runtime_session, send_events_params},
@@ -409,6 +409,7 @@ pub(super) async fn execute_runtime_prompt(
     state
         .agent_runs
         .update_status(&row.id, crate::agents::runs::AgentRunStatus::Running);
+    super::runtime_lifecycle::emit_runtime_stage(&state, pool, &row.id, "submitting").await?;
     let sent = match client
         .beta()
         .sessions()
@@ -430,6 +431,7 @@ pub(super) async fn execute_runtime_prompt(
     }
     persist_send_response_events(pool, &resolved, &row.id, &sent.raw).await?;
     if status == "running" {
+        super::runtime_lifecycle::emit_runtime_stage(&state, pool, &row.id, "running").await?;
         let stream = match client.beta().sessions().events().stream(&row.id).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -438,7 +440,9 @@ pub(super) async fn execute_runtime_prompt(
                 return Err(error);
             }
         };
-        drain_provider_stream(&state, pool, &row.id, stream).await?;
+        super::runtime_events_api::replace_provider_consumer(&state, pool, &row.id, stream);
+    } else {
+        mark_session_status(&state, pool, &row.id, status, None).await?;
     }
     Ok(())
 }

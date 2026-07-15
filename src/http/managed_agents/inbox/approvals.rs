@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::types::{
-    AcceptRequest, ApprovalScope, ApprovalsResponse, DecisionResponse, RejectRequest,
+    AcceptRequest, ApprovalScope, ApprovalView, ApprovalsResponse, DecisionResponse, RejectRequest,
 };
 
 pub async fn list_pending(
@@ -30,45 +30,69 @@ pub async fn list_pending(
         .get("session_id")
         .map(String::as_str)
         .filter(|value| !value.trim().is_empty());
-    let owner = (!auth.is_admin).then_some(auth.user_id.as_str());
-
-    let mut approvals = repository::pending_approvals(pool, session_id, owner).await?;
-    let transient = state.transient_approvals.list_pending(session_id);
-    let mut transient_filtered = Vec::new();
-    for item in transient {
-        if auth.is_admin || repository::approval_scope_owned_by(pool, &item, &auth.user_id).await? {
-            transient_filtered.push(item);
+    let candidates = repository::pending_approvals(pool, session_id, None).await?;
+    let mut approvals = Vec::new();
+    for item in candidates {
+        let allowed = can_decide(pool, &auth, &item).await?;
+        let owned = repository::approval_scope_owned_by(pool, &item, &auth.user_id).await?;
+        if allowed || owned {
+            approvals.push(ApprovalView {
+                item,
+                can_decide: allowed,
+            });
         }
     }
-    approvals.extend(transient_filtered);
 
     Ok(Json(ApprovalsResponse { approvals }))
 }
 
-/// Approvals authorize agent side effects, so deciding one requires owning
-/// the linked session or agent (admins pass). Unknown items and items the
-/// caller can't see both surface as not-found.
 async fn owned_approval(
-    state: &crate::proxy::state::AppState,
     pool: &sqlx::PgPool,
     auth: &crate::proxy::auth::master_key::AuthContext,
     item_id: &str,
-) -> Result<(InboxItemRow, bool), GatewayError> {
-    // 1. Check transient approvals first
-    if let Some(row) = state.transient_approvals.get_row(item_id) {
-        if auth.is_admin || repository::approval_scope_owned_by(pool, &row, &auth.user_id).await? {
-            return Ok((row, true));
-        }
-        return Err(GatewayError::NotFound("approval not found".to_owned()));
-    }
-    // 2. Check DB approvals
+) -> Result<InboxItemRow, GatewayError> {
     let item = repository::get(pool, item_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
-    if auth.is_admin || repository::approval_scope_owned_by(pool, &item, &auth.user_id).await? {
-        return Ok((item, false));
+    if can_decide(pool, auth, &item).await? {
+        return Ok(item);
     }
     Err(GatewayError::NotFound("approval not found".to_owned()))
+}
+
+pub async fn can_decide(
+    pool: &sqlx::PgPool,
+    auth: &crate::proxy::auth::master_key::AuthContext,
+    item: &InboxItemRow,
+) -> Result<bool, GatewayError> {
+    if auth.is_admin {
+        return Ok(true);
+    }
+    if role_allows(pool, auth, item, &item.required_role).await? {
+        return Ok(true);
+    }
+    if item.escalated_at.is_some() {
+        if let Some(role) = item.escalation_role.as_deref() {
+            return role_allows(pool, auth, item, role).await;
+        }
+    }
+    Ok(false)
+}
+
+async fn role_allows(
+    pool: &sqlx::PgPool,
+    auth: &crate::proxy::auth::master_key::AuthContext,
+    item: &InboxItemRow,
+    role: &str,
+) -> Result<bool, GatewayError> {
+    match role {
+        "admin" | "security" => Ok(false),
+        "group_admin" => {
+            crate::db::managed_agents::groups::members::is_any_group_admin(pool, &auth.user_id)
+                .await
+        }
+        _ => repository::approval_scope_owned_by(pool, item, &auth.user_id).await,
+    }
 }
 
 pub async fn accept(
@@ -79,57 +103,42 @@ pub async fn accept(
 ) -> Result<Json<DecisionResponse>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
-    let (existing, is_transient) = owned_approval(&state, &pool, &auth, &item_id).await?;
-
-    if is_transient {
-        if let Some(removed) = state.transient_approvals.remove(&item_id) {
-            let mut row = removed.row;
-            row.status = "accepted".to_owned();
-            row.args_json = input.arguments.map(|v| v.to_string());
-
-            crate::http::managed_agents::tool_approvals::reply_direct(
-                &state,
-                &pool,
-                &row,
-                input.scope,
-                &removed.provider_session_id,
-                &removed.runtime,
-            )
-            .await;
-
-            publish_approval_reply(&state, &row);
-        }
-        return Ok(Json(DecisionResponse { ok: true, live: true }));
+    let existing = owned_approval(&pool, &auth, &item_id).await?;
+    if existing.status != "pending" {
+        return Ok(Json(DecisionResponse {
+            ok: true,
+            live: false,
+            delivery_status: existing.delivery_status,
+        }));
     }
-
-    let publish_approval = crate::http::managed_agents::governance::is_publish_approval(&existing);
-    if publish_approval && !auth.is_admin {
-        return Err(GatewayError::NotFound("approval not found".to_owned()));
-    }
-    let live =
-        repository::decide_approval(&pool, &item_id, "accept", None, input.arguments).await?;
-    if publish_approval {
-        crate::http::managed_agents::governance::apply_publish_approval(
-            &pool,
-            &existing,
-            &auth.user_id,
-        )
-        .await?;
-    } else if existing.kind == "tool_permission" {
-        reply_tool_permission(&state, &pool, &item_id, input.scope).await;
-        publish_approval_reply(&state, &existing);
-    } else {
-        if live {
-            crate::http::managed_agents::improvements::apply_if_improvement(
-                state.clone(),
-                pool.clone(),
-                &item_id,
-            )
-            .await;
-        }
-        resume_linked_session(state, pool, &item_id).await;
-    }
-    Ok(Json(DecisionResponse { ok: true, live }))
+    let live = repository::decide_approval(
+        &pool,
+        &item_id,
+        "accept",
+        None,
+        input.arguments,
+        &auth.user_id,
+        match input.scope {
+            ApprovalScope::Once => "once",
+            ApprovalScope::Session => "session",
+        },
+    )
+    .await?;
+    let delivery_status = deliver_and_record(&state, &pool, &item_id, input.scope).await?;
+    crate::db::managed_agents::audit::record(
+        &pool,
+        &auth.user_id,
+        "approval.accepted",
+        &existing.kind,
+        &item_id,
+        serde_json::json!({ "delivery_status": delivery_status }),
+    )
+    .await?;
+    Ok(Json(DecisionResponse {
+        ok: true,
+        live,
+        delivery_status,
+    }))
 }
 
 pub async fn reject(
@@ -140,58 +149,139 @@ pub async fn reject(
 ) -> Result<Json<DecisionResponse>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = super::super::db(&state, &headers).await?.clone();
-    let (existing, is_transient) = owned_approval(&state, &pool, &auth, &item_id).await?;
-
-    if is_transient {
-        if let Some(removed) = state.transient_approvals.remove(&item_id) {
-            let mut row = removed.row;
-            row.status = "rejected".to_owned();
-            row.feedback = input.feedback;
-
-            crate::http::managed_agents::tool_approvals::reply_direct(
-                &state,
-                &pool,
-                &row,
-                ApprovalScope::Once,
-                &removed.provider_session_id,
-                &removed.runtime,
-            )
-            .await;
-
-            publish_approval_reply(&state, &row);
-        }
-        return Ok(Json(DecisionResponse { ok: true, live: true }));
+    let existing = owned_approval(&pool, &auth, &item_id).await?;
+    if existing.status != "pending" {
+        return Ok(Json(DecisionResponse {
+            ok: true,
+            live: false,
+            delivery_status: existing.delivery_status,
+        }));
     }
-
-    let publish_approval = crate::http::managed_agents::governance::is_publish_approval(&existing);
-    if publish_approval && !auth.is_admin {
-        return Err(GatewayError::NotFound("approval not found".to_owned()));
-    }
-    let live = repository::decide_approval(&pool, &item_id, "reject", input.feedback, None).await?;
-    if publish_approval {
-        if let Some(agent_id) = existing.agent.as_deref() {
-            crate::db::managed_agents::governance::reject_publish(&pool, agent_id).await?;
-        }
-    } else if existing.kind == "tool_permission" {
-        reply_tool_permission(&state, &pool, &item_id, ApprovalScope::Once).await;
-        publish_approval_reply(&state, &existing);
-    } else {
-        resume_linked_session(state, pool, &item_id).await;
-    }
-    Ok(Json(DecisionResponse { ok: true, live }))
+    let live = repository::decide_approval(
+        &pool,
+        &item_id,
+        "reject",
+        input.feedback,
+        None,
+        &auth.user_id,
+        "once",
+    )
+    .await?;
+    let delivery_status = deliver_and_record(&state, &pool, &item_id, ApprovalScope::Once).await?;
+    crate::db::managed_agents::audit::record(
+        &pool,
+        &auth.user_id,
+        "approval.rejected",
+        &existing.kind,
+        &item_id,
+        serde_json::json!({ "delivery_status": delivery_status }),
+    )
+    .await?;
+    Ok(Json(DecisionResponse {
+        ok: true,
+        live,
+        delivery_status,
+    }))
 }
 
-/// tool_permission items resolve by replying to opencode's own permission
-/// request, not by resuming the chat with a new prompt — the tool call is
-/// paused at the protocol level, not waiting on the next user message.
-async fn reply_tool_permission(
+pub async fn retry(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Result<Json<DecisionResponse>, GatewayError> {
+    let auth = authenticate(&headers, &state).await?;
+    let pool = super::super::db(&state, &headers).await?.clone();
+    let item = owned_approval(&pool, &auth, &item_id).await?;
+    if item.delivery_status != "delivery_failed" {
+        return Err(GatewayError::BadRequest(
+            "only failed approval delivery can be retried".to_owned(),
+        ));
+    }
+    let scope = if item.decision_scope == "session" {
+        ApprovalScope::Session
+    } else {
+        ApprovalScope::Once
+    };
+    let delivery_status = deliver_and_record(&state, &pool, &item_id, scope).await?;
+    crate::db::managed_agents::audit::record(
+        &pool,
+        &auth.user_id,
+        "approval.delivery_retried",
+        &item.kind,
+        &item_id,
+        serde_json::json!({ "delivery_status": delivery_status }),
+    )
+    .await?;
+    Ok(Json(DecisionResponse {
+        ok: true,
+        live: false,
+        delivery_status,
+    }))
+}
+
+pub(crate) async fn deliver_and_record(
     state: &Arc<AppState>,
     pool: &sqlx::PgPool,
     item_id: &str,
     scope: ApprovalScope,
-) {
-    if let Ok(Some(item)) = repository::get(pool, item_id).await {
-        crate::http::managed_agents::tool_approvals::reply(state, pool, &item, scope).await;
+) -> Result<String, GatewayError> {
+    let item = repository::get(pool, item_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
+    let result = deliver(state, pool, &item, scope).await;
+    match result {
+        Ok(()) => {
+            repository::mark_delivery_applied(pool, item_id).await?;
+            publish_approval_reply(state, &item);
+            Ok("applied".to_owned())
+        }
+        Err(error) => {
+            repository::mark_delivery_failed(pool, item_id, &error.to_string()).await?;
+            Ok("delivery_failed".to_owned())
+        }
+    }
+}
+
+async fn deliver(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    item: &InboxItemRow,
+    scope: ApprovalScope,
+) -> Result<(), GatewayError> {
+    match item.effect_handler.as_str() {
+        "runtime_permission" => {
+            crate::http::managed_agents::tool_approvals::reply(state, pool, item, scope).await
+        }
+        "agent_publish" => {
+            if item.status == "accepted" {
+                let actor = item.decided_by.as_deref().unwrap_or("approval-system");
+                crate::http::managed_agents::governance::apply_publish_approval(pool, item, actor)
+                    .await
+            } else if let Some(agent_id) = item.agent.as_deref() {
+                crate::db::managed_agents::governance::reject_publish(pool, agent_id).await?;
+                Ok(())
+            } else {
+                Err(GatewayError::BadRequest(
+                    "publish approval missing agent".to_owned(),
+                ))
+            }
+        }
+        "agent_change" => {
+            if item.status == "accepted" {
+                crate::http::managed_agents::improvements::apply_if_improvement(
+                    state.clone(),
+                    pool.clone(),
+                    &item.id,
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        "resume_session" => resume_linked_session(state.clone(), pool.clone(), item).await,
+        "platform_action" if item.status != "accepted" => Ok(()),
+        handler => Err(GatewayError::InvalidConfig(format!(
+            "approval effect handler is not implemented: {handler}"
+        ))),
     }
 }
 
@@ -208,12 +298,13 @@ fn publish_approval_reply(state: &Arc<AppState>, item: &InboxItemRow) {
     );
 }
 
-async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str) {
-    let Ok(Some(item)) = repository::get(&pool, item_id).await else {
-        return;
-    };
+async fn resume_linked_session(
+    state: Arc<AppState>,
+    pool: PgPool,
+    item: &InboxItemRow,
+) -> Result<(), GatewayError> {
     let Some(session_id) = item.session_id.as_deref() else {
-        return;
+        return Ok(());
     };
     // Push the decision to any live SSE subscriber so every open tab clears
     // the approval immediately instead of waiting for the next poll.
@@ -225,22 +316,9 @@ async fn resume_linked_session(state: Arc<AppState>, pool: PgPool, item_id: &str
         }),
     );
     let model = resume_model(&pool, session_id).await;
-    if let Err(error) = crate::http::sessions::enqueue_prompt_text(
-        state,
-        pool.clone(),
-        session_id,
-        resume_prompt(&item),
-        model,
-    )
-    .await
-    {
-        tracing::warn!(
-            approval_id = %item.id,
-            session_id,
-            error = %error,
-            "failed to resume session after approval decision"
-        );
-    }
+    crate::http::sessions::enqueue_prompt_text(state, pool, session_id, resume_prompt(item), model)
+        .await?;
+    Ok(())
 }
 
 /// Resumes with the model the session's agent is configured for — a
@@ -265,6 +343,10 @@ fn resume_prompt(item: &InboxItemRow) -> String {
             item.id,
             item.title,
             item.feedback.as_deref().unwrap_or("No feedback provided.")
+        ),
+        "expired" => format!(
+            "Human approval {} expired without a decision. Do not perform the requested action; continue only with safe alternatives.",
+            item.id
         ),
         _ => format!(
             "Human approval {} is still {}. Do not proceed until it is accepted or rejected.",

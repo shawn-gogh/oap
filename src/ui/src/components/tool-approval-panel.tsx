@@ -31,9 +31,11 @@ export interface ToolApprovalPanelProps {
   onReject: (id: string, feedback: string) => void;
   onAcceptAlways?: (id: string, args: Record<string, unknown>) => void;
   busy?: boolean;
+  canDecide?: boolean;
 }
 
-export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways, busy }: ToolApprovalPanelProps) {
+export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways, busy, canDecide = true }: ToolApprovalPanelProps) {
+  const argumentsEditable = approval.kind === "approval" || approval.kind === "business_decision";
   const initial = useMemo<Record<string, string>>(() => {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(approval.arguments ?? {})) out[k] = toStringValue(v);
@@ -103,7 +105,9 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways
           <span className="size-2 rounded-full bg-amber-400" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium uppercase text-muted-foreground">需要人工审批</div>
+          <div className="text-[11px] font-medium uppercase text-muted-foreground">
+            {canDecide ? "需要人工审批" : "等待有权限的审批人处理"}
+          </div>
           <div className="mt-1 truncate text-base font-semibold">{approval.tool}</div>
         </div>
         <Button variant="outline" size="sm" onClick={copyName}>
@@ -150,7 +154,9 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways
           <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div>
               <div className="text-sm font-medium">参数</div>
-              <div className="text-xs text-muted-foreground">可在允许智能体继续前修改参数值。</div>
+              <div className="text-xs text-muted-foreground">
+                {argumentsEditable ? "可在允许智能体继续前修改参数值。" : "请求参数是只读审计证据。"}
+              </div>
             </div>
             <Button
               variant="ghost"
@@ -175,7 +181,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways
                   name={k}
                   value={fields[k] ?? ""}
                   onChange={(value) => setFields((f) => ({ ...f, [k]: value }))}
-                  disabled={busy}
+                  disabled={busy || !argumentsEditable}
                 />
               ))
             )}
@@ -189,16 +195,16 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways
           </div>
 
           <div className="flex flex-1 flex-col gap-3 p-4">
-            <Button onClick={() => onAccept(approval.id, buildArgs())} disabled={busy}>
+            <Button onClick={() => onAccept(approval.id, buildArgs())} disabled={busy || !canDecide}>
               <Send className="size-3.5" />
               仅本次通过
               <span className="mono ml-1 rounded border border-current/25 px-1 text-[10px] opacity-70">Y</span>
             </Button>
-            {approval.kind === "tool_permission" && onAcceptAlways && (
+            {(approval.kind === "tool_permission" || approval.kind === "runtime_permission") && onAcceptAlways && (
               <Button
                 variant="outline"
                 onClick={() => onAcceptAlways(approval.id, buildArgs())}
-                disabled={busy}
+                disabled={busy || !canDecide}
                 title="本会话内匹配当前权限规则的后续操作将自动通过"
               >
                 <Check className="size-3.5" />
@@ -218,7 +224,7 @@ export function ToolApprovalPanel({ approval, onAccept, onReject, onAcceptAlways
               rows={5}
               placeholder="告诉智能体重试前需要调整什么..."
               className="min-h-28 w-full flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm leading-5 outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              disabled={busy}
+              disabled={busy || !canDecide}
             />
 
             <Button

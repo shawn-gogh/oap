@@ -133,7 +133,7 @@ pub async fn request_publish(
     }
     let approval = inbox::create_approval(
         &pool,
-        "approval",
+        "agent_publish",
         format!("发布外部智能体「{}」v{}", agent.name, revision),
         None,
         Some(agent_id.clone()),
@@ -161,6 +161,9 @@ pub async fn request_publish(
 }
 
 pub fn is_publish_approval(item: &InboxItemRow) -> bool {
+    if item.kind == "agent_publish" || item.effect_handler == "agent_publish" {
+        return true;
+    }
     item.args_json
         .as_deref()
         .and_then(|value| serde_json::from_str::<Value>(value).ok())

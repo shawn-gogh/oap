@@ -163,7 +163,7 @@ async fn seed_empty_session(fixture: &AppFixture, agent_id: &str, title: &str) -
 }
 
 fn is_target_approval(item: &Value, title: &str) -> bool {
-    item["kind"] == "approval" && item["status"] == "pending" && item["title"] == title
+    item["kind"] == "business_decision" && item["status"] == "pending" && item["title"] == title
 }
 
 fn content_text(value: &Value) -> &str {

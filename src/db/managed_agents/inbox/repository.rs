@@ -7,6 +7,61 @@ use crate::{
 
 use super::schema::InboxItemRow;
 
+struct ApprovalPolicy {
+    enforcement_owner: &'static str,
+    effect_handler: &'static str,
+    required_role: &'static str,
+    ttl_ms: i64,
+    escalation_role: Option<&'static str>,
+}
+
+fn approval_policy(kind: &str) -> ApprovalPolicy {
+    match kind {
+        "tool_permission" | "runtime_permission" => ApprovalPolicy {
+            enforcement_owner: "runtime",
+            effect_handler: "runtime_permission",
+            required_role: "owner",
+            ttl_ms: 5 * 60 * 1000,
+            escalation_role: None,
+        },
+        "unlisted_data_egress" | "data_egress" => ApprovalPolicy {
+            enforcement_owner: "runtime",
+            effect_handler: "runtime_permission",
+            required_role: "admin",
+            ttl_ms: 15 * 60 * 1000,
+            escalation_role: None,
+        },
+        "agent_publish" => ApprovalPolicy {
+            enforcement_owner: "platform",
+            effect_handler: "agent_publish",
+            required_role: "admin",
+            ttl_ms: 7 * 24 * 60 * 60 * 1000,
+            escalation_role: None,
+        },
+        "agent_change" => ApprovalPolicy {
+            enforcement_owner: "platform",
+            effect_handler: "agent_change",
+            required_role: "owner",
+            ttl_ms: 7 * 24 * 60 * 60 * 1000,
+            escalation_role: Some("admin"),
+        },
+        "platform_action" => ApprovalPolicy {
+            enforcement_owner: "platform",
+            effect_handler: "platform_action",
+            required_role: "group_admin",
+            ttl_ms: 24 * 60 * 60 * 1000,
+            escalation_role: Some("admin"),
+        },
+        _ => ApprovalPolicy {
+            enforcement_owner: "workflow",
+            effect_handler: "resume_session",
+            required_role: "owner",
+            ttl_ms: 24 * 60 * 60 * 1000,
+            escalation_role: Some("group_admin"),
+        },
+    }
+}
+
 /// `owner`: None lists everything (admin); Some(user) restricts to items
 /// whose linked session or agent belongs to that user.
 pub async fn list(
@@ -19,8 +74,8 @@ pub async fn list(
         SELECT i.*
         FROM "LiteLLM_ManagedAgentInboxItemsTable" i
         WHERE CASE $1
-                WHEN 'attention' THEN i.status IN ('pending', 'open')
-                WHEN 'completed' THEN i.status IN ('accepted', 'rejected', 'resolved')
+                WHEN 'attention' THEN i.status IN ('pending', 'open') OR i.delivery_status = 'delivery_failed'
+                WHEN 'completed' THEN i.status IN ('accepted', 'rejected', 'resolved', 'expired') AND i.delivery_status <> 'delivery_failed'
                 ELSE TRUE
               END
           AND ($2::TEXT IS NULL
@@ -56,7 +111,7 @@ pub async fn pending_approvals(
         r#"
         SELECT i.*
         FROM "LiteLLM_ManagedAgentInboxItemsTable" i
-        WHERE i.kind IN ('approval', 'tool_permission', 'unlisted_data_egress') AND i.status = 'pending'
+        WHERE i.kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action') AND i.status = 'pending'
           AND ($1::TEXT IS NULL OR i.session_id = $1)
           AND (i.session_id IS NULL OR EXISTS (
                 SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
@@ -91,8 +146,8 @@ pub async fn expire_pending_for_session(
     let result = sqlx::query(
         r#"
         UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
-        SET status = 'expired', resolved_at = $2
-        WHERE kind IN ('approval', 'tool_permission', 'unlisted_data_egress') AND status = 'pending' AND session_id = $1
+        SET status = 'expired', resolved_at = $2, delivery_status = 'applied', applied_at = $2
+        WHERE kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action') AND status = 'pending' AND session_id = $1
         "#,
     )
     .bind(session_id)
@@ -153,12 +208,16 @@ pub async fn create_approval(
     body: Option<String>,
     arguments: Option<serde_json::Value>,
 ) -> Result<InboxItemRow, GatewayError> {
+    let policy = approval_policy(kind);
+    let created_at = now_ms();
     let args_json = arguments.map(|value| value.to_string());
     sqlx::query_as::<_, InboxItemRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentInboxItemsTable"
-          (id, kind, title, session_id, agent, body, args_json, status, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
+          (id, kind, title, session_id, agent, body, args_json, status, created_at,
+           enforcement_owner, effect_handler, required_role, delivery_status, expires_at,
+           escalation_role, escalate_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, 'pending', $12, $13, $14)
         RETURNING *
         "#,
     )
@@ -169,7 +228,17 @@ pub async fn create_approval(
     .bind(agent)
     .bind(body)
     .bind(args_json)
-    .bind(now_ms())
+    .bind(created_at)
+    .bind(policy.enforcement_owner)
+    .bind(policy.effect_handler)
+    .bind(policy.required_role)
+    .bind(created_at + policy.ttl_ms)
+    .bind(policy.escalation_role)
+    .bind(
+        policy
+            .escalation_role
+            .map(|_| created_at + policy.ttl_ms / 2),
+    )
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -203,6 +272,8 @@ pub async fn decide_approval(
     decision: &str,
     feedback: Option<String>,
     arguments: Option<serde_json::Value>,
+    actor: &str,
+    decision_scope: &str,
 ) -> Result<bool, GatewayError> {
     let status = match decision {
         "accept" => "accepted",
@@ -219,9 +290,16 @@ pub async fn decide_approval(
         UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
         SET status = $2,
             feedback = COALESCE($3, feedback),
-            args_json = COALESCE($4, args_json),
-            resolved_at = $5
-        WHERE id = $1 AND kind IN ('approval', 'tool_permission', 'unlisted_data_egress') AND status = 'pending'
+            args_json = CASE
+              WHEN effect_handler = 'runtime_permission' THEN args_json
+              ELSE COALESCE($4, args_json)
+            END,
+            resolved_at = $5,
+            decided_by = $6,
+            decision_scope = $7,
+            delivery_status = 'delivering',
+            last_delivery_error = NULL
+        WHERE id = $1 AND kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action') AND status = 'pending'
         "#,
     )
     .bind(item_id)
@@ -229,9 +307,160 @@ pub async fn decide_approval(
     .bind(feedback)
     .bind(args_json)
     .bind(now_ms())
+    .bind(actor)
+    .bind(decision_scope)
     .execute(pool)
     .await
     .map_err(GatewayError::Database)?;
 
     Ok(result.rows_affected() > 0)
+}
+
+pub async fn mark_delivery_applied(pool: &PgPool, item_id: &str) -> Result<(), GatewayError> {
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
+        SET delivery_status = 'applied', applied_at = $2,
+            delivery_attempts = delivery_attempts + 1, last_delivery_error = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(item_id)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(())
+}
+
+pub async fn mark_delivery_failed(
+    pool: &PgPool,
+    item_id: &str,
+    error: &str,
+) -> Result<(), GatewayError> {
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
+        SET delivery_status = 'delivery_failed', delivery_attempts = delivery_attempts + 1,
+            last_delivery_error = $2
+        WHERE id = $1
+        "#,
+    )
+    .bind(item_id)
+    .bind(error)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(())
+}
+
+pub async fn list_due_for_expiry(
+    pool: &PgPool,
+    now: i64,
+    limit: i64,
+) -> Result<Vec<String>, GatewayError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT id FROM "LiteLLM_ManagedAgentInboxItemsTable"
+        WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= $1
+        ORDER BY expires_at
+        LIMIT $2
+        "#,
+    )
+    .bind(now)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn list_due_for_escalation(
+    pool: &PgPool,
+    now: i64,
+    limit: i64,
+) -> Result<Vec<String>, GatewayError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT id FROM "LiteLLM_ManagedAgentInboxItemsTable"
+        WHERE status = 'pending' AND escalate_at IS NOT NULL AND escalate_at <= $1
+          AND escalated_at IS NULL
+        ORDER BY escalate_at
+        LIMIT $2
+        "#,
+    )
+    .bind(now)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn mark_escalated(pool: &PgPool, item_id: &str) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
+        SET escalated_at = $2
+        WHERE id = $1 AND status = 'pending' AND escalated_at IS NULL
+        "#,
+    )
+    .bind(item_id)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn expire(pool: &PgPool, item_id: &str) -> Result<Option<InboxItemRow>, GatewayError> {
+    sqlx::query_as::<_, InboxItemRow>(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
+        SET status = 'expired', feedback = COALESCE(feedback, 'approval expired'),
+            resolved_at = $2, delivery_status = 'delivering'
+        WHERE id = $1 AND status = 'pending'
+        RETURNING *
+        "#,
+    )
+    .bind(item_id)
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::approval_policy;
+
+    #[test]
+    fn runtime_permissions_are_short_lived_and_runtime_enforced() {
+        let policy = approval_policy("runtime_permission");
+        assert_eq!(policy.enforcement_owner, "runtime");
+        assert_eq!(policy.effect_handler, "runtime_permission");
+        assert_eq!(policy.required_role, "owner");
+        assert_eq!(policy.ttl_ms, 5 * 60 * 1000);
+    }
+
+    #[test]
+    fn data_egress_requires_an_administrator() {
+        let policy = approval_policy("data_egress");
+        assert_eq!(policy.enforcement_owner, "runtime");
+        assert_eq!(policy.effect_handler, "runtime_permission");
+        assert_eq!(policy.required_role, "admin");
+    }
+
+    #[test]
+    fn typed_governance_approvals_use_platform_handlers() {
+        let publish = approval_policy("agent_publish");
+        assert_eq!(publish.effect_handler, "agent_publish");
+        assert_eq!(publish.required_role, "admin");
+
+        let change = approval_policy("agent_change");
+        assert_eq!(change.effect_handler, "agent_change");
+        assert_eq!(change.required_role, "owner");
+        assert_eq!(change.escalation_role, Some("admin"));
+
+        let business = approval_policy("business_decision");
+        assert_eq!(business.escalation_role, Some("group_admin"));
+    }
 }

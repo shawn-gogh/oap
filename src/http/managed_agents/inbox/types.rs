@@ -15,7 +15,14 @@ pub struct InboxResponse {
 
 #[derive(Debug, Serialize)]
 pub struct ApprovalsResponse {
-    pub approvals: Vec<InboxItemRow>,
+    pub approvals: Vec<ApprovalView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApprovalView {
+    #[serde(flatten)]
+    pub item: InboxItemRow,
+    pub can_decide: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +54,7 @@ pub struct RejectRequest {
 pub struct DecisionResponse {
     pub ok: bool,
     pub live: bool,
+    pub delivery_status: String,
 }
 
 #[derive(Debug, Serialize)]
