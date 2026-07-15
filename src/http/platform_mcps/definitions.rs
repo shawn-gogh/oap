@@ -61,7 +61,7 @@ fn request_human_approval_tool() -> Value {
 fn expose_port_tool() -> Value {
     json!({
         "name": EXPOSE_PORT_MCP_ID,
-        "description": "Expose an interactive service (dashboard, live UI, WebSocket app) to the user's browser. Call this BEFORE starting the server: the platform allocates a port, registers it, and returns a public URL. You must then start your HTTP/WebSocket server listening on 0.0.0.0 at the returned port. IMPORTANT: the app is served under the returned URL's /apps/{app_id}/ path prefix, so all asset references must be RELATIVE paths (./main.js), not absolute (/main.js). For Vite/webpack apps set the base/publicPath option to the returned URL path (e.g. vite.config.js: base: '/apps/{app_id}/'), or build statically and serve the dist directory with `python3 -m http.server`.",
+        "description": "Expose an interactive service (dashboard, live UI, WebSocket app) to the user's browser. Call this BEFORE starting the server: the platform allocates a port, registers it, and returns a public URL. You must then start your HTTP/WebSocket server listening on 0.0.0.0 at the returned port. IMPORTANT: the app is served under the returned URL's /apps/{app_id}/ path prefix. Two modes: (1) default — the gateway strips the prefix before forwarding, so your server serves at / and all asset references must be RELATIVE paths (./main.js); works for `python3 -m http.server` and plain static servers. (2) preserve_prefix=true — the gateway forwards the full /apps/{app_id}/... path; use this for dev servers configured with a base path (vite.config.js base: '/apps/{app_id}/', webpack publicPath). Pick exactly one mode: base config WITHOUT preserve_prefix (or vice versa) causes 404s on assets.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -76,6 +76,10 @@ fn expose_port_tool() -> Value {
                 "ttl_seconds": {
                     "type": "integer",
                     "description": "Optional lifetime in seconds before the exposure is revoked. Defaults to 24 hours."
+                },
+                "preserve_prefix": {
+                    "type": "boolean",
+                    "description": "Forward the full /apps/{app_id}/... path to your server instead of stripping it. Set true when your server is configured with a matching base path (Vite base / webpack publicPath). Default false."
                 }
             }
         }

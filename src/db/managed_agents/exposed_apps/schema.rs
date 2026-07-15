@@ -15,6 +15,10 @@ pub struct ExposedAppRow {
     pub created_at: i64,
     pub expires_at: Option<i64>,
     pub deleted_at: Option<i64>,
+    /// Forward the full /apps/{id}/... path to the upstream instead of
+    /// stripping the prefix — for apps configured with a base path (Vite
+    /// `base`, webpack `publicPath`).
+    pub preserve_prefix: bool,
 }
 
 #[derive(Debug)]
@@ -25,4 +29,5 @@ pub struct NewExposedApp<'a> {
     pub container_key: &'a str,
     pub name: Option<&'a str>,
     pub expires_at: Option<i64>,
+    pub preserve_prefix: bool,
 }

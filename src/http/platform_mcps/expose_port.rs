@@ -77,6 +77,10 @@ pub async fn expose_port(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let preserve_prefix = arguments
+        .get("preserve_prefix")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let app = repository::allocate(
         pool,
@@ -87,6 +91,7 @@ pub async fn expose_port(
             container_key: &container_key,
             name,
             expires_at: Some(now_ms() + ttl_ms),
+            preserve_prefix,
         },
         requested_port,
     )

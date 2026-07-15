@@ -122,7 +122,13 @@ async fn proxy_inner(
     target
         .set_port(Some(app.port as u16))
         .map_err(|_| GatewayError::InvalidConfig("cannot set upstream port".to_owned()))?;
-    target.set_path(&format!("/{path}"));
+    // Apps declaring preserve_prefix (Vite base / webpack publicPath) expect
+    // the full prefixed path; plain root-served apps get the stripped one.
+    if app.preserve_prefix {
+        target.set_path(&format!("/apps/{app_id}/{path}"));
+    } else {
+        target.set_path(&format!("/{path}"));
+    }
     target.set_query(forwarded_query.as_deref());
     target.set_fragment(None);
 
@@ -210,7 +216,8 @@ async fn proxy_http(
     let upstream = request.send().await.map_err(GatewayError::Upstream)?;
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let response_headers = forward_response_headers(upstream.headers(), &app.id);
+    let response_headers =
+        forward_response_headers(upstream.headers(), &app.id, app.preserve_prefix);
     let stream = upstream.bytes_stream().map_err(std::io::Error::other);
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
@@ -267,7 +274,11 @@ fn filtered_cookie_header(headers: &HeaderMap) -> Option<HeaderValue> {
     HeaderValue::from_str(&kept.join("; ")).ok()
 }
 
-fn forward_response_headers(headers: &reqwest::header::HeaderMap, app_id: &str) -> HeaderMap {
+fn forward_response_headers(
+    headers: &reqwest::header::HeaderMap,
+    app_id: &str,
+    preserve_prefix: bool,
+) -> HeaderMap {
     let mut copied = HeaderMap::new();
     for (name, value) in headers {
         let lower = name.as_str().to_ascii_lowercase();
@@ -277,8 +288,9 @@ fn forward_response_headers(headers: &reqwest::header::HeaderMap, app_id: &str) 
         let Ok(name) = HeaderName::from_bytes(name.as_str().as_bytes()) else {
             continue;
         };
-        // Rewrite absolute-path redirects back under the app prefix.
-        if name == LOCATION {
+        // Rewrite absolute-path redirects back under the app prefix (a
+        // preserve_prefix app already emits prefixed paths).
+        if name == LOCATION && !preserve_prefix {
             if let Ok(location) = value.to_str() {
                 if let Some(rewritten) = rewrite_location(location, app_id) {
                     if let Ok(rewritten) = HeaderValue::from_str(&rewritten) {

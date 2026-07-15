@@ -55,8 +55,8 @@ async fn insert(
     sqlx::query_as::<_, ExposedAppRow>(
         r#"
         INSERT INTO "LiteLLM_ExposedAppsTable"
-          (id, session_id, agent_id, owner_user_id, container_key, port, name, created_at, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          (id, session_id, agent_id, owner_user_id, container_key, port, name, created_at, expires_at, preserve_prefix)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
         "#,
     )
@@ -69,6 +69,7 @@ async fn insert(
     .bind(input.name)
     .bind(now_ms())
     .bind(input.expires_at)
+    .bind(input.preserve_prefix)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
