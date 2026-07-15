@@ -15,6 +15,7 @@ import { MarkdownCodeBlock, MarkdownPre, HighlightedCode } from "@/components/co
 import { ToolErrorCard } from "@/components/tool-error-card";
 import { TodoList, parseTodoItems, todoProgress } from "@/components/todo-list";
 import { usePacedText } from "@/lib/hooks/use-paced-text";
+import { partitionAssistantParts } from "@/lib/message-parts";
 import type { HarnessMessage, HarnessMessagePart } from "@/lib/types";
 
 const markdownComponents = { code: MarkdownCodeBlock, pre: MarkdownPre };
@@ -248,7 +249,7 @@ function AssistantBlock({
       t === "image"
     );
   });
-  const renderItems = groupRenderItems(visibleParts);
+  const sections = partitionAssistantParts(visibleParts, !inProgress);
   const hasRunningTool = visibleParts.some(
     (part) => part.type === "tool" && (part.state.status === "running" || part.state.status === "pending"),
   );
@@ -312,17 +313,19 @@ function AssistantBlock({
         )
       ) : (
         <>
-          {renderItems.map((item, index) =>
-            item.type === "toolGroup" ? (
-              <ToolCluster key={item.key} parts={item.parts} />
-            ) : (
-              <PartBlock
-                key={item.key}
-                part={item.part}
-                streaming={inProgress && index === renderItems.length - 1}
-              />
-            ),
+          {sections.reasoning.map((part, index) => (
+            <PartBlock key={partKey(part, `reasoning-${index}`)} part={part} />
+          ))}
+          {sections.activity.length > 0 && (
+            <ActivityCluster parts={sections.activity} running={inProgress} />
           )}
+          {sections.response.map((part, index) => (
+            <PartBlock
+              key={partKey(part, `response-${index}`)}
+              part={part}
+              streaming={inProgress && index === sections.response.length - 1}
+            />
+          ))}
           {inProgress && showProgressIndicator && !hasRunningTool && (
             <div className="flex items-center gap-2 pt-1 text-[13px] text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
@@ -355,6 +358,69 @@ function AssistantBlock({
         </div>
       )}
     </article>
+  );
+}
+
+function ActivityCluster({ parts, running }: { parts: HarnessMessagePart[]; running: boolean }) {
+  const [open, setOpen] = useState(false);
+  const items = groupRenderItems(parts);
+  const tools = parts.filter((part): part is ToolPart => part.type === "tool");
+  const runningTool = tools.findLast((part) => {
+    const status = toolPartStatus(part);
+    return status === "running" || status === "pending";
+  });
+  const latestNarration = parts.findLast((part) => part.type === "text");
+  const latestText =
+    latestNarration?.type === "text"
+      ? latestNarration.text.replace(/\s+/g, " ").trim()
+      : "";
+  const summary = tools.length > 0
+    ? toolActivitySummary(tools)
+    : `${parts.filter((part) => part.type === "text").length} 条进度`;
+
+  return (
+    <section className="max-w-[920px] rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-[13px]">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 text-left text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {running ? (
+          <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+        ) : (
+          <Terminal className="size-3.5 shrink-0" />
+        )}
+        <span className="shrink-0 font-medium text-foreground/85">执行活动</span>
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        <ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {!open && running && (runningTool || latestText) && (
+        <div className="mt-1 truncate pl-[22px] text-muted-foreground/80">
+          {runningTool ? liveActivityLabel(runningTool) : latestText}
+        </div>
+      )}
+      {open && (
+        <div className="mt-2 flex flex-col gap-2 border-t border-border/60 pt-2">
+          {items.map((item) =>
+            item.type === "toolGroup" ? (
+              <ToolCluster key={item.key} parts={item.parts} />
+            ) : (
+              <ActivityNarration key={item.key} part={item.part} />
+            ),
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ActivityNarration({ part }: { part: HarnessMessagePart }) {
+  if (part.type !== "text" || !part.text.trim()) return null;
+  return (
+    <div className="sessions-md border-l-2 border-border pl-3 text-[13px] leading-6 text-muted-foreground">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{part.text}</ReactMarkdown>
+    </div>
   );
 }
 

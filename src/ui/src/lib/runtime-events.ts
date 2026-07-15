@@ -462,6 +462,15 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
       next = "busy";
       continue;
     }
+    if (
+      type === "user.message" ||
+      isRuntimeAssistantTextEvent(type) ||
+      isRuntimeThinkingEvent(type) ||
+      isRuntimeToolEvent(type)
+    ) {
+      next = "busy";
+      continue;
+    }
     if (type === "session.status_idle" || type === "session.thread_status_idle" || type === "session.error") {
       next = "idle";
       continue;
@@ -483,7 +492,14 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
 
 export function runtimeSessionStatusFromMetadata(status?: string, providerRunId?: unknown): "idle" | "busy" {
   if (status === "starting" || status === "running" || status === "busy") return "busy";
-  if (status === "idle" || status === "error" || status === "completed" || status === "failed") return "idle";
+  if (
+    status === "idle" ||
+    status === "error" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "timed_out"
+  ) return "idle";
   if (typeof providerRunId === "string" && providerRunId.trim()) return "busy";
   return "idle";
 }

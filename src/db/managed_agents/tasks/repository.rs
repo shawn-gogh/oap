@@ -473,6 +473,7 @@ async fn set_status_for_session(
         r#"
         UPDATE "LiteLLM_ManagedAgentTasksTable"
         SET status = $2,
+            started_at = CASE WHEN $2 = 'running' THEN COALESCE(started_at, $3) ELSE started_at END,
             completed_at = CASE WHEN $5 THEN $3 ELSE completed_at END,
             failure_reason = COALESCE($4, failure_reason),
             deadline_at = CASE WHEN $2 = 'verifying' THEN NULL ELSE deadline_at END

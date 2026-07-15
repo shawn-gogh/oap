@@ -44,6 +44,12 @@ pub(super) async fn mark_session_status(
 ) -> Result<(), GatewayError> {
     sessions::repository::set_status(pool, session_id, status).await?;
     match status {
+        "starting" | "running" | "busy" => {
+            crate::db::managed_agents::tasks::repository::mark_running_for_session(
+                pool, session_id,
+            )
+            .await?;
+        }
         "idle" => {
             state
                 .agent_runs

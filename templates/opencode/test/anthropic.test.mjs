@@ -101,6 +101,25 @@ test("reasoning delta strings translate to agent.thinking", () => {
   );
 });
 
+test("completed assistant tool steps do not terminate the whole turn", () => {
+  assert.equal(
+    translateOpencodeEvent(
+      {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses_123",
+          info: {
+            role: "assistant",
+            time: { completed: 1234 },
+          },
+        },
+      },
+      ctx,
+    ),
+    null,
+  );
+});
+
 test("pending tool updates include stable id and name without empty input", () => {
   assert.deepEqual(
     translateOpencodeEvent(

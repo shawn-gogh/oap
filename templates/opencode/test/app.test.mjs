@@ -352,6 +352,25 @@ test("background capture and live stream dedupe no-id events", async (t) => {
   assert.deepEqual(types, ["user.message", "agent.message", "session.status_idle"]);
 });
 
+test("abort records a terminal event even after wrapper state was lost", async (t) => {
+  const { app } = buildHarness();
+  const { base, close } = await listen(app);
+  t.after(() => close());
+
+  const created = await req(base, "POST", "/v1/agents", {
+    name: "Abort recovery",
+    model: "gpt-5.5",
+  });
+  await req(base, "POST", "/v1/sessions", { agent: created.json.id });
+
+  const aborted = await req(base, "POST", "/v1/sessions/ses_test/abort");
+  assert.equal(aborted.status, 200);
+
+  const history = await req(base, "GET", "/v1/sessions/ses_test/events");
+  assert.equal(history.json.data.at(-1).type, "session.status_idle");
+  assert.equal(history.json.data.at(-1).stop_reason.type, "interrupted");
+});
+
 test("silent running tools use the tool deadline and emit heartbeats", async (t) => {
   const toolRunning = {
     type: "message.part.updated",

@@ -173,16 +173,10 @@ export function translateOpencodeEvent(raw, ctx) {
         data: { stop_reason: { type: "end_turn" } },
       };
     case "message.updated": {
-      // An assistant message gaining time.completed marks the end of the turn.
-      // Used as an idle signal for opencode versions that don't emit
-      // session.status idle / session.idle reliably.
-      const info = props.info || {};
-      if (info.role === "assistant" && info.time?.completed) {
-        return {
-          event: "session.status_idle",
-          data: { stop_reason: { type: "end_turn" } },
-        };
-      }
+      // OpenCode completes one assistant message for every model/tool step.
+      // A completed message that requested a tool is therefore not the end of
+      // the turn; session.status/session.idle (or the watchdog) owns terminal
+      // detection.
       return null;
     }
     case "session.error": {

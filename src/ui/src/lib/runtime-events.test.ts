@@ -155,6 +155,15 @@ describe("runtimeEventsToMessages", () => {
 });
 
 describe("status derivation", () => {
+  it("treats activity after a stale idle marker as a running turn", () => {
+    expect(runtimeStatusFromEvents([
+      { type: "session.status_running" },
+      { type: "session.status_idle" },
+      { type: "agent.tool_result", tool_use_id: "tool_1", output: "done" },
+      { type: "agent.message", text: "continuing" },
+    ])).toBe("busy");
+  });
+
   it("derives busy from a turn start and idle from a terminal event", () => {
     expect(runtimeStatusFromEvents([{ id: "1", type: "session.status_running" }])).toBe("busy");
     expect(
@@ -165,13 +174,15 @@ describe("status derivation", () => {
     ).toBe("idle");
   });
 
-  it("returns null when no status-bearing events exist", () => {
-    expect(runtimeStatusFromEvents([{ id: "1", type: "agent.message", text: "x" }])).toBeNull();
+  it("derives busy from conversation activity even before a status event arrives", () => {
+    expect(runtimeStatusFromEvents([{ id: "1", type: "agent.message", text: "x" }])).toBe("busy");
   });
 
   it("maps session metadata to busy/idle", () => {
     expect(runtimeSessionStatusFromMetadata("running", undefined)).toBe("busy");
     expect(runtimeSessionStatusFromMetadata("idle", undefined)).toBe("idle");
+    expect(runtimeSessionStatusFromMetadata("cancelled", undefined)).toBe("idle");
+    expect(runtimeSessionStatusFromMetadata("timed_out", undefined)).toBe("idle");
     expect(runtimeSessionStatusFromMetadata(undefined, "run_123")).toBe("busy");
     expect(runtimeSessionStatusFromMetadata(undefined, undefined)).toBe("idle");
   });

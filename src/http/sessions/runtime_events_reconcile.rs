@@ -48,7 +48,7 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
     for event in items {
         match event.get("type").and_then(Value::as_str) {
             Some("session.status_running") => {
-                terminal_status = None;
+                terminal_status = Some("running");
                 terminal_error = None;
             }
             Some("session.status_idle") => {
@@ -62,7 +62,7 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             // Generic status event carrying the state in its payload.
             Some("session.status") => match event_value_status(event) {
                 Some("busy") | Some("running") => {
-                    terminal_status = None;
+                    terminal_status = Some("running");
                     terminal_error = None;
                 }
                 Some("idle") => {
@@ -78,7 +78,7 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             Some(event_type)
                 if event_type.starts_with("user.") || event_type.starts_with("agent.") =>
             {
-                terminal_status = None;
+                terminal_status = Some("running");
                 terminal_error = None;
             }
             _ => {}
@@ -135,7 +135,7 @@ mod tests {
             { "type": "session.status_idle" },
             { "type": "session.status_running" }
         ]));
-        assert_eq!(status, None);
+        assert_eq!(status, Some("running"));
         assert_eq!(error, None);
     }
 
@@ -146,7 +146,7 @@ mod tests {
             { "type": "user.message" },
             { "type": "agent.tool_use" }
         ]));
-        assert_eq!(status, None);
+        assert_eq!(status, Some("running"));
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
             { "type": "session.status_idle" },
             { "type": "session.status", "status": { "type": "busy" } }
         ]));
-        assert_eq!(status, None);
+        assert_eq!(status, Some("running"));
 
         let (status, _) = terminal_status_from_event_values(&json!([
             { "type": "session.status", "status": "idle" }

@@ -26,6 +26,7 @@ import {
   listModels,
   listSessions,
   setStoredMasterKey,
+  ensureWebSession,
 } from "@/lib/api";
 import { defaultModelForRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
@@ -155,6 +156,7 @@ function SessionsStart() {
   const starting = startPhase !== null;
 
   useEffect(() => {
+    ensureWebSession();
     Promise.all([listRuntimeHarnesses(), listSessions(), listAgents()])
       .then(([nextHarnesses, nextSessions, nextAgents]) => {
         const nextRuntimeOptions = connectedRuntimeHarnesses(nextHarnesses);

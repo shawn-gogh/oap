@@ -262,6 +262,38 @@ export async function loginWithAccessKey(key: string): Promise<void> {
   }
 }
 
+let webSessionEnsured = false;
+
+/**
+ * The UI can authenticate purely via the stored key (Authorization header),
+ * but plain browser navigations — e.g. opening an exposed app at /apps/{id}/
+ * — carry neither header nor key. Establish the lap_session cookie from the
+ * stored key once per page load so those navigations authenticate too.
+ */
+export function ensureWebSession(): void {
+  if (webSessionEnsured || typeof window === "undefined") return;
+  const key = getStoredMasterKey();
+  if (!key) return;
+  webSessionEnsured = true;
+  // The cookie is HttpOnly (invisible to JS), so a sessionStorage marker
+  // avoids minting a fresh web session on every reload.
+  const MARKER = "lap_web_session_ok";
+  try {
+    if (window.sessionStorage.getItem(MARKER)) return;
+  } catch {
+    // sessionStorage unavailable — fall through, at worst one extra login.
+  }
+  void loginWithAccessKey(key)
+    .then(() => {
+      try {
+        window.sessionStorage.setItem(MARKER, "1");
+      } catch {}
+    })
+    .catch(() => {
+      webSessionEnsured = false;
+    });
+}
+
 export async function logout(): Promise<void> {
   const res = await req("/api/auth/logout", { method: "POST" });
   if (!res.ok && res.status !== 401) {

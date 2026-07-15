@@ -734,8 +734,9 @@ export function createApp({
     });
     if (r.ok) {
       const turn = activeTurns.get(req.params.id);
+      const occurredAt = Date.now();
+      const turnId = turn?.id ?? `abort_${crypto.randomBytes(8).toString("hex")}`;
       if (turn && !turn.terminal) {
-        const occurredAt = Date.now();
         for (const tool of turn.activeTools.values()) {
           store.insertSessionEvent(
             req.params.id,
@@ -757,19 +758,19 @@ export function createApp({
         }
         turn.activeTools.clear();
         turn.terminal = true;
-        store.insertSessionEvent(
-          req.params.id,
-          {
-            event: "session.status_idle",
-            data: {
-              stop_reason: { type: "interrupted" },
-              occurred_at: occurredAt,
-              turn_id: turn.id,
-            },
-          },
-          `turn:${turn.id}:interrupted`,
-        );
       }
+      store.insertSessionEvent(
+        req.params.id,
+        {
+          event: "session.status_idle",
+          data: {
+            stop_reason: { type: "interrupted" },
+            occurred_at: occurredAt,
+            turn_id: turnId,
+          },
+        },
+        `turn:${turnId}:interrupted`,
+      );
     }
     res.status(r.ok ? 200 : r.status).json({ aborted: r.ok });
   }));

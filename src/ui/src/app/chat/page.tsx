@@ -41,7 +41,7 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
-import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage } from "@/lib/api";
+import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage, ensureWebSession } from "@/lib/api";
 import type { PendingApproval, RuntimeAgentEvent } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
 import { ExposedAppsMenu } from "@/components/exposed-apps-menu";
@@ -153,6 +153,7 @@ function ChatInner() {
   const [infoOpenManual, setInfoOpenManual] = useState<boolean | null>(null);
   const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
+  const terminalSessionSnapshotRef = useRef(false);
   const initiallyScrolledSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
   // Tombstones for approvals the user already decided: the DB write can lag
@@ -372,6 +373,7 @@ function ChatInner() {
     setSessionRuntime(undefined);
     setSessionLoaded(false);
     setSessionStatus("idle");
+    terminalSessionSnapshotRef.current = false;
     setSessionHarness("claude-code");
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
@@ -387,6 +389,7 @@ function ChatInner() {
       if (a) setSessionHarness(a);
       setSessionRuntime(s.runtime);
       const defaultStatus = s.runtime ? runtimeSessionStatusFromMetadata(s.status, s.provider_run_id) : s.status === "running" ? "busy" : "idle";
+      terminalSessionSnapshotRef.current = defaultStatus === "idle";
       setSessionStatus(resumed ? "busy" : defaultStatus);
       setProviderSessionId(s.provider_session_id);
       setProviderUrl(s.provider_url);
@@ -415,6 +418,7 @@ function ChatInner() {
 
   // Fetch saved agents for dropdown
   useEffect(() => {
+    ensureWebSession();
     listAgents().then(setSavedAgents).catch(() => {});
     listRuntimeHarnesses().then(setHarnesses).catch(() => {});
   }, []);
@@ -438,7 +442,10 @@ function ChatInner() {
     setRuntimeEvents((prev) => {
       const next = mergeRuntimeEventList(prev, events);
       const eventStatus = runtimeStatusFromEvents(next);
-      if (eventStatus) setSessionStatus(eventStatus);
+      if (eventStatus && !(eventStatus === "busy" && terminalSessionSnapshotRef.current)) {
+        terminalSessionSnapshotRef.current = eventStatus === "idle";
+        setSessionStatus(eventStatus);
+      }
       return next;
     });
   }, []);
@@ -489,8 +496,10 @@ function ChatInner() {
       return;
     }
     if (isRuntimeTurnStartEvent(type)) {
+      terminalSessionSnapshotRef.current = false;
       setSessionStatus("busy");
     } else if (type === "session.status_idle") {
+      terminalSessionSnapshotRef.current = true;
       setSessionStatus("idle");
     } else if (type === "session.status") {
       const status = ev.status;
@@ -500,10 +509,17 @@ function ChatInner() {
           : status && typeof status === "object"
             ? (status as { type?: unknown }).type
             : undefined;
-      if (statusType === "busy" || statusType === "running") setSessionStatus("busy");
-      if (statusType === "idle") setSessionStatus("idle");
+      if (statusType === "busy" || statusType === "running") {
+        terminalSessionSnapshotRef.current = false;
+        setSessionStatus("busy");
+      }
+      if (statusType === "idle") {
+        terminalSessionSnapshotRef.current = true;
+        setSessionStatus("idle");
+      }
     } else if (type === "session.error") {
       setError(`Error: ${runtimeErrorMessage(ev)}`);
+      terminalSessionSnapshotRef.current = true;
       setSessionStatus("idle");
     } else if (
       type === "user.message" ||
@@ -511,6 +527,7 @@ function ChatInner() {
       isRuntimeThinkingEvent(type) ||
       isRuntimeToolEvent(type)
     ) {
+      terminalSessionSnapshotRef.current = false;
       setSessionStatus((current) => (current === "busy" ? current : "busy"));
     }
 
@@ -519,6 +536,7 @@ function ChatInner() {
 
   const beginRuntimeTurn = useCallback((text?: string) => {
     if (!sessionRuntime || !sid) return;
+    terminalSessionSnapshotRef.current = false;
     const trimmed = text?.trim();
     if (trimmed) {
       appendRuntimeEvent({
