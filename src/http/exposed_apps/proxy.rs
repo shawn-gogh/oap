@@ -42,6 +42,42 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
 ];
 
+/// Router-wide middleware: an absolute-path asset request (`/src/main.jsx`)
+/// coming FROM an exposed-app page (Referer `/apps/{id}/...`) escaped the
+/// app's prefix — send it back under the prefix. Lets apps that serve
+/// absolute paths (Vite without `base`, etc.) work through the proxy without
+/// per-app configuration.
+pub async fn referer_fallback(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    if !path.starts_with("/apps/") {
+        if let Some(app_id) = request
+            .headers()
+            .get(axum::http::header::REFERER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(referer_app_id)
+        {
+            let location = match request.uri().query() {
+                Some(query) => format!("/apps/{app_id}{path}?{query}"),
+                None => format!("/apps/{app_id}{path}"),
+            };
+            return redirect(&location);
+        }
+    }
+    next.run(request).await
+}
+
+fn referer_app_id(referer: &str) -> Option<String> {
+    let (_, rest) = referer.split_once("/apps/")?;
+    let app_id: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (app_id.starts_with("app_") && app_id.len() > 4).then_some(app_id)
+}
+
 /// `/apps/{app_id}` — normalize to the trailing-slash form so the app's
 /// relative asset URLs resolve under its prefix.
 pub async fn root(Path(app_id): Path<String>, RawQuery(query): RawQuery) -> Response {

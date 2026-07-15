@@ -31,6 +31,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(mcp_routes())
         .merge(mcp_registry_routes())
         .fallback_service(ui::static_files())
+        // Outermost: reroute absolute-path asset requests escaping an exposed
+        // app's /apps/{id}/ prefix (identified via Referer) back under it.
+        .layer(axum::middleware::from_fn(
+            crate::http::exposed_apps::proxy::referer_fallback,
+        ))
         .with_state(state)
 }
 
