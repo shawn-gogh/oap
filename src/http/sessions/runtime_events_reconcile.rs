@@ -42,6 +42,7 @@ pub(super) fn event_items(events: &Value) -> Option<&Vec<Value>> {
 fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, Option<String>) {
     let mut terminal_status = None;
     let mut terminal_error = None;
+    let mut last_activity_was_tool = false;
     let Some(items) = event_items(events) else {
         return (None, None);
     };
@@ -50,10 +51,13 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             Some("session.status_running") => {
                 terminal_status = Some("running");
                 terminal_error = None;
+                last_activity_was_tool = false;
             }
             Some("session.status_idle") => {
-                terminal_status = Some("idle");
-                terminal_error = None;
+                if !last_activity_was_tool {
+                    terminal_status = Some("idle");
+                    terminal_error = None;
+                }
             }
             Some("session.error") => {
                 terminal_status = Some("error");
@@ -64,8 +68,9 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
                 Some("busy") | Some("running") => {
                     terminal_status = Some("running");
                     terminal_error = None;
+                    last_activity_was_tool = false;
                 }
-                Some("idle") => {
+                Some("idle") if !last_activity_was_tool => {
                     terminal_status = Some("idle");
                     terminal_error = None;
                 }
@@ -74,6 +79,7 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             Some("assistant_response" | "agent.message") => {
                 terminal_status = Some("idle");
                 terminal_error = None;
+                last_activity_was_tool = false;
             }
             // Conversation activity after the last status marker means a new
             // turn is underway: the replayed history ends with the PREVIOUS
@@ -84,6 +90,7 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             {
                 terminal_status = Some("running");
                 terminal_error = None;
+                last_activity_was_tool = event_type.starts_with("agent.tool");
             }
             _ => {}
         }

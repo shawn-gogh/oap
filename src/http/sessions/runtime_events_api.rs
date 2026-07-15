@@ -1,4 +1,4 @@
-use std::{collections::HashMap, convert::Infallible, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     body::{Body, Bytes},
@@ -167,7 +167,18 @@ async fn consume_provider_stream(
     let mut saw_event = false;
     let mut terminal_status = None;
     let mut terminal_error = None;
-    while let Some(event) = provider_stream.next().await {
+    loop {
+        let next = if terminal_status == Some("idle") {
+            match tokio::time::timeout(Duration::from_secs(2), provider_stream.next()).await {
+                Ok(next) => next,
+                Err(_) => break,
+            }
+        } else {
+            provider_stream.next().await
+        };
+        let Some(event) = next else {
+            break;
+        };
         match event {
             Ok(event) => {
                 saw_event = true;

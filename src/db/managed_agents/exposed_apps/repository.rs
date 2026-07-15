@@ -148,6 +148,25 @@ pub async fn list_for_agent(
     .map_err(GatewayError::Database)
 }
 
+/// All active apps visible to an identity: admins (owner=None) see
+/// everything, others see rows they own.
+pub async fn list_active(
+    pool: &PgPool,
+    owner: Option<&str>,
+) -> Result<Vec<ExposedAppRow>, GatewayError> {
+    sqlx::query_as::<_, ExposedAppRow>(
+        r#"
+        SELECT * FROM "LiteLLM_ExposedAppsTable"
+        WHERE status = 'active' AND ($1::TEXT IS NULL OR owner_user_id = $1)
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(owner)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn soft_delete(pool: &PgPool, app_id: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(
         r#"

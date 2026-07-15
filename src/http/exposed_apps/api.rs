@@ -52,10 +52,12 @@ pub async fn list(
             }
         }
     }
+    // No filter: list every active app this identity can manage. The platform
+    // MCP config on shared runtimes misattributes session/agent (last-written
+    // URL wins), so scoped queries can miss apps the user just exposed.
     if query.session_id.is_none() && query.agent_id.is_none() {
-        return Err(GatewayError::BadRequest(
-            "session_id or agent_id is required".to_owned(),
-        ));
+        let owner = (!auth.is_admin).then_some(auth.user_id.as_str());
+        apps = repository::list_active(pool, owner).await?;
     }
     apps.retain(|app| is_owner(&auth, app));
     apps.sort_by_key(|app| std::cmp::Reverse(app.created_at));

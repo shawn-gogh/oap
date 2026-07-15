@@ -124,7 +124,7 @@ pub(super) fn provider_run_status(raw: &Value) -> &'static str {
 
 pub(super) fn terminal_event_status(event: &AgentEvent) -> Option<&'static str> {
     match event.event_type.as_str() {
-        "session.status_idle" | "assistant_response" | "agent.message" => Some("idle"),
+        "assistant_response" | "agent.message" => Some("idle"),
         "session.error" => Some("error"),
         _ => None,
     }

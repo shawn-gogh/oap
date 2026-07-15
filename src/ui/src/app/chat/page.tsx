@@ -498,9 +498,6 @@ function ChatInner() {
     if (isRuntimeTurnStartEvent(type)) {
       terminalSessionSnapshotRef.current = false;
       setSessionStatus("busy");
-    } else if (type === "session.status_idle") {
-      terminalSessionSnapshotRef.current = true;
-      setSessionStatus("idle");
     } else if (type === "session.status") {
       const status = ev.status;
       const statusType =
@@ -512,10 +509,6 @@ function ChatInner() {
       if (statusType === "busy" || statusType === "running") {
         terminalSessionSnapshotRef.current = false;
         setSessionStatus("busy");
-      }
-      if (statusType === "idle") {
-        terminalSessionSnapshotRef.current = true;
-        setSessionStatus("idle");
       }
     } else if (type === "session.error") {
       setError(`Error: ${runtimeErrorMessage(ev)}`);

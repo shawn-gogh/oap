@@ -475,6 +475,7 @@ export function runtimeEventsToMessages(
 
 export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "busy" | null {
   let next: "idle" | "busy" | null = null;
+  let lastActivityWasTool = false;
   for (const ev of events) {
     const type = normalizedRuntimeEventType(ev);
     if (isLocalRuntimeUserEvent(ev)) {
@@ -483,18 +484,21 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
     }
     if (isRuntimeTurnStartEvent(type)) {
       next = "busy";
+      lastActivityWasTool = false;
       continue;
     }
     if (isRuntimeFinalResponseEvent(type)) {
       next = "idle";
+      lastActivityWasTool = false;
       continue;
     }
     if (type === "user.message" || isRuntimeAssistantTextEvent(type) || isRuntimeThinkingEvent(type) || isRuntimeToolEvent(type)) {
       next = "busy";
+      lastActivityWasTool = isRuntimeToolEvent(type);
       continue;
     }
     if (type === "session.status_idle" || type === "session.thread_status_idle" || type === "session.error") {
-      next = "idle";
+      if (!lastActivityWasTool || type === "session.error") next = "idle";
       continue;
     }
     if (type === "session.status") {
@@ -506,7 +510,11 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
             ? (status as { type?: unknown }).type
             : undefined;
       if (statusType === "busy" || statusType === "running") next = "busy";
-      if (statusType === "idle" || statusType === "error" || statusType === "failed") next = "idle";
+      if (
+        statusType === "error" ||
+        statusType === "failed" ||
+        (statusType === "idle" && !lastActivityWasTool)
+      ) next = "idle";
     }
   }
   return next;

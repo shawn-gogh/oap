@@ -3149,10 +3149,15 @@ export interface ExposedApp {
   expires_at: number | null;
 }
 
-export async function listExposedApps(sessionId: string, agentId?: string): Promise<ExposedApp[]> {
-  const params = new URLSearchParams({ session_id: sessionId });
+/** No filters = every active app the identity can manage (admin sees all).
+ * Session/agent attribution is unreliable on shared runtimes, so the chat
+ * menu lists everything rather than silently missing fresh exposures. */
+export async function listExposedApps(sessionId?: string, agentId?: string): Promise<ExposedApp[]> {
+  const params = new URLSearchParams();
+  if (sessionId) params.set("session_id", sessionId);
   if (agentId) params.set("agent_id", agentId);
-  const res = await req(`/api/apps?${params.toString()}`);
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const res = await req(`/api/apps${suffix}`);
   const data = await jsonOrThrow<{ apps: ExposedApp[] }>(res);
   return data.apps ?? [];
 }

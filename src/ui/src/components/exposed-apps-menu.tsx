@@ -27,15 +27,17 @@ function appUrl(appId: string): string {
  * expose_port, with open / share / revoke / take-offline actions. Renders
  * nothing until the session has at least one active app.
  */
-export function ExposedAppsMenu({ sessionId, agentId }: { sessionId: string; agentId?: string }) {
+export function ExposedAppsMenu(_props: { sessionId?: string; agentId?: string }) {
   const [apps, setApps] = useState<ExposedApp[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // Unscoped: shared-runtime MCP misattributes session/agent, so list all
+  // active apps this user can manage instead of filtering by session.
   const refresh = useCallback(() => {
-    listExposedApps(sessionId, agentId)
+    listExposedApps()
       .then(setApps)
       .catch(() => {});
-  }, [sessionId, agentId]);
+  }, []);
 
   useEffect(() => {
     refresh();
