@@ -75,7 +75,13 @@ pub async fn runtime_events(
     }
     // Subscribe first so no event published during consumer startup is lost.
     let local_rx = state.local_session_events.subscribe(&row.id);
-    ensure_provider_consumer(&state, pool, &row, runtime).await?;
+    // Idle sessions do not need a provider connection. The prompt submission
+    // path installs the canonical consumer with the same SDK client that
+    // accepted the turn. On reconnect, a persisted running state is enough to
+    // restore consumption here.
+    if matches!(row.status.as_str(), "starting" | "running" | "busy") {
+        ensure_provider_consumer(&state, pool, &row, runtime).await?;
+    }
     Response::builder()
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
@@ -164,6 +170,20 @@ async fn consume_provider_stream(
         match event {
             Ok(event) => {
                 saw_event = true;
+                if let Some(run_id) = event
+                    .data
+                    .get("provider_run_id")
+                    .and_then(Value::as_str)
+                    .filter(|run_id| !run_id.is_empty())
+                {
+                    let _ = crate::db::managed_agents::sessions::repository::set_provider_run(
+                        &pool,
+                        &session_id,
+                        run_id,
+                        "running",
+                    )
+                    .await;
+                }
                 if let Some(status) = terminal_event_status(&event) {
                     terminal_status = Some(status);
                     if status == "error" {
@@ -174,6 +194,9 @@ async fn consume_provider_stream(
                 emit_runtime_event(&callbacks, &session_id, &event).await;
                 if let Ok(value) = serde_json::to_value(&event) {
                     state.local_session_events.publish(&session_id, value);
+                }
+                if terminal_status.is_some() {
+                    break;
                 }
             }
             Err(error) => {
@@ -191,9 +214,35 @@ async fn consume_provider_stream(
         terminal_status = empty_stream_status;
     }
     if let Some(status) = terminal_status {
+        tracing::info!(
+            session_id,
+            status,
+            saw_event,
+            "provider event consumer reached terminal state"
+        );
         let _ = mark_session_status(&state, &pool, &session_id, status, terminal_error).await;
     }
-    state.provider_consumers.remove(&session_id);
+}
+
+pub(super) fn replace_provider_consumer(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    session_id: &str,
+    provider_stream: AgentEventStream,
+) {
+    tracing::info!(session_id, "installing canonical provider event consumer");
+    let task_pool = pool.clone();
+    let task_state = state.clone();
+    let task_session_id = session_id.to_owned();
+    state.provider_consumers.replace(session_id, move || {
+        tokio::spawn(consume_provider_stream(
+            provider_stream,
+            task_pool,
+            task_session_id,
+            task_state,
+            None,
+        ))
+    });
 }
 
 pub async fn runtime_event_list(
@@ -206,6 +255,15 @@ pub async fn runtime_event_list(
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let row = super::storage::owned_session(pool, &auth, &session_id).await?;
     let stored = runtime_events::repository::list(pool, &row.id).await?;
+    // Re-entering a session should paint from the platform snapshot immediately.
+    // The canonical SSE consumer continues to persist new provider events, so
+    // this avoids blocking the composer on a slow full-history provider replay.
+    // If no snapshot exists yet we still fall through to the provider.
+    if query.get("snapshot").is_some() && !stored.is_empty() {
+        let events = json!({ "data": stored });
+        reconcile_terminal_status_from_events(&state, pool, &row.id, &row.status, &events).await?;
+        return Ok(Json(events));
+    }
     // The provider's event store is the source of truth: it holds events that
     // never flow through the live stream (e.g. the user.message rows the
     // runtime inserts directly, or a terminal idle persisted while no platform

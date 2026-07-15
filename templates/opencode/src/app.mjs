@@ -58,6 +58,11 @@ export function createApp({
   minioEndpoint = null,
   minioAccessKey = null,
   minioSecretKey = null,
+  turnIdleFallbackMs = Number(process.env.TURN_IDLE_FALLBACK_MS || 30_000),
+  toolIdleFallbackMs = Number(process.env.TOOL_IDLE_FALLBACK_MS || 10 * 60_000),
+  turnMaxRuntimeMs = Number(process.env.TURN_MAX_RUNTIME_MS || 30 * 60_000),
+  toolHeartbeatMs = Number(process.env.TOOL_HEARTBEAT_MS || 15_000),
+  watchdogIntervalMs = 2_000,
 }) {
   const app = express();
   app.use(express.json({ limit: "5mb" }));
@@ -79,6 +84,16 @@ export function createApp({
     });
 
   const activeTurns = new Map();
+
+  function toolSnapshot(turn, now = Date.now()) {
+    return Array.from(turn.activeTools.values()).map((tool) => ({
+      id: tool.id,
+      name: tool.name,
+      input: tool.input,
+      started_at: tool.startedAt,
+      elapsed_ms: Math.max(0, now - tool.startedAt),
+    }));
+  }
 
   function rawSessionId(raw) {
     return (
@@ -142,7 +157,16 @@ export function createApp({
 
   function persistEvent(sessionId, raw, out, turnId) {
     if (!shouldPersistEvent(sessionId, turnId, raw, out)) return false;
-    store.insertSessionEvent(sessionId, out, eventKey(raw, out, turnId));
+    const occurredAt = Date.now();
+    const enriched = {
+      ...out,
+      data: {
+        ...(out.data || {}),
+        occurred_at: out.data?.occurred_at ?? occurredAt,
+        ...(turnId ? { turn_id: turnId } : {}),
+      },
+    };
+    store.insertSessionEvent(sessionId, enriched, eventKey(raw, out, turnId));
     if (terminalEvent(out.event)) {
       const turn = activeTurns.get(sessionId);
       if (turn?.id === turnId) turn.terminal = true;
@@ -168,7 +192,14 @@ export function createApp({
   // If opencode stops emitting events mid-turn without a terminal event (its
   // idle signal varies across versions), synthesize session.status_idle after
   // this much silence so the client never hangs in "running" forever.
-  const IDLE_FALLBACK_MS = Number(process.env.TURN_IDLE_FALLBACK_MS || 30_000);
+  const IDLE_FALLBACK_MS = turnIdleFallbackMs;
+  // A tool can legitimately be silent for much longer than a model turn
+  // (database queries, builds, and analysis scripts commonly exceed 30s).
+  // Treat it as a separate liveness class instead of aborting it with the
+  // short model-idle fallback.
+  const TOOL_IDLE_FALLBACK_MS = toolIdleFallbackMs;
+  const TURN_MAX_RUNTIME_MS = turnMaxRuntimeMs;
+  const TOOL_HEARTBEAT_MS = toolHeartbeatMs;
   // DEBUG_EVENTS=1 logs every raw opencode event the capture loop sees -
   // verbose, but invaluable to learn the exact event shapes a given opencode
   // version emits (e.g. what its end-of-turn signal looks like).
@@ -182,6 +213,7 @@ export function createApp({
   // terminal idle dropped, leaving clients in "running" forever).
   let pumpStarted = false;
   let pumpConnected = false;
+  let pumpGeneration = 0;
 
   // Notifies LAP that opencode has paused a tool call awaiting permission
   // (config written by writeConfig's `permission: ask` block — see
@@ -218,7 +250,11 @@ export function createApp({
   }
 
   function pumpHandle(raw) {
-    const sid = rawSessionId(raw);
+    let sid = rawSessionId(raw);
+    if (!sid) {
+      const openTurns = Array.from(activeTurns.entries()).filter(([, turn]) => !turn.terminal);
+      if (openTurns.length === 1) sid = openTurns[0][0];
+    }
     if (!sid) return;
     const agentId = store.getSessionAgent(sid);
     if (!agentId) return; // not one of our sessions
@@ -226,6 +262,10 @@ export function createApp({
       bridgePermissionAsk(raw, sid).catch(() => {});
     }
     const turn = activeTurns.get(sid);
+    if (turn && !turn.terminal && !turn.capturing) {
+      turn.pendingRawEvents.push(raw);
+      return;
+    }
     if (turn && !turn.terminal) turn.lastActivity = Date.now();
     const agent = store.getAgent(agentId);
     const out = translateOpencodeEvent(raw, { sessionId: sid, model: agent?.model || null });
@@ -235,6 +275,21 @@ export function createApp({
     // final idle would wedge the platform's status reconciliation.
     const lifecycle = out.event === "session.status_running" || out.event === "session.status_idle";
     if (lifecycle && (!turn || turn.terminal)) return;
+    if (turn && !turn.terminal) {
+      if (out.event === "agent.tool_use" && out.data?.id) {
+        const id = String(out.data.id);
+        const existing = turn.activeTools.get(id);
+        turn.activeTools.set(id, {
+          id,
+          name: String(out.data.name || out.data.tool || existing?.name || "tool"),
+          input: out.data.input ?? existing?.input,
+          startedAt: existing?.startedAt ?? Date.now(),
+        });
+      } else if (out.event === "agent.tool_result" && out.data?.tool_use_id) {
+        turn.activeTools.delete(String(out.data.tool_use_id));
+      }
+      if (terminalEvent(out.event)) turn.activeTools.clear();
+    }
     persistEvent(sid, raw, out, turn?.id ?? null);
   }
 
@@ -249,6 +304,7 @@ export function createApp({
             throw new Error(`opencode /event unavailable (${upstream.status || "no body"})`);
           }
           pumpConnected = true;
+          pumpGeneration += 1;
           console.log("[pump] subscribed to opencode /event");
           const decoder = new TextDecoder();
           let buffer = "";
@@ -271,18 +327,22 @@ export function createApp({
           console.error("[pump] /event stream error:", err?.message || err);
         }
         pumpConnected = false;
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, 1500);
+          timer.unref?.();
+        });
       }
     })();
   }
 
   async function waitForPump(timeoutMs = 15_000) {
+    const startingGeneration = pumpGeneration;
     ensureEventPump();
     const deadline = Date.now() + timeoutMs;
-    while (!pumpConnected && Date.now() < deadline) {
+    while (!pumpConnected && pumpGeneration === startingGeneration && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
     }
-    return pumpConnected;
+    return pumpConnected || pumpGeneration > startingGeneration;
   }
 
   // ---- per-session (workspace-backed) opencode instances -------------------
@@ -335,7 +395,10 @@ export function createApp({
           sessionPumps.delete(sessionId);
           return;
         }
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, 1500);
+          timer.unref?.();
+        });
       }
     })();
     return state;
@@ -382,10 +445,36 @@ export function createApp({
         clearInterval(watchdog);
         return;
       }
-      if (Date.now() - turn.lastActivity < IDLE_FALLBACK_MS) return;
+      const now = Date.now();
+      const runtime = now - turn.startedAt;
+      const idle = now - turn.lastActivity;
+      const toolRunning = turn.activeTools.size > 0;
+      const idleLimit = toolRunning ? TOOL_IDLE_FALLBACK_MS : IDLE_FALLBACK_MS;
+      if (toolRunning && now - turn.lastHeartbeat >= TOOL_HEARTBEAT_MS) {
+        turn.lastHeartbeat = now;
+        turn.heartbeatAt = now;
+        store.insertSessionEvent(
+          sessionId,
+          {
+            event: "session.heartbeat",
+            data: {
+              phase: "tool_running",
+              active_tools: turn.activeTools.size,
+              tools: toolSnapshot(turn, now),
+              turn_id: turnId,
+              occurred_at: now,
+            },
+          },
+          `turn:${turnId}:heartbeat:${now}`,
+        );
+      }
+      if (idle < idleLimit && runtime < TURN_MAX_RUNTIME_MS) return;
       turn.terminal = true;
       clearInterval(watchdog);
-      console.warn(`[watchdog] ${sessionId}: no events for ${IDLE_FALLBACK_MS}ms, aborting stale turn`);
+      const reason = runtime >= TURN_MAX_RUNTIME_MS
+        ? `turn exceeded ${TURN_MAX_RUNTIME_MS}ms`
+        : `no events for ${idleLimit}ms (${toolRunning ? "tool running" : "model idle"})`;
+      console.warn(`[watchdog] ${sessionId}: ${reason}, aborting stale turn`);
       try {
         const base = await resolveBaseUrl(sessionId);
         await ocFetch(base, `/session/${sessionId}/abort`, {
@@ -401,7 +490,8 @@ export function createApp({
         { event: "session.status_idle", data: { stop_reason: { type: "end_turn" } } },
         `turn:${turnId}:idle-fallback`
       );
-    }, 2000);
+    }, watchdogIntervalMs);
+    watchdog.unref?.();
   }
 
   // ---- agents -------------------------------------------------------------
@@ -564,24 +654,52 @@ export function createApp({
     const parts = partsFromEvents(req.body?.events || []);
     if (!parts.length) return res.status(400).json({ error: "no user.message parts" });
 
+    const existingTurn = activeTurns.get(req.params.id);
+    if (existingTurn && !existingTurn.terminal) {
+      return res.status(409).json({
+        error: "session already has an active turn",
+        code: "turn_in_progress",
+        turn_id: existingTurn.id,
+      });
+    }
+
+    const turnId = "turn_" + crypto.randomBytes(12).toString("hex");
+    const startedAt = Date.now();
+    activeTurns.set(req.params.id, {
+      id: turnId,
+      terminal: false,
+      startedAt,
+      lastActivity: startedAt,
+      lastHeartbeat: startedAt,
+      heartbeatAt: null,
+      activeTools: new Map(),
+      capturing: false,
+      pendingRawEvents: [],
+    });
+
     const base = await resolveBaseUrl(req.params.id);
     // The pump must be subscribed before prompting so no early events are lost.
     const pumped = store.getSessionWorkspace(req.params.id)
       ? await waitForSessionPump(req.params.id, base)
       : await waitForPump();
     if (!pumped) {
-      return res.status(502).json({ error: "opencode event stream unavailable" });
+      captureFailure(req.params.id, turnId, "opencode /event unavailable");
+      return res.status(502).json({ error: "opencode /event unavailable" });
     }
 
-    const turnId = "turn_" + crypto.randomBytes(12).toString("hex");
-    activeTurns.set(req.params.id, { id: turnId, terminal: false, lastActivity: Date.now() });
-
-    // Persist the user's message before prompting so the turn always starts
-    // with it in the replay, regardless of how fast agent events arrive.
+    // Persist the prompt before releasing any provider events that raced the
+    // pump handshake. This preserves transcript order without recording a
+    // user message when the event capture channel could not be established.
     store.insertSessionEvent(req.params.id, {
       event: "user.message",
-      data: { content: parts },
+      data: { content: parts, occurred_at: startedAt, turn_id: turnId },
     }, `user:${turnId}`);
+    const turn = activeTurns.get(req.params.id);
+    if (turn?.id === turnId) {
+      const pending = turn.pendingRawEvents.splice(0);
+      turn.capturing = true;
+      for (const raw of pending) pumpHandle(raw);
+    }
 
     const r = await ocFetch(base, `/session/${req.params.id}/prompt_async`, {
       method: "POST",
@@ -614,6 +732,45 @@ export function createApp({
       headers: { "content-type": "application/json" },
       body: "{}",
     });
+    if (r.ok) {
+      const turn = activeTurns.get(req.params.id);
+      if (turn && !turn.terminal) {
+        const occurredAt = Date.now();
+        for (const tool of turn.activeTools.values()) {
+          store.insertSessionEvent(
+            req.params.id,
+            {
+              event: "agent.tool_result",
+              data: {
+                tool_use_id: tool.id,
+                name: tool.name,
+                tool: tool.name,
+                status: "aborted",
+                error_code: "tool_aborted",
+                error_message: "命令已由用户中断。",
+                occurred_at: occurredAt,
+                turn_id: turn.id,
+              },
+            },
+            `turn:${turn.id}:tool:${tool.id}:aborted`,
+          );
+        }
+        turn.activeTools.clear();
+        turn.terminal = true;
+        store.insertSessionEvent(
+          req.params.id,
+          {
+            event: "session.status_idle",
+            data: {
+              stop_reason: { type: "interrupted" },
+              occurred_at: occurredAt,
+              turn_id: turn.id,
+            },
+          },
+          `turn:${turn.id}:interrupted`,
+        );
+      }
+    }
     res.status(r.ok ? 200 : r.status).json({ aborted: r.ok });
   }));
 
@@ -666,6 +823,7 @@ export function createApp({
     const idleFrame = () =>
       `event: session.status_idle\ndata: ${JSON.stringify({ stop_reason: { type: "end_turn" } })}\n\n`;
     const mirroredTurns = new Set();
+    const mirroredHeartbeats = new Set();
     const startingTurn = activeTurns.get(req.params.id);
     if (startingTurn?.terminal) {
       // The turn already finished (e.g. watchdog fired while no stream was
@@ -676,6 +834,19 @@ export function createApp({
     }
     const idleMirror = setInterval(() => {
       const turn = activeTurns.get(req.params.id);
+      if (turn?.heartbeatAt && !mirroredHeartbeats.has(turn.heartbeatAt)) {
+        mirroredHeartbeats.add(turn.heartbeatAt);
+        try {
+          res.write(
+            `event: session.heartbeat\ndata: ${JSON.stringify({
+              phase: "tool_running",
+              active_tools: turn.activeTools.size,
+              tools: toolSnapshot(turn),
+              turn_id: turn.id,
+            })}\n\n`,
+          );
+        } catch {}
+      }
       // Emit idle once per turn that reaches terminal state while this stream
       // is connected (covers turns finished by the store-only watchdog).
       if (!turn?.terminal || mirroredTurns.has(turn.id)) return;

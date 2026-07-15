@@ -95,9 +95,28 @@ function runtimeToolId(ev: RuntimeAgentEvent): string {
 
 function runtimeToolStatus(ev: RuntimeAgentEvent): string {
   if (typeof ev.status === "string") return ev.status;
+  const legacyOutput = runtimeTextValue(ev.output ?? ev.error);
+  if (/shell tool terminated command after exceeding timeout/i.test(legacyOutput)) {
+    return "timed_out";
+  }
+  if (/user aborted|command was aborted|tool was aborted/i.test(legacyOutput)) {
+    return "aborted";
+  }
   if (ev.type === "tool_result" || ev.type === "agent.tool_result") return "completed";
   if (ev.error) return "error";
   return "running";
+}
+
+function runtimeEventTime(ev: RuntimeAgentEvent): number | undefined {
+  const value = ev.occurred_at ?? ev.created_at ?? ev.timestamp ?? ev.time;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+    const date = Date.parse(value);
+    if (Number.isFinite(date)) return date;
+  }
+  return undefined;
 }
 
 function runtimeEventKey(ev: RuntimeAgentEvent): string {
@@ -180,13 +199,19 @@ export function runtimeEventsToMessages(
   const messages: HarnessMessage[] = [];
   let assistant: HarnessMessage | null = null;
   let turnIndex = 0;
+  const toolOwners = new Map<string, HarnessMessage>();
 
-  const ensureAssistant = (seed?: string): HarnessMessage => {
+  const ensureAssistant = (seed?: string, createdAt?: number): HarnessMessage => {
     if (assistant && !assistant.info.finish) return assistant;
     turnIndex += 1;
     const messageId = `${sessionId}_runtime_turn_${seed ?? turnIndex}`;
     assistant = {
-      info: { id: messageId, role: "assistant", sessionID: sessionId },
+      info: {
+        id: messageId,
+        role: "assistant",
+        sessionID: sessionId,
+        ...(createdAt !== undefined ? { time: { created: createdAt } } : {}),
+      },
       parts: [],
     };
     messages.push(assistant);
@@ -269,10 +294,18 @@ export function runtimeEventsToMessages(
 
   const upsertToolPart = (message: HarnessMessage, ev: RuntimeAgentEvent) => {
     const toolId = runtimeToolId(ev);
+    const owner = toolOwners.get(toolId) ?? message;
     const partId = `${message.info.id}_${toolId}`;
     const name = typeof ev.name === "string" ? ev.name : "tool";
     const statusValue = runtimeToolStatus(ev);
-    const existing = message.parts.find((part) => part.id === partId && part.type === "tool");
+    const inferredErrorMessage =
+      statusValue === "timed_out"
+        ? "命令运行超时，已停止执行"
+        : statusValue === "aborted"
+          ? "命令已中断"
+          : undefined;
+    const existing = owner.parts.find((part) => part.type === "tool" && part.id?.endsWith(`_${toolId}`));
+    const eventTime = runtimeEventTime(ev);
     if (existing && existing.type === "tool") {
       existing.tool = existing.tool || name;
       existing.state = {
@@ -281,10 +314,16 @@ export function runtimeEventsToMessages(
         input: existing.state.input ?? ev.input,
         output: ev.output ?? existing.state.output,
         error: ev.error ?? existing.state.error,
+        errorCode: ev.error_code ?? existing.state.errorCode,
+        errorMessage: ev.error_message ?? inferredErrorMessage ?? existing.state.errorMessage,
+        completedAt:
+          statusValue === "running" || statusValue === "pending"
+            ? existing.state.completedAt
+            : eventTime ?? existing.state.completedAt,
       };
       return;
     }
-    message.parts.push({
+    owner.parts.push({
       id: partId,
       messageID: message.info.id,
       sessionID: sessionId,
@@ -295,8 +334,12 @@ export function runtimeEventsToMessages(
         input: ev.input,
         output: ev.output,
         error: ev.error,
+        errorCode: ev.error_code,
+        errorMessage: ev.error_message ?? inferredErrorMessage,
+        startedAt: eventTime,
       },
     });
+    toolOwners.set(toolId, owner);
   };
 
   events.forEach((ev, index) => {
@@ -337,19 +380,19 @@ export function runtimeEventsToMessages(
     }
 
     if (isRuntimeTurnStartEvent(type)) {
-      ensureAssistant(seed);
+      ensureAssistant(seed, runtimeEventTime(ev));
       return;
     }
 
     if (type === "session.error") {
-      const message = ensureAssistant(seed);
+      const message = ensureAssistant(seed, runtimeEventTime(ev));
       appendPartText(message, "text", `Error: ${runtimeErrorMessage(ev)}`);
       message.info.finish = "stop";
       return;
     }
 
     if (isRuntimeToolEvent(type)) {
-      upsertToolPart(ensureAssistant(seed), ev);
+      upsertToolPart(ensureAssistant(seed, runtimeEventTime(ev)), ev);
       return;
     }
 

@@ -1290,6 +1290,7 @@ export interface PendingApproval {
   arguments: Record<string, unknown>;
   createdAt: number;
   sessionId: string | null;
+  canDecide: boolean;
 }
 
 interface RawPendingApproval {
@@ -1303,6 +1304,7 @@ interface RawPendingApproval {
   createdAt?: number;
   session_id?: string | null;
   sessionId?: string | null;
+  can_decide?: boolean;
 }
 
 export async function listApprovals(sessionId?: string): Promise<PendingApproval[]> {
@@ -1316,39 +1318,63 @@ export async function listApprovals(sessionId?: string): Promise<PendingApproval
     arguments: approval.arguments ?? parseArgsJson(approval.args_json) ?? {},
     createdAt: approval.createdAt ?? approval.created_at ?? 0,
     sessionId: approval.sessionId ?? approval.session_id ?? null,
+    canDecide: approval.can_decide ?? true,
   }));
 }
 
 export type ApprovalScope = "once" | "session";
 
+export interface ApprovalDecisionResult {
+  ok: boolean;
+  live: boolean;
+  delivery_status: string;
+}
+
 export async function acceptApproval(
   id: string,
   args?: Record<string, unknown>,
   scope: ApprovalScope = "once",
-): Promise<void> {
+): Promise<ApprovalDecisionResult> {
   const res = await req(`/api/approvals/${encodeURIComponent(id)}/accept`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ arguments: args, scope }),
   });
-  await jsonOrThrow(res);
+  return jsonOrThrow<ApprovalDecisionResult>(res);
 }
 
-export async function rejectApproval(id: string, feedback?: string): Promise<void> {
+export async function rejectApproval(id: string, feedback?: string): Promise<ApprovalDecisionResult> {
   const res = await req(`/api/approvals/${encodeURIComponent(id)}/reject`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(feedback ? { feedback } : {}),
   });
-  await jsonOrThrow(res);
+  return jsonOrThrow<ApprovalDecisionResult>(res);
+}
+
+export async function retryApprovalDelivery(id: string): Promise<ApprovalDecisionResult> {
+  const res = await req(`/api/approvals/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+  });
+  return jsonOrThrow<ApprovalDecisionResult>(res);
 }
 
 // ── Agent inbox (/api/inbox) ────────────────────────────────────────────────
 // Unified list of human-in-the-loop approvals (kind="approval") an agent is
 // blocked on, plus informational issues an agent filed (kind="issue").
 
-export type InboxKind = "approval" | "issue" | "tool_permission";
-export type InboxStatus = "pending" | "accepted" | "rejected" | "open" | "resolved";
+export type InboxKind =
+  | "approval"
+  | "business_decision"
+  | "issue"
+  | "tool_permission"
+  | "runtime_permission"
+  | "unlisted_data_egress"
+  | "data_egress"
+  | "agent_publish"
+  | "agent_change"
+  | "platform_action";
+export type InboxStatus = "pending" | "accepted" | "rejected" | "expired" | "open" | "resolved";
 export type InboxFilter = "attention" | "completed" | "all";
 
 export interface InboxItem {
@@ -1364,6 +1390,19 @@ export interface InboxItem {
   feedback: string | null;
   createdAt: number;
   resolvedAt: number | null;
+  enforcementOwner: string;
+  effectHandler: string;
+  requiredRole: string;
+  deliveryStatus: string;
+  deliveryAttempts: number;
+  lastDeliveryError: string | null;
+  expiresAt: number | null;
+  escalationRole: string | null;
+  escalateAt: number | null;
+  escalatedAt: number | null;
+  decidedBy: string | null;
+  decisionScope: string;
+  appliedAt: number | null;
 }
 
 interface RawInboxItem {
@@ -1382,6 +1421,19 @@ interface RawInboxItem {
   createdAt?: number;
   resolved_at?: number | null;
   resolvedAt?: number | null;
+  enforcement_owner?: string;
+  effect_handler?: string;
+  required_role?: string;
+  delivery_status?: string;
+  delivery_attempts?: number;
+  last_delivery_error?: string | null;
+  expires_at?: number | null;
+  escalation_role?: string | null;
+  escalate_at?: number | null;
+  escalated_at?: number | null;
+  decided_by?: string | null;
+  decision_scope?: string;
+  applied_at?: number | null;
 }
 
 export async function listInbox(filter: InboxFilter = "all"): Promise<InboxItem[]> {
@@ -1403,6 +1455,19 @@ function normalizeInboxItem(item: RawInboxItem): InboxItem {
     feedback: item.feedback ?? null,
     createdAt: item.createdAt ?? item.created_at ?? 0,
     resolvedAt: item.resolvedAt ?? item.resolved_at ?? null,
+    enforcementOwner: item.enforcement_owner ?? "workflow",
+    effectHandler: item.effect_handler ?? "resume_session",
+    requiredRole: item.required_role ?? "owner",
+    deliveryStatus: item.delivery_status ?? "pending",
+    deliveryAttempts: item.delivery_attempts ?? 0,
+    lastDeliveryError: item.last_delivery_error ?? null,
+    expiresAt: item.expires_at ?? null,
+    escalationRole: item.escalation_role ?? null,
+    escalateAt: item.escalate_at ?? null,
+    escalatedAt: item.escalated_at ?? null,
+    decidedBy: item.decided_by ?? null,
+    decisionScope: item.decision_scope ?? "once",
+    appliedAt: item.applied_at ?? null,
   };
 }
 
@@ -1924,7 +1989,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function listRuntimeEvents(sessionId: string): Promise<RuntimeAgentEvent[]> {
+export async function listRuntimeEvents(
+  sessionId: string,
+  options: { snapshot?: boolean } = {},
+): Promise<RuntimeAgentEvent[]> {
   // The backend proxies this to the session's runtime provider (e.g. a
   // containerized agent), which can return a transient error on a cold
   // request even though history exists (surfaces in the UI as a session that
@@ -1933,7 +2001,8 @@ export async function listRuntimeEvents(sessionId: string): Promise<RuntimeAgent
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= RUNTIME_EVENTS_LIST_MAX_ATTEMPTS; attempt++) {
     try {
-      const res = await reqHarness(`/v1/sessions/${encodeURIComponent(sessionId)}/events`);
+      const snapshot = options.snapshot ? "?snapshot=1" : "";
+      const res = await reqHarness(`/v1/sessions/${encodeURIComponent(sessionId)}/events${snapshot}`);
       if (!res.ok) {
         lastError = new ApiError(res.status, await res.text().catch(() => ""));
       } else if (!res.headers.get("content-type")?.includes("application/json")) {
@@ -3030,4 +3099,43 @@ export async function storeMemory(agentId: string, key: string, value: string, a
 
 export async function deleteMemory(agentId: string, key: string): Promise<void> {
   await req(`/api/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
+}
+
+// ---- Exposed apps (agent services proxied via /apps/{id}/) ----
+
+export interface ExposedApp {
+  id: string;
+  session_id: string;
+  agent_id: string;
+  owner_user_id: string | null;
+  container_key: string;
+  port: number;
+  name: string | null;
+  share_version: number;
+  status: string;
+  created_at: number;
+  expires_at: number | null;
+}
+
+export async function listExposedApps(sessionId: string): Promise<ExposedApp[]> {
+  const res = await req(`/api/apps?session_id=${encodeURIComponent(sessionId)}`);
+  const data = await jsonOrThrow<{ apps: ExposedApp[] }>(res);
+  return data.apps ?? [];
+}
+
+export async function createAppShare(appId: string, ttlSeconds?: number): Promise<{ url: string; expires_at: number }> {
+  const res = await req(`/api/apps/${encodeURIComponent(appId)}/share`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function revokeAppShare(appId: string): Promise<void> {
+  await req(`/api/apps/${encodeURIComponent(appId)}/share`, { method: "DELETE" });
+}
+
+export async function deleteExposedApp(appId: string): Promise<void> {
+  await req(`/api/apps/${encodeURIComponent(appId)}`, { method: "DELETE" });
 }

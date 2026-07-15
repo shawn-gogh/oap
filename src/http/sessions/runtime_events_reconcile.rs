@@ -59,10 +59,39 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
                 terminal_status = Some("error");
                 terminal_error = Some(event_value_error_message(event));
             }
+            // Generic status event carrying the state in its payload.
+            Some("session.status") => match event_value_status(event) {
+                Some("busy") | Some("running") => {
+                    terminal_status = None;
+                    terminal_error = None;
+                }
+                Some("idle") => {
+                    terminal_status = Some("idle");
+                    terminal_error = None;
+                }
+                _ => {}
+            },
+            // Conversation activity after the last status marker means a new
+            // turn is underway: the replayed history ends with the PREVIOUS
+            // turn's idle, and treating that as terminal flipped busy sessions
+            // back to idle on every poll.
+            Some(event_type)
+                if event_type.starts_with("user.") || event_type.starts_with("agent.") =>
+            {
+                terminal_status = None;
+                terminal_error = None;
+            }
             _ => {}
         }
     }
     (terminal_status, terminal_error)
+}
+
+fn event_value_status(event: &Value) -> Option<&str> {
+    let status = event.get("status")?;
+    status
+        .as_str()
+        .or_else(|| status.get("type").and_then(Value::as_str))
 }
 
 fn event_value_error_message(event: &Value) -> String {
@@ -108,5 +137,39 @@ mod tests {
         ]));
         assert_eq!(status, None);
         assert_eq!(error, None);
+    }
+
+    #[test]
+    fn conversation_activity_after_idle_means_running() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_idle" },
+            { "type": "user.message" },
+            { "type": "agent.tool_use" }
+        ]));
+        assert_eq!(status, None);
+    }
+
+    #[test]
+    fn idle_after_activity_is_still_terminal() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "user.message" },
+            { "type": "agent.message" },
+            { "type": "session.status_idle" }
+        ]));
+        assert_eq!(status, Some("idle"));
+    }
+
+    #[test]
+    fn generic_status_event_payload_is_honored() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_idle" },
+            { "type": "session.status", "status": { "type": "busy" } }
+        ]));
+        assert_eq!(status, None);
+
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status", "status": "idle" }
+        ]));
+        assert_eq!(status, Some("idle"));
     }
 }

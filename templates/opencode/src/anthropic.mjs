@@ -224,6 +224,7 @@ function toolPartEvent(part, ctx) {
   const input = status === "pending" && isEmptyObject(rawInput) ? undefined : rawInput;
   const output = state.output ?? state.result ?? part.output ?? part.result;
   const error = state.error ?? part.error;
+  const termination = shellTermination(output, error);
 
   if (status === "completed" || error != null || output != null) {
     const data = {
@@ -234,6 +235,13 @@ function toolPartEvent(part, ctx) {
     };
     if (output !== undefined) data.output = output;
     if (error !== undefined) data.error = error;
+    if (termination) {
+      data.status = termination.status;
+      data.error_code = termination.code;
+      data.error_message = termination.message;
+    } else {
+      data.status = error != null ? "error" : "completed";
+    }
     return {
       event: "agent.tool_result",
       data,
@@ -251,6 +259,30 @@ function toolPartEvent(part, ctx) {
     event: "agent.tool_use",
     data,
   };
+}
+
+function shellTermination(output, error) {
+  const text = [output, error]
+    .filter((value) => value != null)
+    .map((value) => typeof value === "string" ? value : JSON.stringify(value))
+    .join("\n");
+  const timeout = text.match(/shell tool terminated command after exceeding timeout\s+(\d+)\s*ms/i);
+  if (timeout) {
+    const milliseconds = Number(timeout[1]);
+    return {
+      status: "timed_out",
+      code: "tool_timeout",
+      message: `命令运行超过 ${milliseconds}ms，已由运行时终止。`,
+    };
+  }
+  if (/User aborted the command/i.test(text)) {
+    return {
+      status: "aborted",
+      code: "tool_aborted",
+      message: "命令已中断。",
+    };
+  }
+  return null;
 }
 
 function toolPartId(part, ctx) {

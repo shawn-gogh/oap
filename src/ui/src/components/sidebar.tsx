@@ -69,6 +69,17 @@ function useIsEmbedded(): boolean {
   return embedded;
 }
 
+type SessionTone = "busy" | "failed" | "idle";
+
+function sessionTone(session: OpencodeSession): SessionTone {
+  const status = (session.status ?? "").toLowerCase();
+  if (status === "busy" || status === "running" || status === "starting" || session.provider_run_id) {
+    return "busy";
+  }
+  if (status === "failed" || status === "error" || status === "timed_out") return "failed";
+  return "idle";
+}
+
 function timeAgo(ts?: number): string {
   if (!ts) return "";
   const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -85,6 +96,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const router = useRouter();
   const pathname = usePathname();
   const [sessions, setSessions] = useState<OpencodeSession[] | null>(null);
+  const [sessionQuery, setSessionQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -125,6 +137,14 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   // Undo-window delete: the session leaves the list immediately, but the
   // backend delete only fires after the toast expires. 撤销 cancels it.
   const pendingDeleteTimers = useRef(new Map<string, number>());
+
+  const query = sessionQuery.trim().toLowerCase();
+  const visibleSessions = query
+    ? sessions?.filter(
+        (s) =>
+          (s.title ?? "").toLowerCase().includes(query) || s.id.toLowerCase().includes(query),
+      )
+    : sessions;
 
   if (embedded) return null;
 
@@ -380,6 +400,17 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
             <div className="px-4 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               会话历史
             </div>
+            {sessions && sessions.length > 8 && (
+              <div className="px-2 pb-1.5">
+                <input
+                  value={sessionQuery}
+                  onChange={(event) => setSessionQuery(event.target.value)}
+                  placeholder="搜索会话…"
+                  aria-label="搜索会话"
+                  className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                />
+              </div>
+            )}
             {error && (
               <div className="px-3 py-2 text-xs text-destructive">{error}</div>
             )}
@@ -391,7 +422,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 还没有会话。
               </div>
             )}
-            {sessions?.map((s) => {
+            {visibleSessions?.map((s) => {
               const short = s.id.slice(0, 12);
               const title = s.title?.trim() || short;
               const active = s.id === activeId;
@@ -406,7 +437,21 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                   }`}
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">{title}</div>
+                    <div className="flex items-center gap-1.5">
+                      {(() => {
+                        const tone = sessionTone(s);
+                        if (tone === "idle") return null;
+                        return (
+                          <span
+                            title={tone === "busy" ? "运行中" : "上次运行失败"}
+                            className={`size-1.5 shrink-0 rounded-full ${
+                              tone === "busy" ? "animate-pulse bg-emerald-500 motion-reduce:animate-none" : "bg-red-500"
+                            }`}
+                          />
+                        );
+                      })()}
+                      <span className="truncate font-medium">{title}</span>
+                    </div>
                     <div className="font-mono text-[11px] text-muted-foreground truncate">
                       {(s.agent ?? s.harness) === "claude-code" ? "cc" : (s.agent ?? s.harness) === "github-copilot" ? "gh" : "oc"} · {short} · {timeAgo(s.time?.created)}
                     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -113,12 +113,16 @@ function InnerMessageBlock({
   onCancelQueued,
   onSendQueued,
   queuedActionBusy,
+  hideTodoTools,
+  showProgressIndicator,
 }: {
   msg: LocalMessage;
   isFirstUser: boolean;
   onCancelQueued?: (msgId: string) => void;
   onSendQueued?: (msgId: string) => void;
   queuedActionBusy?: boolean;
+  hideTodoTools: boolean;
+  showProgressIndicator: boolean;
 }) {
   if (msg.role === "user") {
     return (
@@ -139,6 +143,8 @@ function InnerMessageBlock({
       onCancelQueued={onCancelQueued}
       onSendQueued={onSendQueued}
       queuedActionBusy={queuedActionBusy}
+      hideTodoTools={hideTodoTools}
+      showProgressIndicator={showProgressIndicator}
     />
   );
 }
@@ -216,11 +222,15 @@ function AssistantBlock({
   onCancelQueued,
   onSendQueued,
   queuedActionBusy,
+  hideTodoTools,
+  showProgressIndicator,
 }: {
   msg: LocalMessage;
   onCancelQueued?: (msgId: string) => void;
   onSendQueued?: (msgId: string) => void;
   queuedActionBusy?: boolean;
+  hideTodoTools: boolean;
+  showProgressIndicator: boolean;
 }) {
   const failed = msg.status === "failed";
   const inProgress = msg.status === "in_progress";
@@ -229,6 +239,7 @@ function AssistantBlock({
 
   const visibleParts = parts.filter((p) => {
     const t = typeof p?.type === "string" ? (p.type as string) : "";
+    if (p.type === "tool" && hideTodoTools && isTodoTool(p.tool)) return false;
     return (
       t === "text" ||
       t === "reasoning" ||
@@ -238,7 +249,11 @@ function AssistantBlock({
     );
   });
   const renderItems = groupRenderItems(visibleParts);
+  const hasRunningTool = visibleParts.some(
+    (part) => part.type === "tool" && (part.state.status === "running" || part.state.status === "pending"),
+  );
   const details = messageDetails(msg);
+  if (!failed && !queued && visibleParts.length === 0 && !showProgressIndicator) return null;
 
   return (
     <article className="group/turn flex flex-col gap-3 py-1">
@@ -282,7 +297,7 @@ function AssistantBlock({
             </button>
           )}
         </div>
-      ) : inProgress && visibleParts.length === 0 ? (
+      ) : inProgress && visibleParts.length === 0 && showProgressIndicator ? (
         msg.text ? (
           <div className="sessions-md max-w-[920px] text-[15px] leading-7 text-foreground">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
@@ -290,7 +305,7 @@ function AssistantBlock({
         ) : (
           <div className="flex items-center gap-2 text-sm text-muted-foreground leading-relaxed">
             <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none" />
-            thinking…
+            正在等待模型响应
           </div>
         )
       ) : (
@@ -306,11 +321,10 @@ function AssistantBlock({
               />
             ),
           )}
-          {inProgress && (
-            <div className="flex items-center gap-1.5 pt-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse motion-reduce:animate-none" />
-              <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse motion-reduce:animate-none [animation-delay:150ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse motion-reduce:animate-none [animation-delay:300ms]" />
+          {inProgress && showProgressIndicator && !hasRunningTool && (
+            <div className="flex items-center gap-2 pt-1 text-[13px] text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+              <span>正在等待模型响应</span>
             </div>
           )}
         </>
@@ -518,6 +532,7 @@ function ToolIcon({
   }
 
   const n = tool.toLowerCase();
+  const failed = status === "error" || status === "timed_out" || status === "aborted";
   const Icon = isTodoTool(n)
     ? ListChecks
     : n === "bash"
@@ -528,7 +543,7 @@ function ToolIcon({
           ? Search
           : n.includes("web") || n.includes("browser")
             ? Globe
-            : status === "error"
+            : failed
               ? CircleAlert
               : Wrench;
 
@@ -540,16 +555,22 @@ function ToolIcon({
 }
 
 function ToolCluster({ parts }: { parts: HarnessMessagePart[] }) {
+  const [open, setOpen] = useState(true);
   const groups = groupToolParts(parts);
+  const summary = toolActivitySummary(parts);
   return (
-    <div className="max-w-[920px] py-0.5">
-      <div className="mb-1 flex items-center gap-2 pl-2">
-        <span className="h-px w-5 bg-border" />
-        <span className="mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-          Activity
-        </span>
-      </div>
-      <div className="flex flex-col gap-1">
+    <div className="max-w-[920px] py-0.5 text-[13px]">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="mb-1 flex max-w-full items-center gap-2 text-left text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Terminal className="size-3.5 shrink-0" />
+        <span className="truncate">{summary}</span>
+        <ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
+      </button>
+      {open && <div className="flex flex-col gap-0.5 pl-0.5">
         {groups.map((group, index) =>
           group.kind === "context-batch" ? (
             <ContextToolBatch key={`batch-${index}`} parts={group.parts} />
@@ -557,9 +578,30 @@ function ToolCluster({ parts }: { parts: HarnessMessagePart[] }) {
             <ToolBlock key={`${group.part.id ?? "tool"}-${index}`} part={group.part} />
           ),
         )}
-      </div>
+      </div>}
     </div>
   );
+}
+
+function toolActivitySummary(parts: HarnessMessagePart[]): string {
+  const tools = parts.filter((part): part is Extract<HarnessMessagePart, { type: "tool" }> => part.type === "tool");
+  const counts = { read: 0, edit: 0, command: 0, search: 0, other: 0 };
+  for (const part of tools) {
+    const name = part.tool.toLowerCase();
+    if (name === "bash" || name.includes("shell") || name.includes("exec")) counts.command += 1;
+    else if (name.includes("edit") || name.includes("write") || name.includes("patch")) counts.edit += 1;
+    else if (name.includes("grep") || name.includes("search") || name.includes("find") || name.includes("glob")) counts.search += 1;
+    else if (name.includes("read") || name.includes("list") || name.endsWith("ls")) counts.read += 1;
+    else counts.other += 1;
+  }
+  const labels = [
+    counts.edit ? `已编辑 ${counts.edit} 个文件` : "",
+    counts.read ? `已读取 ${counts.read} 个文件` : "",
+    counts.search ? `已搜索 ${counts.search} 次` : "",
+    counts.command ? `已运行 ${counts.command} 条命令` : "",
+    counts.other ? `已调用 ${counts.other} 个工具` : "",
+  ].filter(Boolean);
+  return labels.join(" · ") || "运行活动";
 }
 
 export function ToolBlock({ part }: { part: HarnessMessagePart }) {
@@ -571,6 +613,20 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
   const input = state.input;
   const output = state.output;
   const errorOut = state.error;
+  const errorMessage = typeof state.errorMessage === "string" ? state.errorMessage : "";
+  const startedAt = typeof state.startedAt === "number" ? state.startedAt : undefined;
+  const completedAt = typeof state.completedAt === "number" ? state.completedAt : undefined;
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if ((status !== "running" && status !== "pending") || startedAt === undefined) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt, status]);
+  const duration = useMemo(() => {
+    if (startedAt === undefined) return "";
+    return formatToolDuration(Math.max(0, (completedAt ?? now) - startedAt));
+  }, [completedAt, now, startedAt]);
   const desc = toolDescriptor(toolName, input);
   const todoItems = isTodoTool(toolName) ? parseTodoItems(input, output) : null;
 
@@ -578,15 +634,21 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
   const hasDetails =
     input !== undefined || output !== undefined || errorOut !== undefined;
 
+  const failedStatus = status === "error" || status === "timed_out" || status === "aborted";
   const statusColor =
     status === "completed"
       ? "text-emerald-600 dark:text-emerald-400"
-      : status === "error"
+      : failedStatus
         ? "text-red-600 dark:text-red-400"
         : "text-amber-600 dark:text-amber-400";
   const StatusIcon =
-    status === "completed" ? Check : status === "error" ? X : Loader2;
-  const statusLabel = status === "completed" ? "done" : status;
+    status === "completed" ? Check : failedStatus ? X : Loader2;
+  const statusLabel =
+    status === "completed" ? "完成" :
+    status === "timed_out" ? "已超时" :
+    status === "aborted" ? "已中断" :
+    status === "error" ? "失败" :
+    status === "pending" ? "等待中" : "运行中";
 
   return (
     <div className="max-w-[920px] text-[13px]">
@@ -594,8 +656,8 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
         type="button"
         onClick={() => hasDetails && setOpen((v) => !v)}
         aria-expanded={hasDetails ? open : undefined}
-        className={`inline-flex max-w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left ${
-          hasDetails ? "cursor-pointer transition-colors hover:bg-muted/55" : "cursor-default"
+        className={`inline-flex max-w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1.5 text-left ${
+          hasDetails ? "cursor-pointer transition-colors hover:bg-muted/45" : "cursor-default"
         }`}
       >
         <ToolIcon tool={toolName} status={status} />
@@ -603,6 +665,7 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
         {desc && (
           <span className="mono min-w-0 max-w-[min(38rem,42vw)] truncate text-xs text-muted-foreground">{desc}</span>
         )}
+        {duration && <span className="mono shrink-0 text-xs text-muted-foreground">{duration}</span>}
         <span className={`mono inline-flex shrink-0 items-center gap-1 rounded-full border border-current/15 px-2 py-0.5 text-[11px] ${statusColor}`}>
           <StatusIcon
             className={`size-3 shrink-0 ${status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`}
@@ -625,11 +688,18 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
           ) : (
             <RichToolDetails tool={toolName} input={input} output={output} />
           )}
-          {errorOut !== undefined && <ToolErrorCard error={errorOut} />}
+          {(errorMessage || errorOut !== undefined) && <ToolErrorCard error={errorMessage || errorOut} />}
         </div>
       )}
     </div>
   );
+}
+
+function formatToolDuration(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
 function inputString(input: unknown, ...keys: string[]): string {
@@ -643,12 +713,13 @@ function inputString(input: unknown, ...keys: string[]): string {
 }
 
 function outputText(output: unknown): string {
-  if (typeof output === "string") return output;
+  const clean = (value: string) => value.replace(/\n*<shell_metadata>[\s\S]*?<\/shell_metadata>\s*$/i, "").trimEnd();
+  if (typeof output === "string") return clean(output);
   if (output && typeof output === "object") {
     const record = output as Record<string, unknown>;
-    if (typeof record.output === "string") return record.output;
-    if (typeof record.stdout === "string") return record.stdout;
-    if (typeof record.text === "string") return record.text;
+    if (typeof record.output === "string") return clean(record.output);
+    if (typeof record.stdout === "string") return clean(record.stdout);
+    if (typeof record.text === "string") return clean(record.text);
   }
   return "";
 }
@@ -763,11 +834,15 @@ export function MessageBlock({
   onCancelQueued,
   onSendQueued,
   queuedActionBusy,
+  hideTodoTools = false,
+  showProgressIndicator = true,
 }: {
   msg: HarnessMessage;
   onCancelQueued?: (msgId: string) => void;
   onSendQueued?: (msgId: string) => void;
   queuedActionBusy?: boolean;
+  hideTodoTools?: boolean;
+  showProgressIndicator?: boolean;
 }) {
   const local = toLocal(msg);
   return (
@@ -777,6 +852,8 @@ export function MessageBlock({
       onCancelQueued={onCancelQueued}
       onSendQueued={onSendQueued}
       queuedActionBusy={queuedActionBusy}
+      hideTodoTools={hideTodoTools}
+      showProgressIndicator={showProgressIndicator}
     />
   );
 }

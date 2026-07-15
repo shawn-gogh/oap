@@ -83,6 +83,60 @@ describe("runtimeEventsToMessages", () => {
     expect(tool.state.output).toBe("files");
   });
 
+  it("keeps a late tool result on the turn that started the tool", () => {
+    const events: RuntimeAgentEvent[] = [
+      userMessage("first", { id: "u1" }),
+      { id: "c1", type: "agent.tool_use", name: "bash", status: "running", occurred_at: 1000 },
+      userMessage("second", { id: "u2" }),
+      { id: "r1", type: "agent.tool_result", tool_use_id: "c1", name: "bash", status: "aborted", occurred_at: 2000 },
+    ];
+    const messages = runtimeEventsToMessages(SID, events, "idle");
+    const firstAssistant = messages.find((message) =>
+      message.info.role === "assistant" && message.parts.some((part) => part.type === "tool"),
+    );
+    const tool = firstAssistant?.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("aborted");
+    expect(tool?.type === "tool" ? tool.state.startedAt : undefined).toBe(1000);
+    expect(tool?.type === "tool" ? tool.state.completedAt : undefined).toBe(2000);
+  });
+
+  it("preserves timeout metadata for a recoverable tool error", () => {
+    const [assistant] = runtimeEventsToMessages(SID, [
+      { id: "c1", type: "agent.tool_use", name: "bash", status: "running", occurred_at: 1000 },
+      {
+        id: "r1",
+        type: "agent.tool_result",
+        tool_use_id: "c1",
+        name: "bash",
+        status: "timed_out",
+        error_code: "tool_timeout",
+        error_message: "命令运行超时",
+        occurred_at: 601000,
+      },
+    ], "idle");
+    const tool = assistant.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("timed_out");
+    expect(tool?.type === "tool" ? tool.state.errorCode : "").toBe("tool_timeout");
+    expect(tool?.type === "tool" ? tool.state.errorMessage : "").toBe("命令运行超时");
+  });
+
+  it("recognizes timeout metadata from sessions created before structured tool errors", () => {
+    const [assistant] = runtimeEventsToMessages(SID, [
+      { id: "c1", type: "agent.tool_use", name: "bash", status: "running" },
+      {
+        id: "r1",
+        type: "agent.tool_result",
+        tool_use_id: "c1",
+        name: "bash",
+        output:
+          "partial output\n<shell_metadata>shell tool terminated command after exceeding timeout 600000 ms.</shell_metadata>",
+      },
+    ], "idle");
+    const tool = assistant.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("timed_out");
+    expect(tool?.type === "tool" ? tool.state.errorMessage : "").toBe("命令运行超时，已停止执行");
+  });
+
   it("appends a pending assistant message while busy", () => {
     const events: RuntimeAgentEvent[] = [userMessage("hello", { id: "u1" })];
     const messages = runtimeEventsToMessages(SID, events, "busy");
