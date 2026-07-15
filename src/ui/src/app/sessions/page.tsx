@@ -26,6 +26,7 @@ import {
   listModels,
   listSessions,
   setStoredMasterKey,
+  ensureWebSession,
 } from "@/lib/api";
 import { defaultModelForRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
@@ -38,7 +39,7 @@ const RECENT_SESSION_LIMIT = 6;
 
 function runtimeLabel(runtime: RuntimeHarness | string): string {
   if (typeof runtime !== "string") return runtime.display_name;
-  if (runtime === "claude_managed_agents") return "Claude Agents";
+  if (runtime === "claude_managed_agents") return "自托管开放 Harness";
   if (runtime === "cursor") return "Cursor";
   if (runtime === "gemini_antigravity") return "Gemini Antigravity";
   if (runtime === "claude-code" || runtime === "cc") return "Claude Code";
@@ -155,6 +156,7 @@ function SessionsStart() {
   const starting = startPhase !== null;
 
   useEffect(() => {
+    ensureWebSession();
     Promise.all([listRuntimeHarnesses(), listSessions(), listAgents()])
       .then(([nextHarnesses, nextSessions, nextAgents]) => {
         const nextRuntimeOptions = connectedRuntimeHarnesses(nextHarnesses);

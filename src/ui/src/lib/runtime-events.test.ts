@@ -83,6 +83,60 @@ describe("runtimeEventsToMessages", () => {
     expect(tool.state.output).toBe("files");
   });
 
+  it("keeps a late tool result on the turn that started the tool", () => {
+    const events: RuntimeAgentEvent[] = [
+      userMessage("first", { id: "u1" }),
+      { id: "c1", type: "agent.tool_use", name: "bash", status: "running", occurred_at: 1000 },
+      userMessage("second", { id: "u2" }),
+      { id: "r1", type: "agent.tool_result", tool_use_id: "c1", name: "bash", status: "aborted", occurred_at: 2000 },
+    ];
+    const messages = runtimeEventsToMessages(SID, events, "idle");
+    const firstAssistant = messages.find((message) =>
+      message.info.role === "assistant" && message.parts.some((part) => part.type === "tool"),
+    );
+    const tool = firstAssistant?.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("aborted");
+    expect(tool?.type === "tool" ? tool.state.startedAt : undefined).toBe(1000);
+    expect(tool?.type === "tool" ? tool.state.completedAt : undefined).toBe(2000);
+  });
+
+  it("preserves timeout metadata for a recoverable tool error", () => {
+    const [assistant] = runtimeEventsToMessages(SID, [
+      { id: "c1", type: "agent.tool_use", name: "bash", status: "running", occurred_at: 1000 },
+      {
+        id: "r1",
+        type: "agent.tool_result",
+        tool_use_id: "c1",
+        name: "bash",
+        status: "timed_out",
+        error_code: "tool_timeout",
+        error_message: "命令运行超时",
+        occurred_at: 601000,
+      },
+    ], "idle");
+    const tool = assistant.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("timed_out");
+    expect(tool?.type === "tool" ? tool.state.errorCode : "").toBe("tool_timeout");
+    expect(tool?.type === "tool" ? tool.state.errorMessage : "").toBe("命令运行超时");
+  });
+
+  it("recognizes timeout metadata from sessions created before structured tool errors", () => {
+    const [assistant] = runtimeEventsToMessages(SID, [
+      { id: "c1", type: "agent.tool_use", name: "bash", status: "running" },
+      {
+        id: "r1",
+        type: "agent.tool_result",
+        tool_use_id: "c1",
+        name: "bash",
+        output:
+          "partial output\n<shell_metadata>shell tool terminated command after exceeding timeout 600000 ms.</shell_metadata>",
+      },
+    ], "idle");
+    const tool = assistant.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("timed_out");
+    expect(tool?.type === "tool" ? tool.state.errorMessage : "").toBe("命令运行超时，已停止执行");
+  });
+
   it("appends a pending assistant message while busy", () => {
     const events: RuntimeAgentEvent[] = [userMessage("hello", { id: "u1" })];
     const messages = runtimeEventsToMessages(SID, events, "busy");
@@ -98,9 +152,42 @@ describe("runtimeEventsToMessages", () => {
     expect(textPart && "text" in textPart ? textPart.text : "").toContain("boom");
     expect(assistant.info.finish).toBe("stop");
   });
+
+  it("ignores an idle marker superseded by more activity in the same turn", () => {
+    const messages = runtimeEventsToMessages(SID, [
+      userMessage("change it", { id: "u1" }),
+      { id: "r1", type: "session.status_running" },
+      { id: "m1", type: "agent.message", text: "I will check" },
+      { id: "i1", type: "session.status_idle" },
+      { id: "t1", type: "agent.tool_use", name: "bash", status: "running" },
+      { id: "t2", type: "agent.tool_result", tool_use_id: "t1", name: "bash", status: "completed" },
+      { id: "m2", type: "agent.message", text: "Done" },
+    ], "idle");
+    const assistants = messages.filter((message) => message.info.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].info.finish).toBe("stop");
+    expect(assistants[0].parts.filter((part) => part.type === "tool")).toHaveLength(1);
+  });
 });
 
 describe("status derivation", () => {
+  it("treats a final agent response after a stale idle marker as terminal", () => {
+    expect(runtimeStatusFromEvents([
+      { type: "session.status_running" },
+      { type: "session.status_idle" },
+      { type: "agent.tool_result", tool_use_id: "tool_1", output: "done" },
+      { type: "agent.message", text: "continuing" },
+    ])).toBe("idle");
+  });
+
+  it("keeps running when a tool follows agent narration", () => {
+    expect(runtimeStatusFromEvents([
+      { type: "session.status_running" },
+      { type: "agent.message", text: "checking" },
+      { type: "agent.tool_use", id: "tool_1", status: "running" },
+    ])).toBe("busy");
+  });
+
   it("derives busy from a turn start and idle from a terminal event", () => {
     expect(runtimeStatusFromEvents([{ id: "1", type: "session.status_running" }])).toBe("busy");
     expect(
@@ -111,13 +198,15 @@ describe("status derivation", () => {
     ).toBe("idle");
   });
 
-  it("returns null when no status-bearing events exist", () => {
-    expect(runtimeStatusFromEvents([{ id: "1", type: "agent.message", text: "x" }])).toBeNull();
+  it("treats a complete agent response as terminal even without a status event", () => {
+    expect(runtimeStatusFromEvents([{ id: "1", type: "agent.message", text: "x" }])).toBe("idle");
   });
 
   it("maps session metadata to busy/idle", () => {
     expect(runtimeSessionStatusFromMetadata("running", undefined)).toBe("busy");
     expect(runtimeSessionStatusFromMetadata("idle", undefined)).toBe("idle");
+    expect(runtimeSessionStatusFromMetadata("cancelled", undefined)).toBe("idle");
+    expect(runtimeSessionStatusFromMetadata("timed_out", undefined)).toBe("idle");
     expect(runtimeSessionStatusFromMetadata(undefined, "run_123")).toBe("busy");
     expect(runtimeSessionStatusFromMetadata(undefined, undefined)).toBe("idle");
   });

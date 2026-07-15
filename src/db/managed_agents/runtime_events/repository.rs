@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -90,6 +92,44 @@ pub async fn append_batch(
         return Ok(Vec::new());
     }
 
+    let candidates = events
+        .into_iter()
+        .map(|event| {
+            let key = event_key(&event);
+            let event_type = event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned();
+            (event, key, event_type)
+        })
+        .collect::<Vec<_>>();
+    let keys = candidates
+        .iter()
+        .map(|(_, key, _)| key.clone())
+        .collect::<Vec<_>>();
+    let existing = sqlx::query_as::<_, (String, Value)>(
+        r#"
+        SELECT event_key, event_json
+        FROM "LiteLLM_ManagedAgentRuntimeEventsTable"
+        WHERE session_id = $1 AND event_key = ANY($2)
+        "#,
+    )
+    .bind(session_id)
+    .bind(&keys)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)?
+    .into_iter()
+    .collect::<HashMap<_, _>>();
+    let changed = candidates
+        .into_iter()
+        .filter(|(event, key, _)| existing.get(key) != Some(event))
+        .collect::<Vec<_>>();
+    if changed.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
 
     // Acquire a row lock on the session to serialize concurrent appends for this session ID
@@ -123,14 +163,8 @@ pub async fn append_batch(
     // turns out to already exist (event_key conflict, which leaves the
     // existing seq untouched) never collides with a genuinely new row later
     // in the same batch.
-    let mut rows = Vec::with_capacity(events.len());
-    for event in events {
-        let event_key = event_key(&event);
-        let event_type = event
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
+    let mut rows = Vec::with_capacity(changed.len());
+    for (event, event_key, event_type) in changed {
         let row = sqlx::query_as::<_, RuntimeEventRow>(
             r#"
             INSERT INTO "LiteLLM_ManagedAgentRuntimeEventsTable"

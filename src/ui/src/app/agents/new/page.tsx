@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, ExternalLink } from "lucide-react";
@@ -9,6 +10,7 @@ import { ImportAgentDialog } from "../import-agent-dialog";
 import { Button } from "@/components/ui/button";
 import {
   AGENT_TEMPLATES,
+  applicationGatePassed,
   agentTemplateForPrompt,
   buildAgentDraftFromPrompt,
   createInputFromDraft,
@@ -20,10 +22,7 @@ import {
 import type { AgentDraft } from "@/lib/agent-builder";
 import { diffAgentDrafts } from "@/lib/agent-draft-diff";
 import type { FieldChange } from "@/lib/agent-draft-diff";
-import {
-  integrationFromMcpServer,
-  sortIntegrations,
-} from "@/lib/integrations";
+import { integrationFromMcpServer, sortIntegrations } from "@/lib/integrations";
 import type { Integration } from "@/lib/integrations";
 import {
   apiErrorMessage,
@@ -41,11 +40,7 @@ import {
   listRules,
   listSkills,
 } from "@/lib/api";
-import {
-  defaultModelForRuntime,
-  runtimeSupportsModelDiscovery,
-  selectedRuntimeModel,
-} from "@/lib/model-options";
+import { defaultModelForRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import type { Agent, AgentRuntime, Rule, Skill, RuntimeHarness } from "@/lib/types";
 import {
   BUILDER_DRAFT_STORAGE_KEY,
@@ -83,6 +78,10 @@ export default function NewAgentPage() {
   const [view, setView] = useState<BuilderView>("edit");
   const [drafting, setDrafting] = useState(false);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
+  const [modelSuggestion, setModelSuggestion] = useState<{
+    suggested: string;
+    current: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -93,7 +92,8 @@ export default function NewAgentPage() {
 
   const parsed = useMemo(() => parseAgentDraftConfig(configText), [configText]);
   const draft = parsed.draft;
-  const canCreate = !saving && !parsed.error && draft.name.trim().length > 0;
+  const canCreate =
+    !saving && !parsed.error && draft.name.trim().length > 0 && applicationGatePassed(draft.application);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,10 +132,7 @@ export default function NewAgentPage() {
         try {
           const batch = await listAllMcpServerTools();
           toolsByServer = new Map(
-            Array.from(batch, ([serverId, tools]) => [
-              serverId,
-              tools.map((tool) => tool.name).filter(Boolean),
-            ]),
+            Array.from(batch, ([serverId, tools]) => [serverId, tools.map((tool) => tool.name).filter(Boolean)]),
           );
         } catch {
           // Older backends without the batch route: fall back to per-server calls.
@@ -162,7 +159,7 @@ export default function NewAgentPage() {
       } catch (err) {
         if (cancelled) return;
         setMcpIntegrations([]);
-        setMcpError(apiErrorMessage(err, "MCP integrations unavailable"));
+        setMcpError(apiErrorMessage(err, "MCP 集成暂不可用"));
       } finally {
         if (!cancelled) setMcpLoading(false);
       }
@@ -194,10 +191,13 @@ export default function NewAgentPage() {
       setModelsLoading(false);
       setConfigText((current) => {
         const currentDraft = parseAgentDraftConfig(current);
-        if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+        if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
         if (currentDraft.draft.runtime.trim() !== runtime) return current;
         if (currentDraft.draft.model.trim() === defaultModel) return current;
-        return stringifyAgentDraft({ ...currentDraft.draft, model: defaultModel });
+        return stringifyAgentDraft({
+          ...currentDraft.draft,
+          model: defaultModel,
+        });
       });
       return;
     }
@@ -207,20 +207,23 @@ export default function NewAgentPage() {
         setModels(modelValues);
         setConfigText((current) => {
           const currentDraft = parseAgentDraftConfig(current);
-          if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+          if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
           if (currentDraft.draft.runtime.trim() !== runtime) return current;
           const nextModel = selectedRuntimeModel(modelValues, currentDraft.draft.model);
           if (currentDraft.draft.model.trim() === nextModel) return current;
-          return stringifyAgentDraft({ ...currentDraft.draft, model: nextModel });
+          return stringifyAgentDraft({
+            ...currentDraft.draft,
+            model: nextModel,
+          });
         });
       })
       .catch((err) => {
         if (cancelled) return;
         setModels([]);
-        setModelsError(apiErrorMessage(err, "Failed to load runtime models"));
+        setModelsError(apiErrorMessage(err, "加载运行时模型失败"));
         setConfigText((current) => {
           const currentDraft = parseAgentDraftConfig(current);
-          if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+          if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
           if (currentDraft.draft.runtime.trim() !== runtime) return current;
           if (!currentDraft.draft.model.trim()) return current;
           return stringifyAgentDraft({ ...currentDraft.draft, model: "" });
@@ -240,7 +243,7 @@ export default function NewAgentPage() {
     const runtime = draft.runtime.trim();
     setConfigText((current) => {
       const currentDraft = parseAgentDraftConfig(current);
-      if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+      if (currentDraft.error && currentDraft.error !== "必须选择模型。") return current;
       if (currentDraft.draft.runtime.trim() !== runtime) return current;
       const nextModel = selectedRuntimeModel(models, currentDraft.draft.model);
       if (currentDraft.draft.model.trim() === nextModel) return current;
@@ -263,7 +266,12 @@ export default function NewAgentPage() {
     if (step === "create") return;
     const timer = window.setTimeout(() => {
       try {
-        const payload: SavedBuilderDraft = { configText, step, messages, savedAt: Date.now() };
+        const payload: SavedBuilderDraft = {
+          configText,
+          step,
+          messages,
+          savedAt: Date.now(),
+        };
         localStorage.setItem(BUILDER_DRAFT_STORAGE_KEY, JSON.stringify(payload));
       } catch {
         // Storage full or unavailable; autosave is best-effort.
@@ -295,7 +303,12 @@ export default function NewAgentPage() {
   const openConfig = (
     next: AgentDraft,
     templateId: string,
-    options?: { request?: string; notice?: string | null; summary?: string; changes?: FieldChange[] },
+    options?: {
+      request?: string;
+      notice?: string | null;
+      summary?: string;
+      changes?: FieldChange[];
+    },
   ) => {
     setSelectedTemplateId(templateId);
     setConfigText(stringifyAgentDraft(next));
@@ -312,8 +325,7 @@ export default function NewAgentPage() {
       },
     ]);
     setView("edit");
-    // Methodology gate: evaluation definition comes before design.
-    setStep("eval");
+    setStep("config");
     setError(null);
   };
 
@@ -335,9 +347,16 @@ export default function NewAgentPage() {
       );
       const generatedDraft = parseAgentDraftConfig(generated);
       if (generatedDraft.error) throw new Error(generatedDraft.error);
-      const nextDraft = selectedModel
-        ? { ...generatedDraft.draft, model: selectedModel }
-        : generatedDraft.draft;
+      // Keep the user's explicit model choice, but don't silently discard a
+      // differing recommendation: surface it as an inline suggestion the
+      // user can accept or dismiss (only when it's actually selectable).
+      const recommendedModel = generatedDraft.draft.model?.trim() ?? "";
+      const nextDraft = selectedModel ? { ...generatedDraft.draft, model: selectedModel } : generatedDraft.draft;
+      setModelSuggestion(
+        selectedModel && recommendedModel && recommendedModel !== selectedModel && models.includes(recommendedModel)
+          ? { suggested: recommendedModel, current: selectedModel }
+          : null,
+      );
       openConfig(nextDraft, templateId, {
         request: trimmed,
         summary: "已根据描述生成初始配置：",
@@ -348,13 +367,13 @@ export default function NewAgentPage() {
       const isServiceError =
         err instanceof Error &&
         (err.message.startsWith("HTTP ") || err.name === "TypeError" || err.name === "AbortError");
-      const serviceError = apiErrorMessage(err, "Model drafting failed");
+      const serviceError = apiErrorMessage(err, "模型生成草案失败");
       const fallbackDraft = withRuntimeDefaultTools(buildAgentDraftFromPrompt(trimmed), runtimes);
       openConfig(selectedModel ? { ...fallbackDraft, model: selectedModel } : fallbackDraft, templateId, {
         request: trimmed,
         notice: isServiceError
-          ? `Model drafting failed: ${serviceError}. Using a local starter config instead.`
-          : "Model couldn't generate a valid config for this request, so a local starter config was generated.",
+          ? `模型生成草案失败：${serviceError}。已改用本地初始配置。`
+          : "模型未能生成有效配置，已改用本地初始配置。",
       });
     } finally {
       setDrafting(false);
@@ -389,10 +408,7 @@ export default function NewAgentPage() {
         {
           id: userMessageId + 1,
           role: "assistant",
-          summary:
-            changes.length === 0
-              ? "配置没有需要修改的地方。"
-              : `已应用 ${changes.length} 处修改：`,
+          summary: changes.length === 0 ? "配置没有需要修改的地方。" : `已应用 ${changes.length} 处修改：`,
           changes,
         },
       ]);
@@ -418,7 +434,7 @@ export default function NewAgentPage() {
     const selectedModel = draft.model.trim();
     const blankDraft = withRuntimeDefaultTools(AGENT_TEMPLATES[0].draft, runtimes);
     openConfig(selectedModel ? { ...blankDraft, model: selectedModel } : blankDraft, "blank", {
-      request: "Manual UI setup",
+      request: "使用表单手动配置",
     });
   };
 
@@ -442,6 +458,7 @@ export default function NewAgentPage() {
       } catch {
         // Best-effort cleanup.
       }
+      toast.success("已创建为草稿：通过预检并激活后才能运行或被调度。");
       router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`);
     } catch (err) {
       setError(apiErrorMessage(err, "创建智能体失败"));
@@ -486,25 +503,24 @@ export default function NewAgentPage() {
               onClick={() => router.push("/agents/")}
               className="gap-1.5 text-muted-foreground hover:text-foreground"
             >
-              Agents
+              智能体
             </Button>
             <span className="text-muted-foreground">/</span>
             <span className="truncate text-sm font-semibold">创建智能体</span>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setImportOpen(true)}
-              className="hidden sm:inline-flex"
-            >
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)} className="hidden sm:inline-flex">
               <ExternalLink className="size-3.5" />
               导入智能体
             </Button>
             {step === "config" && (
-              <Button size="sm" onClick={() => setStep("review")} disabled={Boolean(parsed.error)}>
+              <Button
+                size="sm"
+                onClick={() => setStep("eval")}
+                disabled={Boolean(parsed.error) || !applicationGatePassed(draft.application)}
+              >
                 <CheckCircle2 className="size-3.5" />
-                进入复核
+                进入验证
               </Button>
             )}
             {step === "review" && (
@@ -527,15 +543,16 @@ export default function NewAgentPage() {
 
         <main className="min-h-0 flex-1 overflow-y-auto bg-background text-foreground">
           <PlatformSteps
-            activeStep={step === "create" ? 1 : step === "eval" ? 2 : step === "config" ? 3 : 4}
-            canEnterConfig={evalGatePassed(draft.design)}
-            canEnterReview={!parsed.error && draft.name.trim().length > 0}
+            activeStep={step === "create" ? 1 : step === "config" ? 2 : step === "eval" ? 3 : 4}
+            canEnterEvaluation={applicationGatePassed(draft.application) && !parsed.error}
+            canEnterReview={evalGatePassed(draft.design) && !parsed.error && draft.name.trim().length > 0}
             onNavigate={setStep}
           />
           {savedDraft && step === "create" && (
             <div className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
               <span className="min-w-0 flex-1">
-                检测到未完成的草稿（{savedDraftAgeLabel(savedDraft.savedAt)}保存），是否继续编辑？
+                检测到未完成的草稿（{savedDraftAgeLabel(savedDraft.savedAt)}
+                保存），是否继续编辑？
               </span>
               <Button type="button" size="sm" onClick={restoreSavedDraft}>
                 恢复草稿
@@ -549,18 +566,23 @@ export default function NewAgentPage() {
             <EvalStep
               draft={draft}
               onDraftChange={updateDraft}
-              onBack={() => setStep("create")}
-              onContinue={() => setStep("config")}
+              onBack={() => setStep("config")}
+              onContinue={() => setStep("review")}
             />
           ) : step === "review" ? (
             <ReviewStep
               draft={draft}
+              approvalEnforcement={
+                harnesses.find((entry) => entry.alias === draft.runtime)?.approval_enforcement ??
+                runtimes.find((entry) => entry.id === draft.runtime)?.approval_enforcement ??
+                "advisory"
+              }
               error={error}
               canCreate={canCreate}
               saving={saving}
               mcpIntegrations={mcpIntegrations}
               onDraftChange={updateDraft}
-              onBack={() => setStep("config")}
+              onBack={() => setStep("eval")}
               onCreate={() => void create()}
             />
           ) : step === "create" ? (
@@ -594,6 +616,13 @@ export default function NewAgentPage() {
               copied={copied}
               draft={draft}
               draftNotice={draftNotice}
+              modelSuggestion={modelSuggestion}
+              onModelSuggestion={(accept) => {
+                if (accept && modelSuggestion) {
+                  updateDraft({ ...draft, model: modelSuggestion.suggested });
+                }
+                setModelSuggestion(null);
+              }}
               drafting={drafting}
               draftProgress={draftProgress}
               error={error}
@@ -618,7 +647,7 @@ export default function NewAgentPage() {
                 setError(null);
               }}
               onCopy={() => void copyConfig()}
-              onCreate={() => setStep("review")}
+              onCreate={() => setStep("eval")}
               onDraftChange={updateDraft}
               onPromptChange={setPrompt}
               onRefine={refineFromPrompt}

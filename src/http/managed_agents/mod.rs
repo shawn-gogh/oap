@@ -1,11 +1,13 @@
 pub mod eval_runs;
 pub mod evolution;
+pub mod governance;
 pub mod grants;
 pub mod import;
 pub mod import_files;
 mod import_types;
 pub mod improvements;
 pub mod inbox;
+pub mod mattermost;
 pub mod memory;
 pub mod registry;
 pub mod routes;
@@ -13,8 +15,8 @@ pub mod routines;
 pub mod rules;
 pub mod runs;
 pub mod skills;
-pub mod slack;
-pub mod teams;
+pub mod tasks;
+pub mod tool_approvals;
 pub mod workspace;
 
 use axum::http::HeaderMap;
@@ -79,6 +81,25 @@ pub(crate) async fn assert_agent_edit(
 
 /// Visibility/usage gate: owner, admin, or any grant ('use' or 'edit').
 /// Required to see an agent or start sessions/runs on it.
+/// Draft agents are configuration-only: they may be edited and chatted with
+/// for testing, but runs and scheduled triggers are refused until the agent
+/// passes preflight and is activated.
+pub(crate) fn assert_agent_runnable(agent: &ManagedAgentRow) -> Result<(), GatewayError> {
+    if agent.status == "draft" {
+        return Err(GatewayError::BadRequest(format!(
+            "agent {} 处于草稿状态：请先通过预检并激活（POST /api/agents/{}/activate）",
+            agent.id, agent.id
+        )));
+    }
+    if agent.status == "archived_pending_delete" {
+        return Err(GatewayError::BadRequest(format!(
+            "agent {} 已被软删除并处于归档挂起状态",
+            agent.id
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) async fn assert_agent_use(
     auth: &AuthContext,
     agent: &ManagedAgentRow,

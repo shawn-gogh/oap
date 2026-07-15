@@ -6,12 +6,19 @@ use axum::{
     Json,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::db::managed_agents::harnesses;
 use crate::{
     db::{
         credentials,
-        managed_agents::registry::{repository, schema::CreateManagedAgent},
+        managed_agents::{
+            governance::{self, ImportedSource},
+            registry::{
+                repository,
+                schema::{CreateManagedAgent, UpdateManagedAgent},
+            },
+        },
     },
     errors::GatewayError,
     http::managed_agents::import_types::{
@@ -72,37 +79,119 @@ pub async fn import(
 
     let mut rows = Vec::with_capacity(input.agents.len());
     for agent in input.agents {
-        rows.push(
-            repository::create(
-                pool,
-                create_input(
-                    &state,
-                    provider,
-                    &endpoint,
-                    &owner_id,
-                    &credential_mode,
-                    api_key,
-                    &runtime,
-                    agent,
-                )
-                .await?,
-            )
-            .await?,
-        );
-        if let Some(row) = rows.last() {
+        let external_agent_id = agent.external_id.clone();
+        let source_hash = source_hash(&agent)?;
+        let existing = governance::find_by_source(
+            pool,
+            &owner_id,
+            provider.id(),
+            &endpoint,
+            &external_agent_id,
+        )
+        .await?;
+        let unchanged = existing
+            .as_ref()
+            .is_some_and(|governance| governance.source_hash == source_hash);
+        let create = create_input(
+            &state,
+            provider,
+            &endpoint,
+            &owner_id,
+            &credential_mode,
+            api_key,
+            &runtime,
+            agent,
+        )
+        .await?;
+        let credential_name = create
+            .config
+            .as_ref()
+            .and_then(|config| config.pointer("/source/credential_name"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let row = match existing.as_ref() {
+            Some(existing) if unchanged => repository::get(pool, &existing.agent_id)
+                .await?
+                .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?,
+            Some(existing) => {
+                repository::update(pool, &existing.agent_id, update_from_import(create))
+                    .await?
+                    .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?
+            }
+            None => repository::create(pool, create).await?,
+        };
+        if !unchanged {
             let _ = crate::db::managed_agents::registry::revisions::record(
                 pool,
-                row,
+                &row,
                 Some(&auth.user_id),
             )
             .await;
         }
+        governance::record_import(
+            pool,
+            ImportedSource {
+                agent_id: &row.id,
+                owner_id: &owner_id,
+                provider: provider.id(),
+                endpoint: &endpoint,
+                external_agent_id: &external_agent_id,
+                source_hash: &source_hash,
+                credential_scope: if matches!(credential_mode, CredentialMode::Shared) {
+                    "personal"
+                } else {
+                    "byo"
+                },
+                credential_name: credential_name.as_deref(),
+            },
+        )
+        .await?;
+        rows.push(row);
     }
 
     Ok((
         StatusCode::CREATED,
         Json(ImportAgentsResponse { agents: rows }),
     ))
+}
+
+fn update_from_import(input: CreateManagedAgent) -> UpdateManagedAgent {
+    UpdateManagedAgent {
+        name: Some(input.name),
+        model: input.model,
+        runtime: input.runtime,
+        system: input.system,
+        prompt: input.prompt,
+        cron: input
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.cron.clone()),
+        timezone: input.schedule.and_then(|schedule| schedule.timezone),
+        vault_keys: input.vault_keys,
+        setup_commands: input.setup_commands,
+        max_runtime_minutes: input.max_runtime_minutes,
+        on_failure: input.on_failure,
+        config: input.config,
+        owner_id: None,
+        status: Some("draft".to_owned()),
+        description: input.description,
+        harness: input.harness,
+        skill_ids: input.skill_ids,
+        rule_ids: input.rule_ids,
+    }
+}
+
+fn source_hash(agent: &ImportAgent) -> Result<String, GatewayError> {
+    let value = json!({
+        "external_id": agent.external_id,
+        "name": agent.name,
+        "description": agent.description,
+        "model": agent.model,
+        "raw": agent.raw,
+    });
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 pub(crate) fn import_runtime_providers() -> Vec<ImportProviderResponse> {
@@ -163,9 +252,16 @@ async fn create_input(
     runtime: &str,
     agent: ImportAgent,
 ) -> Result<CreateManagedAgent, GatewayError> {
-    let credential_name =
-        credential_name_for_agent(state, provider, endpoint, credential_mode, api_key, &agent)
-            .await?;
+    let credential_name = credential_name_for_agent(
+        state,
+        provider,
+        endpoint,
+        owner_id,
+        credential_mode,
+        api_key,
+        &agent,
+    )
+    .await?;
     let raw = agent.raw.clone().unwrap_or(Value::Null);
     let system = provider.system_prompt_from_raw(&agent.external_id, &raw);
     Ok(CreateManagedAgent {
@@ -200,6 +296,7 @@ async fn credential_name_for_agent(
     state: &AppState,
     provider: &dyn ImportAgentsProvider,
     endpoint: &str,
+    owner_id: &str,
     credential_mode: &CredentialMode,
     api_key: Option<&str>,
     agent: &ImportAgent,
@@ -209,7 +306,15 @@ async fn credential_name_for_agent(
     }
     let api_key = shared_api_key(api_key)?;
     let credential_name = provider_credential_name(provider.id(), &agent.external_id);
-    save_provider_credential(state, provider, &credential_name, endpoint, api_key).await?;
+    save_provider_credential(
+        state,
+        provider,
+        &credential_name,
+        endpoint,
+        api_key,
+        owner_id,
+    )
+    .await?;
     Ok(Some(credential_name))
 }
 
@@ -355,19 +460,21 @@ async fn save_provider_credential(
     credential_name: &str,
     endpoint: &str,
     api_key: &str,
+    owner_id: &str,
 ) -> Result<(), GatewayError> {
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let key =
         credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref())?;
-    credentials::upsert(
+    credentials::upsert_personal(
         pool,
         credential_name,
+        owner_id,
         json!({
             "api_key": credential_crypto::encrypt_value(api_key, &key)?,
             "api_base": credential_crypto::encrypt_value(endpoint, &key)?,
         }),
         credential_info(provider),
-        "agent-import",
+        owner_id,
     )
     .await
 }

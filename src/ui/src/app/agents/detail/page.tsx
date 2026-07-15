@@ -5,12 +5,14 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Activity,
   ArrowLeft,
   Brain,
   Check,
   Clock,
   Download,
   FileText,
+  GitPullRequest,
   KeyRound,
   Pencil,
   Pin,
@@ -18,7 +20,9 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
   Users,
@@ -33,15 +37,29 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
+  AgentApplicationOverview,
+  AgentInteractiveDashboard,
+  applicationContractFromAgent,
+  type AgentDashboardSection,
+} from "./application-dashboard";
+import {
   DEFAULT_VAULT_USER,
   agentFileDownloadUrl,
   createAgentGrant,
+  createAgentGrantsBatch,
   createAgentGroupGrant,
+  createAgentGroupGrantsBatch,
+  createAgentTask,
+  createSession,
   createImprovementProposal,
   deleteAgentGrant,
   deleteAgentGroupGrant,
   listAgentGrants,
   listAgentGroupGrants,
+  listAgentTasks,
+  listTaskAcceptance,
+  listTaskArtifacts,
+  listTaskAttempts,
   listGrantableGroups,
   listGrantableUsers,
   type AgentGrant,
@@ -54,21 +72,40 @@ import {
   deleteAgent,
   deleteAgentFile,
   deleteMemory,
+  activateAgent,
+  apiErrorMessage,
+  cancelAgentTask,
   getAgent,
+  getAgentGovernance,
+  preflightAgent,
+  requestAgentPublish,
+  rollbackAgent,
+  testAgentGovernance,
+  type AgentGovernanceResponse,
+  type AgentPreflightReport,
   listAgentFiles,
   uploadAgentFile,
   listMemory,
+  listRoutines,
   listSessions,
   listVaultKeysForUser,
   storeMemory,
   updateAgent,
+  updateTaskAcceptance,
+  resumeAgentTask,
+  retryAgentTask,
 } from "@/lib/api";
 import { scheduleLabel } from "@/lib/schedule";
+import type { AgentApplicationInput } from "@/lib/agent-builder";
 import type {
   Agent,
-  AgentRuntimeId,
+  AgentTask,
   Memory,
   OpencodeSession,
+  Routine,
+  TaskAcceptanceCheck,
+  TaskAttempts,
+  TaskArtifact,
   VaultKeyEntry,
   WorkspaceFile,
 } from "@/lib/types";
@@ -122,17 +159,30 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-function isAgentRuntimeId(value: unknown): value is AgentRuntimeId {
-  return value === "claude_managed_agents" || value === "cursor" || value === "gemini_antigravity";
+function formatGrantExpiry(expiresAt?: number | null): string {
+  if (!expiresAt) return "长期有效";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(expiresAt));
+}
+
+function grantExpiryMillis(value: string): number | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function runtimeFromAgent(agent: Agent): string {
   const config = agent.config;
   if (config && typeof config === "object" && !Array.isArray(config)) {
     const runtime = (config as { runtime?: unknown }).runtime;
-    if (isAgentRuntimeId(runtime)) return runtime;
+    if (typeof runtime === "string" && runtime.trim()) return runtime;
   }
-  if (isAgentRuntimeId(agent.harness)) return agent.harness;
+  if (typeof agent.harness === "string" && agent.harness.trim()) return agent.harness;
   return "claude_managed_agents";
 }
 
@@ -146,11 +196,73 @@ function vaultKeysFromAgent(agent: Agent | null): string[] {
     : [];
 }
 
+function configEntryLabels(agent: Agent, key: "tools" | "mcp_servers"): string[] {
+  const values = agent.config?.[key];
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.flatMap((value) => {
+    if (typeof value === "string" && value.trim()) return [value];
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    const label = record.name ?? record.id ?? record.type ?? record.mcp_server_name;
+    return typeof label === "string" && label.trim() ? [label] : [];
+  }))];
+}
+
 function fileNameFromPath(filePath: string): string {
   return filePath.split("/").filter(Boolean).at(-1) || "agent-file";
 }
 
+function artifactText(artifact: TaskArtifact): string | null {
+  const text =
+    artifact.content_json && typeof artifact.content_json === "object" && !Array.isArray(artifact.content_json)
+      ? (artifact.content_json as Record<string, unknown>).text
+      : null;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
+function taskInputsFromAgent(agent: Agent): AgentApplicationInput[] {
+  const declared = applicationContractFromAgent(agent)?.inputs ?? [];
+  const seen = new Set<string>();
+  const inputs = declared.filter((input) => {
+    const key = input.type.trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return inputs.length > 0
+    ? inputs
+    : [{ type: "request", source: "user", description: "Describe the task to complete." }];
+}
+
+function executionTaskInputs(agent: Agent): AgentApplicationInput[] {
+  const inputs = taskInputsFromAgent(agent);
+  if (runtimeFromAgent(agent) !== "cursor" || inputs.some((input) => input.type === "repository")) {
+    return inputs;
+  }
+  return [
+    ...inputs,
+    {
+      type: "repository",
+      source: "Cursor runtime",
+      description: "Repository URL or owner/name required by the Cursor runtime.",
+    },
+  ];
+}
+
+function taskPrompt(agent: Agent, input: Record<string, string>): string {
+  const objective = applicationContractFromAgent(agent)?.objective ?? agent.description ?? agent.name;
+  return `Task objective: ${objective}\n\nSupplied inputs:\n${JSON.stringify(input, null, 2)}`;
+}
+
 type MemoryFilter = "all" | "always" | "standard";
+
+const DASHBOARD_SECTIONS: Array<{ id: AgentDashboardSection; label: string }> = [
+  { id: "overview", label: "总览" },
+  { id: "setup", label: "配置与资源" },
+  { id: "runs", label: "运行" },
+  { id: "quality", label: "质量" },
+  { id: "governance", label: "治理" },
+];
 
 function AgentDetail() {
   const router = useRouter();
@@ -159,7 +271,37 @@ function AgentDetail() {
   const id = decodeURIComponent(searchParams.get("id") ?? "");
 
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [activeSection, setActiveSection] = useState<AgentDashboardSection>("overview");
   const [sessions, setSessions] = useState<OpencodeSession[]>([]);
+  const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [taskLauncherOpen, setTaskLauncherOpen] = useState(false);
+  const [taskInputValues, setTaskInputValues] = useState<Record<string, string>>({});
+  const [taskStarting, setTaskStarting] = useState(false);
+  const [taskStartError, setTaskStartError] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [taskArtifacts, setTaskArtifacts] = useState<TaskArtifact[]>([]);
+  const [dashboardArtifacts, setDashboardArtifacts] = useState<TaskArtifact[]>([]);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0);
+  const [taskChecks, setTaskChecks] = useState<TaskAcceptanceCheck[]>([]);
+  const [taskAttempts, setTaskAttempts] = useState<TaskAttempts>({
+    sessions: [],
+    runs: [],
+    artifacts: [],
+    acceptance_checks: [],
+    max_attempts: 3,
+  });
+  const [taskDetailLoading, setTaskDetailLoading] = useState(false);
+  const [acceptanceBusy, setAcceptanceBusy] = useState(false);
+  const [acceptanceEvidence, setAcceptanceEvidence] = useState("");
+  const [taskDetailError, setTaskDetailError] = useState<string | null>(null);
+  const [resumeInputValues, setResumeInputValues] = useState<Record<string, string>>({});
+  const [taskResuming, setTaskResuming] = useState(false);
+  const [taskRetrying, setTaskRetrying] = useState(false);
+  const [taskCancelling, setTaskCancelling] = useState<string | null>(null);
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [preflightReport, setPreflightReport] = useState<AgentPreflightReport | null>(null);
+  const [governance, setGovernance] = useState<AgentGovernanceResponse | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -172,11 +314,12 @@ function AgentDetail() {
   const [groupGrants, setGroupGrants] = useState<AgentGroupGrant[]>([]);
   const [grantableUsers, setGrantableUsers] = useState<ManagedUser[]>([]);
   const [grantableGroups, setGrantableGroups] = useState<ManagedGroup[]>([]);
-  const [grantUser, setGrantUser] = useState("");
   const [grantUserQuery, setGrantUserQuery] = useState("");
-  const [grantGroup, setGrantGroup] = useState("");
   const [grantGroupQuery, setGrantGroupQuery] = useState("");
   const [grantPermission, setGrantPermission] = useState("use");
+  const [grantExpiry, setGrantExpiry] = useState("");
+  const [selectedGrantUsers, setSelectedGrantUsers] = useState<Set<string>>(new Set());
+  const [selectedGrantGroups, setSelectedGrantGroups] = useState<Set<string>>(new Set());
   const [grantBusy, setGrantBusy] = useState(false);
   const [grantError, setGrantError] = useState<string | null>(null);
   const [grantsVisible, setGrantsVisible] = useState(true);
@@ -222,17 +365,87 @@ function AgentDetail() {
     }
   };
 
+  const openTaskDetails = async (task: AgentTask) => {
+    const taskId = task.id;
+    if (selectedTaskId === taskId) {
+      setSelectedTaskId(null);
+      return;
+    }
+    setSelectedTaskId(taskId);
+    setTaskDetailLoading(true);
+    setTaskDetailError(null);
+    setTaskAttempts({ sessions: [], runs: [], artifacts: [], acceptance_checks: [], max_attempts: 3 });
+    setAcceptanceEvidence("");
+    setResumeInputValues(
+      Object.fromEntries(
+        agent
+          ? executionTaskInputs(agent).map((input) => {
+              const value = task.input_json[input.type];
+              return [input.type, typeof value === "string" ? value : ""];
+            })
+          : [],
+      ),
+    );
+    try {
+      const [artifacts, checks, attempts] = await Promise.all([
+        listTaskArtifacts(id, taskId),
+        listTaskAcceptance(id, taskId),
+        listTaskAttempts(id, taskId),
+      ]);
+      setTaskArtifacts(artifacts);
+      setTaskChecks(checks);
+      setTaskAttempts(attempts);
+    } catch (e) {
+      setTaskDetailError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskDetailLoading(false);
+    }
+  };
+
+  const recordTaskAcceptance = async (
+    task: AgentTask,
+    check: TaskAcceptanceCheck | null,
+    verdict: "passed" | "failed",
+  ) => {
+    const evidence = acceptanceEvidence.trim();
+    if (!evidence) {
+      setTaskDetailError("请填写验收证据，再记录通过或失败。 ");
+      return;
+    }
+    setAcceptanceBusy(true);
+    setTaskDetailError(null);
+    try {
+      const result = await updateTaskAcceptance(id, task.id, {
+        criterion_index: check?.criterion_index ?? 0,
+        criterion: check ? undefined : "人工确认交付结果满足任务要求",
+        verdict,
+        evidence,
+      });
+      setTasks((current) => current.map((item) => (item.id === task.id ? result.task : item)));
+      setTaskChecks(result.checks);
+      setAcceptanceEvidence("");
+    } catch (e) {
+      setTaskDetailError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAcceptanceBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!id) return;
     (async () => {
       try {
         const ag = await getAgent(id);
         const owner = vaultUserFromAgent(ag);
-        const [allSessions, memoryRows, fileRows, keyRows] = await Promise.all([
+        const [allSessions, memoryRows, fileRows, keyRows, routineRows, taskRows, report, governanceState] = await Promise.all([
           listSessions().catch(() => []),
           listMemory(id).catch(() => []),
           listAgentFiles(id).catch(() => []),
           listVaultKeysForUser(owner).catch(() => []),
+          listRoutines(id).catch(() => []),
+          listAgentTasks(id).catch(() => []),
+          preflightAgent(id).catch(() => null),
+          getAgentGovernance(id).catch(() => null),
         ]);
         setVaultUserId(owner);
         setAgent(ag);
@@ -240,6 +453,10 @@ function AgentDetail() {
         setMemories(memoryRows);
         setFiles(fileRows);
         setStoredKeyEntries(keyRows);
+        setRoutines(routineRows);
+        setTasks(taskRows);
+        setPreflightReport(report);
+        setGovernance(governanceState);
         listEvalRuns(id).then(setEvalRuns).catch(() => {});
         listAgentGrants(id)
           .then(setGrants)
@@ -265,6 +482,31 @@ function AgentDetail() {
     }, 200);
     return () => window.clearTimeout(timer);
   }, [grantUserQuery, id]);
+
+  useEffect(() => {
+    if (activeSection !== "dashboard") return;
+    const latestTask = [...tasks].sort((a, b) => b.created_at - a.created_at)[0];
+    if (!latestTask) {
+      setDashboardArtifacts([]);
+      setDashboardLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDashboardLoading(true);
+    listTaskArtifacts(id, latestTask.id)
+      .then((artifacts) => {
+        if (!cancelled) setDashboardArtifacts(artifacts);
+      })
+      .catch(() => {
+        if (!cancelled) setDashboardArtifacts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, dashboardRefreshKey, id, tasks]);
 
   useEffect(() => {
     const query = grantGroupQuery.trim();
@@ -321,8 +563,147 @@ function AgentDetail() {
   };
 
   const openSessionStart = () => {
-    if (!id) return;
-    router.push(`/sessions/?agent=${encodeURIComponent(id)}`);
+    if (!agent || agent.status === "draft") return;
+    const initial = Object.fromEntries(
+      executionTaskInputs(agent).map((input) => [input.type, ""]),
+    );
+    setTaskInputValues(initial);
+    setTaskStartError(null);
+    setTaskLauncherOpen(true);
+    setActiveSection("runs");
+  };
+
+  const startStructuredTask = async () => {
+    if (!agent || taskStarting) return;
+    const inputs = executionTaskInputs(agent);
+    const normalized = Object.fromEntries(
+      inputs.map((input) => [input.type, taskInputValues[input.type]?.trim() ?? ""]),
+    );
+    const missing = inputs.filter((input) => !normalized[input.type]);
+    if (missing.length > 0) {
+      setTaskStartError(`请填写：${missing.map((input) => input.type).join("、")}`);
+      return;
+    }
+    setTaskStarting(true);
+    setTaskStartError(null);
+    try {
+      const request = normalized.request || Object.values(normalized)[0] || `${agent.name} task`;
+      const title = request.length > 60 ? `${request.slice(0, 60)}…` : request;
+      const task = await createAgentTask(agent.id, {
+        title,
+        source: "manual",
+        input: normalized,
+      });
+      const runtime = runtimeFromAgent(agent);
+      const environment = runtime === "cursor"
+        ? {
+            repository: normalized.repository ?? "",
+            ref: normalized.ref || "main",
+            target_branch: "agent/{agent_id}/{session_id}",
+            auto_create_pr: false,
+          }
+        : normalized;
+      const session = await createSession(`${agent.name}: ${title}`, agent.id, {
+        runtime,
+        prompt: taskPrompt(agent, normalized),
+        environment,
+        taskId: task.id,
+      });
+      setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+      setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+      setTaskLauncherOpen(false);
+      router.push(`/chat/?id=${encodeURIComponent(session.id)}`);
+    } catch (e) {
+      setTaskStartError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskStarting(false);
+    }
+  };
+
+  const resumeWaitingTask = async (task: AgentTask) => {
+    if (!agent || taskResuming) return;
+    const normalized = Object.fromEntries(
+      executionTaskInputs(agent).map((input) => [
+        input.type,
+        resumeInputValues[input.type]?.trim() ?? "",
+      ]),
+    );
+    const missing = Object.entries(normalized).filter(([, value]) => !value).map(([key]) => key);
+    if (missing.length > 0) {
+      setTaskDetailError(`请补充：${missing.join("、")}`);
+      return;
+    }
+    setTaskResuming(true);
+    setTaskDetailError(null);
+    try {
+      const result = await resumeAgentTask(id, task.id, normalized);
+      setTasks((current) => current.map((item) => (item.id === task.id ? result.task : item)));
+      router.push(`/chat/?id=${encodeURIComponent(result.session_id)}`);
+    } catch (e) {
+      setTaskDetailError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskResuming(false);
+    }
+  };
+
+  const retryFailedTask = async (task: AgentTask) => {
+    if (taskRetrying) return;
+    setTaskRetrying(true);
+    setTaskDetailError(null);
+    try {
+      const result = await retryAgentTask(id, task.id);
+      setTasks((current) => current.map((item) => (item.id === task.id ? result.task : item)));
+      setTaskAttempts((current) => ({
+        ...current,
+        sessions: [result.session, ...current.sessions.filter((item) => item.id !== result.session.id)],
+      }));
+      router.push(`/chat/?id=${encodeURIComponent(result.session.id)}`);
+    } catch (e) {
+      setTaskDetailError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskRetrying(false);
+    }
+  };
+
+  const cancelActiveTask = async (task: AgentTask) => {
+    if (taskCancelling) return;
+    const confirmed = await confirmAction({
+      title: `取消任务「${task.title}」？`,
+      description: "当前 Attempt 将进入终态，后续迟到的输出不会再改变任务结果。",
+      confirmLabel: "取消任务",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setTaskCancelling(task.id);
+    setTaskDetailError(null);
+    try {
+      const result = await cancelAgentTask(id, task.id);
+      setTasks((current) => current.map((item) => (item.id === task.id ? result.task : item)));
+      if (result.session_id) {
+        setSessions((current) => current.map((session) => (
+          session.id === result.session_id ? { ...session, status: "cancelled" } : session
+        )));
+        setTaskAttempts((current) => ({
+          ...current,
+          sessions: current.sessions.map((attempt) => (
+            attempt.id === result.session_id ? { ...attempt, status: "cancelled" } : attempt
+          )),
+        }));
+      }
+      toast.success(
+        result.interruption === "provider_interrupted"
+          ? "任务已取消，并已向 Runtime 发送中断"
+          : result.interruption === "sandbox_terminated"
+            ? "任务已取消，执行沙箱已终止"
+          : result.interruption === "cooperative"
+            ? "任务已取消；底层执行可能仍在收尾"
+            : "任务已取消",
+      );
+    } catch (e) {
+      setTaskDetailError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTaskCancelling(null);
+    }
   };
 
   const handleDownloadFile = async (file: WorkspaceFile) => {
@@ -426,14 +807,19 @@ function AgentDetail() {
   };
 
   const addGrant = async () => {
-    const user = grantUser.trim();
-    if (!user || grantBusy) return;
+    const users = [...selectedGrantUsers];
+    if (users.length === 0 || grantBusy) return;
     setGrantBusy(true);
     setGrantError(null);
     try {
-      await createAgentGrant(id, user, grantPermission);
+      const expiry = grantExpiryMillis(grantExpiry);
+      if (users.length === 1) {
+        await createAgentGrant(id, users[0], grantPermission, expiry);
+      } else {
+        await createAgentGrantsBatch(id, users, grantPermission, expiry);
+      }
       setGrants(await listAgentGrants(id));
-      setGrantUser("");
+      setSelectedGrantUsers(new Set());
       setGrantUserQuery("");
     } catch (e) {
       setGrantError(e instanceof Error ? e.message : String(e));
@@ -456,14 +842,19 @@ function AgentDetail() {
   };
 
   const addGroupGrant = async () => {
-    const group = grantGroup.trim();
-    if (!group || grantBusy) return;
+    const groups = [...selectedGrantGroups];
+    if (groups.length === 0 || grantBusy) return;
     setGrantBusy(true);
     setGrantError(null);
     try {
-      await createAgentGroupGrant(id, group, grantPermission);
+      const expiry = grantExpiryMillis(grantExpiry);
+      if (groups.length === 1) {
+        await createAgentGroupGrant(id, groups[0], grantPermission, expiry);
+      } else {
+        await createAgentGroupGrantsBatch(id, groups, grantPermission, expiry);
+      }
       setGroupGrants(await listAgentGroupGrants(id));
-      setGrantGroup("");
+      setSelectedGrantGroups(new Set());
       setGrantGroupQuery("");
     } catch (e) {
       setGrantError(e instanceof Error ? e.message : String(e));
@@ -636,7 +1027,13 @@ function AgentDetail() {
           <div className="flex items-center gap-2">
             {agent && (
               <>
-                <Button size="sm" variant="default" onClick={openSessionStart}>
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={openSessionStart}
+                  disabled={agent.status === "draft"}
+                  title={agent.status === "draft" ? "激活后才能运行" : undefined}
+                >
                   <Play className="size-3.5" />
                   Run
                 </Button>
@@ -658,7 +1055,7 @@ function AgentDetail() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-6">
+          <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6">
             {error && (
               <Card className="border-destructive p-3">
                 <p className="text-sm text-destructive">{error}</p>
@@ -688,6 +1085,70 @@ function AgentDetail() {
                   )}
                 </div>
 
+                <nav className="flex gap-1 overflow-x-auto border-b border-border" aria-label="智能体应用视图">
+                  {[
+                    ...DASHBOARD_SECTIONS.slice(0, 1),
+                    ...(applicationContractFromAgent(agent)?.dashboard &&
+                    applicationContractFromAgent(agent)?.outputs.some(
+                      (output) => output.type === "interactive_dashboard",
+                    )
+                      ? [{ id: "dashboard" as const, label: "大屏应用" }]
+                      : []),
+                    ...DASHBOARD_SECTIONS.slice(1),
+                  ].map((section) => (
+                    <button
+                      key={section.id}
+                      type="button"
+                      onClick={() => setActiveSection(section.id)}
+                      className={`shrink-0 border-b-2 px-3 py-2 text-sm transition-colors ${
+                        activeSection === section.id
+                          ? "border-foreground font-medium text-foreground"
+                          : "border-transparent text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {section.label}
+                    </button>
+                  ))}
+                </nav>
+
+                {activeSection === "overview" && (
+                  <AgentApplicationOverview
+                    agent={agent}
+                    runtime={runtimeFromAgent(agent)}
+                    sessions={sessions}
+                    tasks={tasks}
+                    routines={routines}
+                    evalRuns={evalRuns}
+                    filesCount={files.length}
+                    memoryCount={memories.length}
+                    alwaysOnCount={alwaysOnCount}
+                    credentialCount={vaultKeysFromAgent(agent).length}
+                    grantCount={grants.length + groupGrants.length}
+                    preflightReport={preflightReport}
+                    onSelectSection={setActiveSection}
+                  />
+                )}
+
+                {activeSection === "overview" && agent.status === "draft" && !governance && (
+                  <DraftPreflightPanel
+                    agentId={agent.id}
+                    initialReport={preflightReport}
+                    onReport={setPreflightReport}
+                    onActivated={() => setAgent({ ...agent, status: "active" })}
+                  />
+                )}
+
+                {activeSection === "dashboard" && applicationContractFromAgent(agent)?.dashboard && (
+                  <AgentInteractiveDashboard
+                    definition={applicationContractFromAgent(agent)!.dashboard!}
+                    artifacts={dashboardArtifacts}
+                    loading={dashboardLoading}
+                    onRefresh={() => setDashboardRefreshKey((value) => value + 1)}
+                  />
+                )}
+
+                {activeSection === "setup" && (
+                <>
                 <section>
                   <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     配置
@@ -726,6 +1187,32 @@ function AgentDetail() {
                         )}
                       </dd>
 
+                      <dt className="font-medium text-muted-foreground">工具</dt>
+                      <dd className="flex flex-wrap gap-1.5">
+                        {configEntryLabels(agent, "tools").length > 0 ? (
+                          configEntryLabels(agent, "tools").map((tool) => (
+                            <Badge key={tool} variant="secondary" className="font-mono text-[11px]">
+                              {tool}
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-xs text-muted-foreground">未显式配置</span>
+                        )}
+                      </dd>
+
+                      <dt className="font-medium text-muted-foreground">MCP 集成</dt>
+                      <dd className="flex flex-wrap gap-1.5">
+                        {configEntryLabels(agent, "mcp_servers").length > 0 ? (
+                          configEntryLabels(agent, "mcp_servers").map((server) => (
+                            <Badge key={server} variant="outline" className="font-mono text-[11px]">
+                              {server}
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-xs text-muted-foreground">无</span>
+                        )}
+                      </dd>
+
                       {agent.prompt && (
                         <>
                           <dt className="pt-1 font-medium text-muted-foreground">System prompt</dt>
@@ -757,8 +1244,27 @@ function AgentDetail() {
                   onVaultKeysChange={updateVaultKeys}
                   onStoredKeyEntriesChange={(updater) => setStoredKeyEntries(updater)}
                 />
+                {agent.status === "draft" && !governance && (
+                  <DraftPreflightPanel
+                    agentId={agent.id}
+                    initialReport={preflightReport}
+                    onReport={setPreflightReport}
+                    onActivated={() => setAgent({ ...agent, status: "active" })}
+                  />
+                )}
+                </>
+                )}
 
-                {grantsVisible && (
+                {activeSection === "governance" && governance && (
+                  <ManagedGovernancePanel
+                    response={governance}
+                    onChange={setGovernance}
+                    onAgentChange={setAgent}
+                    onReport={setPreflightReport}
+                  />
+                )}
+
+                {activeSection === "governance" && grantsVisible && (
                 <section>
                   <div className="mb-2">
                     <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -773,28 +1279,15 @@ function AgentDetail() {
                     <p className="mb-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{grantError}</p>
                   )}
                   <Card className="overflow-hidden">
-                    <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
                       <Input
                         value={grantUserQuery}
                         onChange={(e) => {
                           setGrantUserQuery(e.target.value);
-                          setGrantUser("");
                         }}
                         placeholder="搜索姓名、邮箱或用户 ID"
                         className="h-8 max-w-[200px] text-xs"
                       />
-                      <select
-                        value={grantUser}
-                        onChange={(e) => setGrantUser(e.target.value)}
-                        className="h-8 max-w-[240px] rounded-md border border-input bg-transparent px-2 text-xs"
-                      >
-                        <option value="">从搜索结果选择用户</option>
-                        {grantableUsers.map((user) => (
-                          <option key={user.id} value={user.id} disabled={user.status !== "active"}>
-                            {user.display_name} ({user.id}){user.status !== "active" ? " · 已禁用" : ""}
-                          </option>
-                        ))}
-                      </select>
                       <select
                         value={grantPermission}
                         onChange={(e) => setGrantPermission(e.target.value)}
@@ -803,18 +1296,44 @@ function AgentDetail() {
                         <option value="use">use（使用）</option>
                         <option value="edit">edit（可修改）</option>
                       </select>
+                      <Input
+                        value={grantExpiry}
+                        onChange={(e) => setGrantExpiry(e.target.value)}
+                        type="datetime-local"
+                        aria-label="授权到期时间"
+                        className="h-8 w-auto text-xs"
+                      />
                       <Button
                         type="button"
                         size="sm"
                         variant="outline"
                         className="h-8"
                         onClick={() => void addGrant()}
-                        disabled={grantBusy || !grantUser.trim()}
+                        disabled={grantBusy || selectedGrantUsers.size === 0}
                       >
                         <Plus className="size-3.5" />
-                        授权
+                        授权所选（{selectedGrantUsers.size}）
                       </Button>
                     </div>
+                    {grantableUsers.length > 0 && (
+                      <div className="grid gap-1 border-b border-border px-3 py-2 sm:grid-cols-2">
+                        {grantableUsers.map((user) => (
+                          <label key={user.id} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
+                            <input
+                              type="checkbox"
+                              checked={selectedGrantUsers.has(user.id)}
+                              disabled={user.status !== "active"}
+                              onChange={() => setSelectedGrantUsers((current) => {
+                                const next = new Set(current);
+                                if (next.has(user.id)) next.delete(user.id); else next.add(user.id);
+                                return next;
+                              })}
+                            />
+                            <span className="truncate">{user.display_name}（{user.id}）{user.status !== "active" ? " · 已停用" : ""}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                     {grants.length === 0 ? (
                       <div className="p-4 text-center text-xs text-muted-foreground">
                         尚未授权给任何用户，仅 owner 与 admin 可见。
@@ -824,10 +1343,12 @@ function AgentDetail() {
                         {grants.map((grant) => (
                           <div key={grant.id} className="flex items-center justify-between px-3 py-2">
                             <div className="min-w-0">
-                              <span className="font-mono text-xs">{grant.grantee_user_id}</span>
+                              <span className="text-xs font-medium">{grant.user?.display_name ?? grant.grantee_user_id}</span>
+                              <span className="ml-1 font-mono text-[11px] text-muted-foreground">{grant.grantee_user_id}</span>
                               <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
                                 {grant.permission}
                               </span>
+                              <span className="ml-2 text-[11px] text-muted-foreground">直接授予 · {formatGrantExpiry(grant.expires_at)}</span>
                             </div>
                             <Button
                               type="button"
@@ -848,7 +1369,13 @@ function AgentDetail() {
                 </section>
                 )}
 
-                {grantsVisible && (
+                {activeSection === "governance" && !grantsVisible && (
+                  <Card className="p-5 text-sm text-muted-foreground">
+                    当前账号无权查看或修改该智能体的授权策略。
+                  </Card>
+                )}
+
+                {activeSection === "governance" && grantsVisible && (
                 <section>
                   <div className="mb-2">
                     <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -865,23 +1392,10 @@ function AgentDetail() {
                         value={grantGroupQuery}
                         onChange={(e) => {
                           setGrantGroupQuery(e.target.value);
-                          setGrantGroup("");
                         }}
                         placeholder="搜索用户组"
                         className="h-8 max-w-[180px] text-xs"
                       />
-                      <select
-                        value={grantGroup}
-                        onChange={(e) => setGrantGroup(e.target.value)}
-                        className="h-8 max-w-[220px] rounded-md border border-input bg-transparent px-2 text-xs"
-                      >
-                        <option value="">从搜索结果选择用户组</option>
-                        {grantableGroups.map((group) => (
-                          <option key={group.id} value={group.id} disabled={group.status !== "active"}>
-                            {group.name}{group.status !== "active" ? " · 已禁用" : ""}
-                          </option>
-                        ))}
-                      </select>
                       <select
                         value={grantPermission}
                         onChange={(e) => setGrantPermission(e.target.value)}
@@ -890,18 +1404,51 @@ function AgentDetail() {
                         <option value="use">use（使用）</option>
                         <option value="edit">edit（可修改）</option>
                       </select>
-                      <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void addGroupGrant()} disabled={grantBusy || !grantGroup.trim()}>
+                      <Input
+                        value={grantExpiry}
+                        onChange={(e) => setGrantExpiry(e.target.value)}
+                        type="datetime-local"
+                        aria-label="授权到期时间"
+                        className="h-8 w-auto text-xs"
+                      />
+                      <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void addGroupGrant()} disabled={grantBusy || selectedGrantGroups.size === 0}>
                         <Plus className="size-3.5" />
-                        授权用户组
+                        授权所选（{selectedGrantGroups.size}）
                       </Button>
                     </div>
+                    {grantableGroups.length > 0 && (
+                      <div className="grid gap-1 border-b border-border px-3 py-2 sm:grid-cols-2">
+                        {grantableGroups.map((group) => (
+                          <label key={group.id} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs hover:bg-muted/60">
+                            <input
+                              type="checkbox"
+                              checked={selectedGrantGroups.has(group.id)}
+                              disabled={group.status !== "active"}
+                              onChange={() => setSelectedGrantGroups((current) => {
+                                const next = new Set(current);
+                                if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+                                return next;
+                              })}
+                            />
+                            <span className="truncate">{group.name}{group.status !== "active" ? " · 已停用" : ""}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                     {groupGrants.length === 0 ? (
                       <div className="p-4 text-center text-xs text-muted-foreground">尚未授权给任何用户组。</div>
                     ) : (
                       <div className="divide-y divide-border">
                         {groupGrants.map((grant) => (
                           <div key={grant.id} className="flex items-center justify-between px-3 py-2">
-                            <div className="min-w-0"><span className="font-mono text-xs">{grant.group_id}</span><span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{grant.permission}</span></div>
+                            <div className="min-w-0">
+                              <span className="text-xs font-medium">{grant.group?.name ?? grant.group_id}</span>
+                              <span className="ml-1 font-mono text-[11px] text-muted-foreground">{grant.group_id}</span>
+                              <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{grant.permission}</span>
+                              <span className="ml-2 text-[11px] text-muted-foreground">
+                                通过该组为 {grant.group?.member_count ?? 0} 名成员授予 {grant.permission} · {grant.group?.status === "disabled" ? "组已停用" : formatGrantExpiry(grant.expires_at)}
+                              </span>
+                            </div>
                             <Button type="button" size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => void removeGroupGrant(grant.group_id)} disabled={grantBusy} aria-label={`撤销用户组 ${grant.group_id}`}><Trash2 className="size-3.5" /></Button>
                           </div>
                         ))}
@@ -911,6 +1458,7 @@ function AgentDetail() {
                 </section>
                 )}
 
+                {activeSection === "quality" && (
                 <section>
                   <div className="mb-2 flex items-end justify-between">
                     <div>
@@ -1016,7 +1564,9 @@ function AgentDetail() {
                     )}
                   </Card>
                 </section>
+                )}
 
+                {activeSection === "setup" && (
                 <section>
                   <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
@@ -1139,7 +1689,9 @@ function AgentDetail() {
                     )}
                   </Card>
                 </section>
+                )}
 
+                {activeSection === "setup" && (
                 <section>
                   <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
@@ -1384,13 +1936,410 @@ function AgentDetail() {
                     )}
                   </Card>
                 </section>
+                )}
 
+                {activeSection === "runs" && taskLauncherOpen && (
+                  <Card className="border-primary/30 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-sm font-semibold">启动业务任务</h2>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          输入来自应用蓝图；Task、Session 和交付物会自动关联。
+                        </p>
+                      </div>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setTaskLauncherOpen(false)}>
+                        <X className="size-3.5" />
+                      </Button>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      {executionTaskInputs(agent).map((input) => (
+                        <label key={input.type} className="grid gap-1.5">
+                          <span className="text-xs font-medium">{input.type}</span>
+                          <Input
+                            value={taskInputValues[input.type] ?? ""}
+                            onChange={(event) => setTaskInputValues((current) => ({
+                              ...current,
+                              [input.type]: event.target.value,
+                            }))}
+                            placeholder={input.description || input.source}
+                            className="h-9 text-sm"
+                          />
+                          <span className="text-[11px] text-muted-foreground">
+                            {input.source}{input.description ? ` · ${input.description}` : ""}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    {taskStartError && <p className="mt-3 text-xs text-destructive">{taskStartError}</p>}
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => setTaskLauncherOpen(false)}>
+                        取消
+                      </Button>
+                      <Button type="button" size="sm" disabled={taskStarting} onClick={() => void startStructuredTask()}>
+                        <Play className="size-3.5" />
+                        {taskStarting ? "启动中..." : "创建 Task 并运行"}
+                      </Button>
+                    </div>
+                  </Card>
+                )}
+
+                {activeSection === "runs" && (
+                <section>
+                  <div className="mb-2">
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      业务任务（{tasks.length}）
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Task 记录业务目标与结果；Session 保留每次执行过程。
+                    </p>
+                  </div>
+                  <Card className="overflow-hidden">
+                    {tasks.length === 0 ? (
+                      <div className="p-5 text-sm text-muted-foreground">
+                        暂无 Task。新创建的运行会自动进入任务闭环。
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {tasks.map((task) => (
+                          <div key={task.id}>
+                            <div className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="truncate text-sm font-medium">{task.title}</p>
+                                  <Badge variant="outline" className="text-[11px]">
+                                    {task.source}
+                                  </Badge>
+                                </div>
+                                <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                  {task.id} · {formatMemoryDate(task.created_at)}
+                                </p>
+                                {task.deadline_at && !["verifying", "succeeded", "failed", "cancelled"].includes(task.status) && (
+                                  <p className="mt-1 text-[11px] text-muted-foreground">
+                                    截止：{formatMemoryDate(task.deadline_at)}
+                                  </p>
+                                )}
+                                {task.failure_reason && (
+                                  <p className="mt-1 text-xs text-destructive">{task.failure_reason}</p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge
+                                  variant={
+                                    task.status === "failed"
+                                      ? "destructive"
+                                      : task.status === "running" || task.status === "succeeded"
+                                        ? "secondary"
+                                        : "outline"
+                                  }
+                                >
+                                  {task.failure_code === "timeout" ? "timed_out" : task.status}
+                                </Badge>
+                                {[
+                                  "queued",
+                                  "running",
+                                  "waiting_input",
+                                  "verifying",
+                                ].includes(task.status) && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 text-destructive"
+                                    disabled={taskCancelling === task.id}
+                                    onClick={() => void cancelActiveTask(task)}
+                                  >
+                                    <X className="size-3.5" />
+                                    {taskCancelling === task.id ? "取消中..." : "取消"}
+                                  </Button>
+                                )}
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7"
+                                  onClick={() => void openTaskDetails(task)}
+                                >
+                                  {selectedTaskId === task.id ? "收起" : "交付与验收"}
+                                </Button>
+                              </div>
+                            </div>
+                            {selectedTaskId === task.id && (
+                              <div className="border-t border-border bg-muted/10 p-4">
+                                {task.status === "failed" && (
+                                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3">
+                                    <div>
+                                      <h3 className="text-xs font-semibold">创建新的执行尝试</h3>
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        保留当前 Task 与历史记录，使用相同输入启动新 Session。
+                                      </p>
+                                    </div>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={
+                                        taskRetrying
+                                        || task.current_attempt_number >= taskAttempts.max_attempts
+                                      }
+                                      onClick={() => void retryFailedTask(task)}
+                                    >
+                                      <RefreshCw className={`size-3.5 ${taskRetrying ? "animate-spin" : ""}`} />
+                                      {taskRetrying ? "重试中..." : "重试 Task"}
+                                    </Button>
+                                  </div>
+                                )}
+                                {task.status === "waiting_input" && (
+                                  <div className="mb-4 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                                    <h3 className="text-xs font-semibold">补充输入并继续原 Session</h3>
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                      {executionTaskInputs(agent).map((input) => (
+                                        <label key={input.type} className="grid gap-1">
+                                          <span className="text-[11px] font-medium">{input.type}</span>
+                                          <Input
+                                            value={resumeInputValues[input.type] ?? ""}
+                                            onChange={(event) => setResumeInputValues((current) => ({
+                                              ...current,
+                                              [input.type]: event.target.value,
+                                            }))}
+                                            placeholder={input.description}
+                                            className="h-8 text-xs"
+                                          />
+                                        </label>
+                                      ))}
+                                    </div>
+                                    <div className="mt-3 flex justify-end">
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        className="h-8"
+                                        disabled={taskResuming}
+                                        onClick={() => void resumeWaitingTask(task)}
+                                      >
+                                        {taskResuming ? "继续中..." : "补充并继续"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )}
+                                {taskDetailLoading ? (
+                                  <p className="text-xs text-muted-foreground">正在加载交付物...</p>
+                                ) : (
+                                  <div className="grid gap-4 lg:grid-cols-2">
+                                    <div className="lg:col-span-2">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <h3 className="text-xs font-semibold">
+                                          执行尝试（当前 {task.current_attempt_number}/{taskAttempts.max_attempts}）
+                                        </h3>
+                                        <span className="text-[11px] text-muted-foreground">最新尝试优先</span>
+                                      </div>
+                                      {taskAttempts.sessions.length === 0 && taskAttempts.runs.length === 0 ? (
+                                        <p className="mt-2 text-xs text-muted-foreground">尚无关联的执行记录。</p>
+                                      ) : (
+                                        <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                          {taskAttempts.sessions.map((attempt) => {
+                                            const artifactCount = taskAttempts.artifacts.filter(
+                                              (artifact) => artifact.attempt_number === attempt.attempt_number,
+                                            ).length;
+                                            const checks = taskAttempts.acceptance_checks.filter(
+                                              (check) => check.attempt_number === attempt.attempt_number,
+                                            );
+                                            const verdict = checks.some((check) => check.verdict === "failed")
+                                              ? "failed"
+                                              : checks.length > 0 && checks.every((check) => check.verdict === "passed")
+                                                ? "passed"
+                                                : "pending";
+                                            return (
+                                              <button
+                                                key={attempt.id}
+                                                type="button"
+                                                className="rounded-md border border-border bg-background p-3 text-left transition-colors hover:border-primary/40"
+                                                onClick={() => router.push(`/chat/?id=${encodeURIComponent(attempt.id)}`)}
+                                              >
+                                                <div className="flex items-center justify-between gap-2">
+                                                  <span className="text-xs font-medium">Session Attempt {attempt.attempt_number}</span>
+                                                  <Badge variant="outline" className="text-[10px]">{attempt.status}</Badge>
+                                                </div>
+                                                <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{attempt.id}</p>
+                                                <p className="mt-1 text-[11px] text-muted-foreground">
+                                                  {attempt.runtime || attempt.harness} · {formatMemoryDate(attempt.created_at)}
+                                                </p>
+                                                <p className="mt-2 text-[11px] text-muted-foreground">
+                                                  交付物 {artifactCount} · 验收 {verdict}
+                                                </p>
+                                              </button>
+                                            );
+                                          })}
+                                          {taskAttempts.runs.map((attempt) => {
+                                            const artifactCount = taskAttempts.artifacts.filter(
+                                              (artifact) => artifact.attempt_number === attempt.attempt_number,
+                                            ).length;
+                                            const checks = taskAttempts.acceptance_checks.filter(
+                                              (check) => check.attempt_number === attempt.attempt_number,
+                                            );
+                                            const verdict = checks.some((check) => check.verdict === "failed")
+                                              ? "failed"
+                                              : checks.length > 0 && checks.every((check) => check.verdict === "passed")
+                                                ? "passed"
+                                                : "pending";
+                                            return (
+                                              <div key={attempt.id} className="rounded-md border border-border bg-background p-3">
+                                                <div className="flex items-center justify-between gap-2">
+                                                  <span className="text-xs font-medium">Legacy Run Attempt {attempt.attempt_number}</span>
+                                                  <Badge variant="outline" className="text-[10px]">{attempt.status}</Badge>
+                                                </div>
+                                                <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{attempt.id}</p>
+                                                <p className="mt-1 text-[11px] text-muted-foreground">{formatMemoryDate(attempt.started_at)}</p>
+                                                <p className="mt-2 text-[11px] text-muted-foreground">
+                                                  交付物 {artifactCount} · 验收 {verdict}
+                                                </p>
+                                                {attempt.error && <p className="mt-1 text-[11px] text-destructive">{attempt.error}</p>}
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div>
+                                      <h3 className="text-xs font-semibold">交付物（{taskArtifacts.length}）</h3>
+                                      {taskArtifacts.length === 0 ? (
+                                        <p className="mt-2 text-xs text-muted-foreground">
+                                          暂无交付物；没有交付物的任务不能验收成功。
+                                        </p>
+                                      ) : (
+                                        <div className="mt-2 grid gap-2">
+                                          {taskArtifacts.map((artifact) => (
+                                            <div key={artifact.id} className="rounded-md border border-border bg-background p-3">
+                                              <div className="flex items-center justify-between gap-2">
+                                                <span className="text-xs font-medium">{artifact.name}</span>
+                                                <Badge variant="outline" className="text-[10px]">{artifact.artifact_type}</Badge>
+                                              </div>
+                                              {artifactText(artifact) && (
+                                                <p className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                                                  {artifactText(artifact)}
+                                                </p>
+                                              )}
+                                              {artifact.location && (
+                                                <a href={artifact.location} className="mt-2 inline-block text-xs text-primary hover:underline">
+                                                  查看来源
+                                                </a>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div>
+                                      <h3 className="text-xs font-semibold">完成条件</h3>
+                                      {taskChecks.length === 0 ? (
+                                        <p className="mt-2 text-xs text-muted-foreground">
+                                          此任务没有声明完成条件，需要进行一次明确的人工整体验收。
+                                        </p>
+                                      ) : (
+                                        <div className="mt-2 grid gap-2">
+                                          {taskChecks.map((check) => (
+                                            <div key={check.id} className="rounded-md border border-border bg-background p-3">
+                                              <div className="flex items-start justify-between gap-2">
+                                                <p className="text-xs">{check.criterion}</p>
+                                                <Badge variant="outline" className="text-[10px]">{check.verdict}</Badge>
+                                              </div>
+                                              {check.evidence && <p className="mt-1 text-[11px] text-muted-foreground">证据：{check.evidence}</p>}
+                                              {task.status === "verifying" && check.verdict === "pending" && (
+                                                <div className="mt-2 flex gap-1.5">
+                                                  <Button size="sm" className="h-7" disabled={acceptanceBusy || !acceptanceEvidence.trim()} onClick={() => void recordTaskAcceptance(task, check, "passed")}>通过</Button>
+                                                  <Button size="sm" variant="outline" className="h-7 text-destructive" disabled={acceptanceBusy || !acceptanceEvidence.trim()} onClick={() => void recordTaskAcceptance(task, check, "failed")}>失败</Button>
+                                                </div>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {task.status === "verifying" && (
+                                        <div className="mt-3 grid gap-2">
+                                          <Input
+                                            value={acceptanceEvidence}
+                                            onChange={(event) => setAcceptanceEvidence(event.target.value)}
+                                            placeholder="填写可审计的验收证据"
+                                            className="h-8 text-xs"
+                                          />
+                                          {taskChecks.length === 0 && (
+                                            <div className="flex gap-1.5">
+                                              <Button size="sm" className="h-7" disabled={acceptanceBusy || !acceptanceEvidence.trim()} onClick={() => void recordTaskAcceptance(task, null, "passed")}>人工通过</Button>
+                                              <Button size="sm" variant="outline" className="h-7 text-destructive" disabled={acceptanceBusy || !acceptanceEvidence.trim()} onClick={() => void recordTaskAcceptance(task, null, "failed")}>人工失败</Button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                                {taskDetailError && (
+                                  <p className="mt-3 text-xs text-destructive">{taskDetailError}</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
+                )}
+
+                {activeSection === "runs" && (
+                <section>
+                  <div className="mb-2">
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      触发与调度（{routines.length}）
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Routine 定义智能体何时运行；会话记录显示每次实际执行。
+                    </p>
+                  </div>
+                  <Card className="overflow-hidden">
+                    {routines.length === 0 ? (
+                      <div className="p-5 text-sm text-muted-foreground">
+                        当前没有 Routine，仅可由用户或 API 手动启动。
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {routines.map((routine) => (
+                          <div
+                            key={routine.id}
+                            className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{routine.name}</p>
+                              <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                                {scheduleLabel(routine.cron, routine.timezone)}
+                              </p>
+                            </div>
+                            <Badge variant={routine.status === "active" ? "secondary" : "outline"}>
+                              {routine.status === "active" ? "已启用" : "已暂停"}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              {routine.last_run_at
+                                ? `最近运行 ${timeAgo(routine.last_run_at)}`
+                                : "尚未运行"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </section>
+                )}
+
+                {activeSection === "runs" && (
                 <section>
                   <div className="mb-2 flex items-center justify-between">
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       会话（{sessions.length}）
                     </h2>
-                    <Button size="sm" variant="outline" onClick={openSessionStart}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={openSessionStart}
+                      disabled={agent.status === "draft"}
+                    >
                       <Play className="size-3" />
                       Run
                     </Button>
@@ -1419,6 +2368,7 @@ function AgentDetail() {
                     </div>
                   )}
                 </section>
+                )}
               </>
             )}
           </div>
@@ -1433,5 +2383,256 @@ export default function AgentDetailPage() {
     <Suspense>
       <AgentDetail />
     </Suspense>
+  );
+}
+
+const PREFLIGHT_VERDICT_META: Record<string, { label: string; className: string }> = {
+  verified: { label: "已验证", className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  exists_only: { label: "仅存在性", className: "bg-muted text-muted-foreground" },
+  unverified: { label: "未验证", className: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
+  failed: { label: "失败", className: "bg-destructive/10 text-destructive" },
+};
+
+const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
+  imported: "已导入",
+  tested: "测试通过",
+  pending_approval: "等待发布审批",
+  published: "已发布",
+  unhealthy: "运行检查失败",
+  rolled_back: "已回滚",
+};
+
+function ManagedGovernancePanel({
+  response,
+  onChange,
+  onAgentChange,
+  onReport,
+}: {
+  response: AgentGovernanceResponse;
+  onChange: (response: AgentGovernanceResponse) => void;
+  onAgentChange: (agent: Agent) => void;
+  onReport: (report: AgentPreflightReport) => void;
+}) {
+  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const governance = response.governance;
+  const testedCurrentRevision =
+    governance.runtime_health === "healthy" &&
+    governance.tested_revision === response.current_revision;
+
+  const runTest = async () => {
+    setBusy("test");
+    setError(null);
+    try {
+      const next = await testAgentGovernance(governance.agent_id);
+      onChange(next);
+      if (next.preflight) onReport(next.preflight);
+      toast.success(next.governance.runtime_health === "healthy" ? "运行检查通过" : "运行检查未通过");
+    } catch (e) {
+      setError(apiErrorMessage(e, "运行检查失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const requestPublish = async () => {
+    setBusy("publish");
+    setError(null);
+    try {
+      const next = await requestAgentPublish(governance.agent_id);
+      onChange({ ...response, governance: next.governance });
+      toast.success("发布申请已提交，等待管理员审批");
+    } catch (e) {
+      setError(apiErrorMessage(e, "提交发布申请失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rollback = async () => {
+    if (!window.confirm("确认回滚到上一个已发布版本？回滚会生成新的版本记录。")) return;
+    setBusy("rollback");
+    setError(null);
+    try {
+      const next = await rollbackAgent(governance.agent_id);
+      onAgentChange(next.agent);
+      onChange({
+        governance: next.governance,
+        current_revision: next.governance.published_revision ?? response.current_revision,
+      });
+      toast.success("智能体已回滚到上一个已发布版本");
+    } catch (e) {
+      setError(apiErrorMessage(e, "回滚失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stages = [
+    { label: "导入", done: true },
+    { label: "测试", done: testedCurrentRevision },
+    { label: "发布", done: ["published", "rolled_back"].includes(governance.lifecycle_status) },
+    { label: "授权", done: ["published", "rolled_back"].includes(governance.lifecycle_status) },
+    { label: "监控", done: governance.last_health_at != null },
+  ];
+
+  return (
+    <section>
+      <div className="mb-2">
+        <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <ShieldCheck className="size-3.5" />
+          外部智能体纳管
+        </h2>
+        <p className="mt-1 text-xs text-muted-foreground">导入、测试、审批发布、授权和运行监控使用同一版本链路。</p>
+      </div>
+      <Card className="overflow-hidden">
+        <div className="grid grid-cols-5 border-b border-border bg-muted/20">
+          {stages.map((stage, index) => (
+            <div key={stage.label} className="relative px-2 py-3 text-center">
+              <div className={`mx-auto mb-1 flex size-6 items-center justify-center rounded-full text-xs font-semibold ${stage.done ? "bg-emerald-500 text-white" : "bg-muted text-muted-foreground"}`}>
+                {index + 1}
+              </div>
+              <span className="text-[11px] text-muted-foreground">{stage.label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-4 p-4 lg:grid-cols-[1fr_auto]">
+          <dl className="grid gap-x-5 gap-y-2 text-xs sm:grid-cols-[120px_1fr]">
+            <dt className="text-muted-foreground">纳管状态</dt>
+            <dd className="font-medium">{GOVERNANCE_STATUS_LABELS[governance.lifecycle_status] ?? governance.lifecycle_status}</dd>
+            <dt className="text-muted-foreground">外部来源版本</dt>
+            <dd>v{governance.source_version} · 本地 revision {response.current_revision}</dd>
+            <dt className="text-muted-foreground">来源</dt>
+            <dd className="break-all">{governance.source_provider} · {governance.external_agent_id}</dd>
+            <dt className="text-muted-foreground">运行凭据</dt>
+            <dd>{governance.credential_scope === "personal" ? "属主隔离凭据" : "运行时由用户提供"}</dd>
+            <dt className="text-muted-foreground">运行健康</dt>
+            <dd className={governance.runtime_health === "unhealthy" ? "text-destructive" : ""}>
+              {governance.runtime_health === "healthy" ? "健康" : governance.runtime_health === "unhealthy" ? "异常" : "尚未检查"}
+              {governance.health_detail ? ` · ${governance.health_detail}` : ""}
+            </dd>
+            <dt className="text-muted-foreground">已发布版本</dt>
+            <dd>{governance.published_revision ?? "暂无"}</dd>
+          </dl>
+          <div className="flex flex-wrap content-start gap-2 lg:max-w-[190px]">
+            <Button size="sm" variant="outline" onClick={() => void runTest()} disabled={busy !== null}>
+              <Activity className="size-3.5" />{busy === "test" ? "检查中..." : "运行检查"}
+            </Button>
+            <Button size="sm" onClick={() => void requestPublish()} disabled={busy !== null || !testedCurrentRevision || governance.lifecycle_status === "pending_approval"}>
+              <GitPullRequest className="size-3.5" />{busy === "publish" ? "提交中..." : "申请发布"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void rollback()} disabled={busy !== null || governance.previous_published_revision == null}>
+              <RotateCcw className="size-3.5" />{busy === "rollback" ? "回滚中..." : "回滚"}
+            </Button>
+          </div>
+        </div>
+        {error && <p className="border-t border-border bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
+      </Card>
+    </section>
+  );
+}
+
+function DraftPreflightPanel({
+  agentId,
+  initialReport,
+  onReport,
+  onActivated,
+}: {
+  agentId: string;
+  initialReport: AgentPreflightReport | null;
+  onReport: (report: AgentPreflightReport) => void;
+  onActivated: () => void;
+}) {
+  const [report, setReport] = useState<AgentPreflightReport | null>(initialReport);
+  const [checking, setChecking] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [panelError, setPanelError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setChecking(true);
+    setPanelError(null);
+    try {
+      const nextReport = await preflightAgent(agentId);
+      setReport(nextReport);
+      onReport(nextReport);
+    } catch (e) {
+      setPanelError(apiErrorMessage(e, "预检失败"));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (initialReport) {
+      setReport(initialReport);
+    } else {
+      void refresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId, initialReport]);
+
+  const activate = async () => {
+    setActivating(true);
+    setPanelError(null);
+    try {
+      await activateAgent(agentId);
+      toast.success("智能体已激活");
+      onActivated();
+    } catch (e) {
+      setPanelError(apiErrorMessage(e, "激活失败"));
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  return (
+    <Card className="border-amber-500/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">
+            草稿状态
+            <span className="ml-2 rounded bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+              未激活
+            </span>
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            草稿智能体可编辑、可在对话中测试，但不能手动运行或被定时任务触发。通过预检后即可激活。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={checking} onClick={() => void refresh()}>
+            {checking ? "检查中..." : "重新预检"}
+          </Button>
+          <Button
+            size="sm"
+            disabled={activating || !report?.can_activate}
+            onClick={() => void activate()}
+          >
+            {activating ? "激活中..." : "激活"}
+          </Button>
+        </div>
+      </div>
+      {panelError && (
+        <p className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{panelError}</p>
+      )}
+      {report && (
+        <ul className="mt-3 grid gap-1.5">
+          {report.checks.map((check, index) => {
+            const meta = PREFLIGHT_VERDICT_META[check.verdict] ?? PREFLIGHT_VERDICT_META.unverified;
+            return (
+              <li key={`${check.id}-${index}`} className="flex items-start gap-2 text-xs">
+                <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium ${meta.className}`}>
+                  {meta.label}
+                </span>
+                <span>
+                  <span className="font-medium">{check.label}</span>
+                  <span className="ml-1 text-muted-foreground">{check.detail}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }

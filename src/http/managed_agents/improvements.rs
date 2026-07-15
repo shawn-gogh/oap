@@ -132,6 +132,7 @@ pub(crate) async fn propose(
 
     let item = inbox::repository::create_approval(
         pool,
+        "agent_change",
         format!("改进提案：{}", agent.name),
         None,
         Some(agent_id.clone()),
@@ -155,28 +156,38 @@ pub(crate) async fn propose(
 
 /// Called after an approval is accepted: if it is an improvement proposal,
 /// apply the change as a new revision and kick off a regression eval.
-pub(crate) async fn apply_if_improvement(state: Arc<AppState>, pool: PgPool, item_id: &str) {
-    let Ok(Some(item)) = inbox::repository::get(&pool, item_id).await else {
-        return;
-    };
+pub(crate) async fn apply_if_improvement(
+    state: Arc<AppState>,
+    pool: PgPool,
+    item_id: &str,
+) -> Result<(), GatewayError> {
+    let item = inbox::repository::get(&pool, item_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
     if item.status != "accepted" {
-        return;
+        return Ok(());
     }
     let Some(args) = item
         .args_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
     else {
-        return;
+        return Err(GatewayError::BadRequest(
+            "improvement approval arguments are invalid".to_owned(),
+        ));
     };
     if args.get("type").and_then(Value::as_str) != Some("agent_improvement") {
-        return;
+        return Err(GatewayError::BadRequest(
+            "approval is not an agent improvement".to_owned(),
+        ));
     }
     let (Some(agent_id), Some(new_system)) = (
         args.get("agent_id").and_then(Value::as_str),
         args.get("new_system").and_then(Value::as_str),
     ) else {
-        return;
+        return Err(GatewayError::BadRequest(
+            "improvement approval is missing agent or prompt".to_owned(),
+        ));
     };
 
     let update = UpdateManagedAgent {
@@ -184,16 +195,12 @@ pub(crate) async fn apply_if_improvement(state: Arc<AppState>, pool: PgPool, ite
         prompt: Some(new_system.to_owned()),
         ..Default::default()
     };
-    match registry::repository::update(&pool, agent_id, update).await {
-        Ok(Some(row)) => {
-            let _ = registry::revisions::record(&pool, &row, Some("improvement-loop")).await;
-            // Regression eval against the same case set; failures show up in
-            // the eval history next to the version that introduced them.
-            if let Err(error) = start_eval_run(state, &pool, row, "improvement-loop").await {
-                tracing::warn!(agent_id, %error, "regression eval failed to start");
-            }
-        }
-        Ok(None) => tracing::warn!(agent_id, "improvement accepted but agent no longer exists"),
-        Err(error) => tracing::warn!(agent_id, %error, "failed to apply accepted improvement"),
+    let row = registry::repository::update(&pool, agent_id, update)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
+    registry::revisions::record(&pool, &row, Some("improvement-loop")).await?;
+    if let Err(error) = start_eval_run(state, &pool, row, "improvement-loop").await {
+        tracing::warn!(agent_id, %error, "regression eval failed to start");
     }
+    Ok(())
 }

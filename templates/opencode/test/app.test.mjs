@@ -50,7 +50,7 @@ function fakeSse(events = [], { ok = true, status = 200 } = {}) {
 }
 
 // Build the app with fake opencode collaborators and capture their calls.
-function buildHarness({ eventStreams = [[]], eventResponse = null } = {}) {
+function buildHarness({ eventStreams = [[]], eventResponse = null, appOptions = {} } = {}) {
   const store = createStore(":memory:");
   const calls = { ocFetch: [], provisionAgent: [], ensureProviderModel: [], reboots: 0 };
   let eventStreamIndex = 0;
@@ -88,6 +88,7 @@ function buildHarness({ eventStreams = [[]], eventResponse = null } = {}) {
       return fakeRes({});
     },
     checkOpencode: async () => true,
+    ...appOptions,
   });
 
   return { app, store, calls };
@@ -132,6 +133,24 @@ test("GET /v1/models returns the configured OpenAI-shaped model list", async (t)
       { id: "gpt-5.5", object: "model", created: 0, owned_by: "litellm" },
     ],
   });
+});
+
+test("permission reply preserves the requested approval scope", async (t) => {
+  const { app, calls } = buildHarness();
+  const { base, close } = await listen(app);
+  t.after(() => close());
+
+  const response = await req(
+    base,
+    "POST",
+    "/v1/sessions/ses_test/permissions/permission_1/reply",
+    { reply: "always" },
+  );
+
+  assert.equal(response.status, 200);
+  const forwarded = calls.ocFetch.at(-1);
+  assert.equal(forwarded.path, "/permission/permission_1/reply");
+  assert.deepEqual(JSON.parse(forwarded.init.body), { reply: "always" });
 });
 
 test("per-agent gpt-5.5 model flows from create through prompt_async", async (t) => {
@@ -331,4 +350,88 @@ test("background capture and live stream dedupe no-id events", async (t) => {
   const history = await req(base, "GET", "/v1/sessions/ses_test/events");
   const types = history.json.data.map((e) => e.type);
   assert.deepEqual(types, ["user.message", "agent.message", "session.status_idle"]);
+});
+
+test("abort records a terminal event even after wrapper state was lost", async (t) => {
+  const { app } = buildHarness();
+  const { base, close } = await listen(app);
+  t.after(() => close());
+
+  const created = await req(base, "POST", "/v1/agents", {
+    name: "Abort recovery",
+    model: "gpt-5.5",
+  });
+  await req(base, "POST", "/v1/sessions", { agent: created.json.id });
+
+  const aborted = await req(base, "POST", "/v1/sessions/ses_test/abort");
+  assert.equal(aborted.status, 200);
+
+  const history = await req(base, "GET", "/v1/sessions/ses_test/events");
+  assert.equal(history.json.data.at(-1).type, "session.status_idle");
+  assert.equal(history.json.data.at(-1).stop_reason.type, "interrupted");
+});
+
+test("silent running tools use the tool deadline and emit heartbeats", async (t) => {
+  const toolRunning = {
+    type: "message.part.updated",
+    properties: {
+      sessionID: "ses_test",
+      part: {
+        id: "tool_1",
+        type: "tool",
+        tool: "bash",
+        state: { status: "running", input: { command: "long-analysis" } },
+      },
+    },
+  };
+  const { app, calls } = buildHarness({
+    eventStreams: [[toolRunning]],
+    appOptions: {
+      turnIdleFallbackMs: 20,
+      toolIdleFallbackMs: 500,
+      turnMaxRuntimeMs: 1_000,
+      toolHeartbeatMs: 20,
+      watchdogIntervalMs: 10,
+    },
+  });
+  const { base, close } = await listen(app);
+  t.after(() => close());
+
+  const created = await req(base, "POST", "/v1/agents", {
+    name: "Long tool",
+    model: "gpt-5.5",
+  });
+  await req(base, "POST", "/v1/sessions", { agent: created.json.id });
+  const sent = await req(base, "POST", "/v1/sessions/ses_test/events", {
+    events: [{ type: "user.message", content: "run it" }],
+  });
+  assert.equal(sent.status, 202);
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(calls.ocFetch.some((call) => call.path.endsWith("/abort")), false);
+  const history = await req(base, "GET", "/v1/sessions/ses_test/events");
+  assert.ok(history.json.data.some((event) => event.type === "session.heartbeat"));
+  const heartbeat = history.json.data.find((event) => event.type === "session.heartbeat");
+  assert.equal(heartbeat.tools[0].name, "bash");
+  assert.equal(heartbeat.tools[0].input.command, "long-analysis");
+  assert.equal(typeof heartbeat.tools[0].elapsed_ms, "number");
+});
+
+test("a second prompt cannot replace an active turn", async (t) => {
+  const { app } = buildHarness({ eventStreams: [[]] });
+  const { base, close } = await listen(app);
+  t.after(() => close());
+
+  const created = await req(base, "POST", "/v1/agents", { name: "Single turn", model: "gpt-5.5" });
+  await req(base, "POST", "/v1/sessions", { agent: created.json.id });
+  const first = await req(base, "POST", "/v1/sessions/ses_test/events", {
+    events: [{ type: "user.message", content: "first" }],
+  });
+  const second = await req(base, "POST", "/v1/sessions/ses_test/events", {
+    events: [{ type: "user.message", content: "second" }],
+  });
+
+  assert.equal(first.status, 202);
+  assert.equal(second.status, 409);
+  assert.equal(second.json.code, "turn_in_progress");
 });

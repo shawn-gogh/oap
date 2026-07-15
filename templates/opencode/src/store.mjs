@@ -206,8 +206,10 @@ export function createStore(dbPath) {
     const json = JSON.stringify(eventObj);
     if (eventId != null) {
       db.prepare(`
-        INSERT OR IGNORE INTO session_events (session_id, event_id, event_json)
+        INSERT INTO session_events (session_id, event_id, event_json)
         VALUES (?, ?, ?)
+        ON CONFLICT(session_id, event_id) DO UPDATE SET
+          event_json = excluded.event_json
       `).run(sessionId, eventId, json);
     } else {
       db.prepare(`

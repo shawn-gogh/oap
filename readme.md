@@ -1,13 +1,13 @@
-# LiteLLM Agent Control Plane
+# OAP · 开放智能体平台 (Open Agent Platform)
 
-1 place to call all your agents - OpenCode, Hermes, Claude
-Managed Agents, Cursor Agents API, Deep Agents.
+1 place to call all your open-source agent runtimes - OpenCode, Hermes,
+OpenClaw, Deep Agents.
 
 [![Discord](https://img.shields.io/badge/Discord-Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/Nkxw3rm3EE)
 
-![LiteLLM Agent Platform dashboard](https://github.com/user-attachments/assets/04333758-829c-4b19-bde3-23ade37bb9f1)
+![OAP dashboard](https://github.com/user-attachments/assets/04333758-829c-4b19-bde3-23ade37bb9f1)
 
-LiteLLM Agent Control Plane sits on top of any runtime. Pick a runtime, create an
+OAP sits on top of any open, self-hostable runtime. Pick a runtime, create an
 agent, give your team one UI.
 
 It manages:
@@ -29,9 +29,9 @@ docker compose --profile opencode up
 ```
 
 Open [http://localhost:4000](http://localhost:4000) and sign in with the
-master key (`sk-local` by default). Compose starts the LiteLLM Agent Platform
-web/API service, a Postgres database, the OpenCode template runtime, and
-registers `local-opencode` in the UI automatically.
+master key (`sk-local` by default). Compose starts the OAP web/API service, a
+Postgres database, the OpenCode template runtime, and registers
+`local-opencode` in the UI automatically.
 
 To start only the base LAP stack:
 
@@ -71,12 +71,15 @@ Select your agent and the runtime you want to run it on.
 
 ## Supported Agent Runtimes
 
-- Claude Managed Agents
-- Cursor Agents API
+Open, self-hostable runtimes only — no closed-source vendor lock-in:
+
 - OpenCode Agents
 - OpenClaw Agents
 - Deep Agents
 - Hermes Agent
+
+Each runtime routes model calls through OAP's own LiteLLM-compatible gateway,
+so you can point it at any open-weight model you host yourself.
 
 ## Contributing
 

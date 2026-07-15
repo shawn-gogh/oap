@@ -26,10 +26,19 @@ pub async fn update(
     let existing = repository::get(pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
-    super::super::assert_agent_access(&auth, &existing)?;
-    let row = repository::update(pool, &agent_id, input)
+    super::super::assert_agent_edit(&auth, &existing, pool).await?;
+    let mut row = repository::update(pool, &agent_id, input)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+    if crate::db::managed_agents::governance::get(pool, &agent_id)
+        .await?
+        .is_some()
+    {
+        row = repository::set_status(pool, &agent_id, "draft")
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+        crate::db::managed_agents::governance::mark_changed(pool, &agent_id).await?;
+    }
     // Best-effort: a failed snapshot must not fail the update itself.
     let _ = crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))
         .await;

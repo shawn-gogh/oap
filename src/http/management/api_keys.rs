@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    db::managed_agents::api_keys::repository,
+    db::managed_agents::{api_keys::repository, audit},
     errors::GatewayError,
     proxy::{
         auth::master_key::{authenticate, evict_gateway_key_cache},
@@ -27,10 +27,13 @@ pub struct CreateGatewayApiKeyRequest {
 
 /// Key management mints identities, so it is admin-only — otherwise any key
 /// could create keys and the ownership model would be meaningless.
-async fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<(), GatewayError> {
+async fn require_admin(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<crate::proxy::auth::master_key::AuthContext, GatewayError> {
     let auth = authenticate(headers, state).await?;
     if auth.is_admin {
-        Ok(())
+        Ok(auth)
     } else {
         Err(GatewayError::Forbidden)
     }
@@ -53,7 +56,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(request): Json<CreateGatewayApiKeyRequest>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    require_admin(&headers, &state).await?;
+    let auth = require_admin(&headers, &state).await?;
     if let Some(pool) = &state.db {
         let created = repository::create(
             pool,
@@ -64,6 +67,18 @@ pub async fn create(
         .await?;
         let mut body = serde_json::to_value(&created.row).unwrap_or_default();
         body["key"] = json!(created.key);
+        audit::record(
+            pool,
+            &auth.user_id,
+            "api_key.create",
+            "api_key",
+            &created.row.id,
+            json!({
+                "user_id": created.row.user_id,
+                "role": created.row.role,
+            }),
+        )
+        .await?;
         return Ok((StatusCode::CREATED, Json(body)));
     }
     Ok((
@@ -77,11 +92,20 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    require_admin(&headers, &state).await?;
+    let auth = require_admin(&headers, &state).await?;
     if let Some(pool) = &state.db {
         return Ok(match repository::delete(pool, &id).await? {
             Some(key_hash) => {
                 evict_gateway_key_cache(&key_hash);
+                audit::record(
+                    pool,
+                    &auth.user_id,
+                    "api_key.delete",
+                    "api_key",
+                    &id,
+                    json!({}),
+                )
+                .await?;
                 StatusCode::NO_CONTENT
             }
             None => StatusCode::NOT_FOUND,

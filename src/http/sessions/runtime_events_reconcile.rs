@@ -42,27 +42,67 @@ pub(super) fn event_items(events: &Value) -> Option<&Vec<Value>> {
 fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, Option<String>) {
     let mut terminal_status = None;
     let mut terminal_error = None;
+    let mut last_activity_was_tool = false;
     let Some(items) = event_items(events) else {
         return (None, None);
     };
     for event in items {
         match event.get("type").and_then(Value::as_str) {
             Some("session.status_running") => {
-                terminal_status = None;
+                terminal_status = Some("running");
                 terminal_error = None;
+                last_activity_was_tool = false;
             }
             Some("session.status_idle") => {
-                terminal_status = Some("idle");
-                terminal_error = None;
+                if !last_activity_was_tool {
+                    terminal_status = Some("idle");
+                    terminal_error = None;
+                }
             }
             Some("session.error") => {
                 terminal_status = Some("error");
                 terminal_error = Some(event_value_error_message(event));
             }
+            // Generic status event carrying the state in its payload.
+            Some("session.status") => match event_value_status(event) {
+                Some("busy") | Some("running") => {
+                    terminal_status = Some("running");
+                    terminal_error = None;
+                    last_activity_was_tool = false;
+                }
+                Some("idle") if !last_activity_was_tool => {
+                    terminal_status = Some("idle");
+                    terminal_error = None;
+                }
+                _ => {}
+            },
+            Some("assistant_response" | "agent.message") => {
+                terminal_status = Some("idle");
+                terminal_error = None;
+                last_activity_was_tool = false;
+            }
+            // Conversation activity after the last status marker means a new
+            // turn is underway: the replayed history ends with the PREVIOUS
+            // turn's idle, and treating that as terminal flipped busy sessions
+            // back to idle on every poll.
+            Some(event_type)
+                if event_type.starts_with("user.") || event_type.starts_with("agent.") =>
+            {
+                terminal_status = Some("running");
+                terminal_error = None;
+                last_activity_was_tool = event_type.starts_with("agent.tool");
+            }
             _ => {}
         }
     }
     (terminal_status, terminal_error)
+}
+
+fn event_value_status(event: &Value) -> Option<&str> {
+    let status = event.get("status")?;
+    status
+        .as_str()
+        .or_else(|| status.get("type").and_then(Value::as_str))
 }
 
 fn event_value_error_message(event: &Value) -> String {
@@ -106,7 +146,62 @@ mod tests {
             { "type": "session.status_idle" },
             { "type": "session.status_running" }
         ]));
-        assert_eq!(status, None);
+        assert_eq!(status, Some("running"));
         assert_eq!(error, None);
+    }
+
+    #[test]
+    fn conversation_activity_after_idle_means_running() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_idle" },
+            { "type": "user.message" },
+            { "type": "agent.tool_use" }
+        ]));
+        assert_eq!(status, Some("running"));
+    }
+
+    #[test]
+    fn final_agent_response_closes_a_turn_without_a_trailing_idle() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_running" },
+            { "type": "agent.tool_use", "id": "tool_1" },
+            { "type": "agent.tool_result", "tool_use_id": "tool_1" },
+            { "type": "agent.message", "text": "done" }
+        ]));
+        assert_eq!(status, Some("idle"));
+    }
+
+    #[test]
+    fn tool_use_after_agent_narration_keeps_the_turn_running() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_running" },
+            { "type": "agent.message", "text": "checking" },
+            { "type": "agent.tool_use", "id": "tool_1" }
+        ]));
+        assert_eq!(status, Some("running"));
+    }
+
+    #[test]
+    fn idle_after_activity_is_still_terminal() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "user.message" },
+            { "type": "agent.message" },
+            { "type": "session.status_idle" }
+        ]));
+        assert_eq!(status, Some("idle"));
+    }
+
+    #[test]
+    fn generic_status_event_payload_is_honored() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_idle" },
+            { "type": "session.status", "status": { "type": "busy" } }
+        ]));
+        assert_eq!(status, Some("running"));
+
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status", "status": "idle" }
+        ]));
+        assert_eq!(status, Some("idle"));
     }
 }

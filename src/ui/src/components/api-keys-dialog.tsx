@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Check, Copy, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -170,8 +171,16 @@ export function ApiKeysPanel() {
                 <TableCell className="font-mono text-xs text-muted-foreground">
                   {key.id}
                 </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
-                  {key.user_id || "—"}
+                <TableCell className="text-xs text-muted-foreground">
+                  {key.user_id ? (
+                    <Link
+                      href={`/users/?user=${encodeURIComponent(key.user_id)}`}
+                      className="font-mono underline-offset-4 hover:text-foreground hover:underline"
+                      title={`查看用户 ${key.user_id}`}
+                    >
+                      {key.user_id}
+                    </Link>
+                  ) : "—"}
                 </TableCell>
                 <TableCell className="text-muted-foreground">{key.role || "user"}</TableCell>
                 <TableCell className="text-muted-foreground">
@@ -283,7 +292,7 @@ function CreatedKeyCard({ created }: { created: CreatedGatewayApiKey }) {
   const origin = typeof window === "undefined" ? "http://127.0.0.1:4000" : window.location.origin;
   const claudeCommand = `lite claude --url "${origin}" --key "${created.key}"`;
   const codexCommand = `lite codex --url "${origin}" --key "${created.key}"`;
-  const agentPrompt = `You have access to LiteLLM's Rust AI gateway at ${origin}. Ask the user for a LiteLLM API key if you need to make authenticated calls.
+  const agentPrompt = `You have access to OAP's Rust AI gateway at ${origin}. Ask the user for an OAP API key if you need to make authenticated calls.
 
 Start by checking what you can access:
 - Providers and model IDs: GET ${origin}/v1/models

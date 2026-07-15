@@ -161,7 +161,38 @@ async fn create_provider_agent(
 }
 
 fn provider_options(runtime: AgentRuntime, created: &CreatedRuntimeSession) -> Option<Value> {
-    (runtime == AgentRuntime::ElasticAgentBuilder).then(|| created.agent.config.clone())
+    let mut merged = serde_json::Map::new();
+    if runtime == AgentRuntime::ElasticAgentBuilder {
+        if let Value::Object(obj) = created.agent.config.clone() {
+            merged.extend(obj);
+        }
+    }
+    // opencode is the only runtime where LAP can bridge its native permission
+    // gate (Permission.Service.ask) into a real block on tool execution — see
+    // templates/opencode/src/app.mjs's permission.asked handling. Other
+    // runtimes ignore an unknown `permissions` key harmlessly, so this is
+    // opencode-only by gating on is_custom_harness, not by runtime id (custom
+    // harnesses register under the same api_spec as the built-in runtime).
+    if created.resolved.is_custom_harness && write_requires_approval(&created.agent.config) {
+        merged.insert(
+            "permissions".to_owned(),
+            serde_json::json!({ "bash": "ask", "edit": "ask", "webfetch": "ask" }),
+        );
+    }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(Value::Object(merged))
+    }
+}
+
+fn write_requires_approval(config: &Value) -> bool {
+    config
+        .get("design")
+        .and_then(|d| d.get("governance"))
+        .and_then(|g| g.get("write_requires_approval"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 async fn create_provider_environment(

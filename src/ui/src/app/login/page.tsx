@@ -8,9 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   ApiError,
-  setStoredMasterKey,
   clearStoredMasterKey,
-  whoami,
+  loginWithAccessKey,
+  setStoredMasterKey,
 } from "@/lib/api";
 
 export default function LoginPage() {
@@ -40,8 +40,8 @@ function LoginForm() {
     setError(null);
     setSubmitting(true);
     try {
+      await loginWithAccessKey(key.trim());
       setStoredMasterKey(key.trim());
-      await whoami();
       router.replace(next);
     } catch (e) {
       clearStoredMasterKey();
@@ -64,8 +64,8 @@ function LoginForm() {
       >
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-2xl leading-none">🚄</span>
-            <span className="font-semibold">LiteLLM</span>
+            <span className="text-2xl leading-none">🔓</span>
+            <span className="font-semibold">OAP 开放智能体平台</span>
           </div>
           <h1 className="text-xl font-semibold tracking-tight">登录</h1>
           <p className="text-sm text-muted-foreground">

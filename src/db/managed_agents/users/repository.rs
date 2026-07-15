@@ -100,3 +100,44 @@ pub async fn update_status(
     .await
     .map_err(GatewayError::Database)
 }
+
+pub async fn update_profile(
+    pool: &PgPool,
+    id: &str,
+    display_name: Option<&str>,
+    email: Option<Option<&str>>,
+) -> Result<Option<UserRow>, GatewayError> {
+    let email = email.map(|value| value.map(str::trim).filter(|value| !value.is_empty()));
+    sqlx::query_as::<_, UserRow>(
+        r#"
+        UPDATE "LiteLLM_UsersTable"
+        SET display_name = COALESCE($2, display_name),
+            email = CASE WHEN $3 THEN $4 ELSE email END,
+            updated_at = $5
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(
+        display_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    )
+    .bind(email.is_some())
+    .bind(email.flatten())
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn active_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<String>, GatewayError> {
+    sqlx::query_scalar::<_, String>(
+        r#"SELECT id FROM "LiteLLM_UsersTable" WHERE id = ANY($1) AND status = 'active'"#,
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}

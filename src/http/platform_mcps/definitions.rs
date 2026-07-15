@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 
 use super::{
     factory, session_management, AGENT_MEMORY_MCP_ID, CHECK_HUMAN_APPROVAL_MCP_ID,
-    EDIT_AGENT_SKILL_MCP_ID, LIST_SUB_AGENTS_MCP_ID, REQUEST_HUMAN_APPROVAL_MCP_ID,
-    RUN_SUB_AGENT_MCP_ID, SEND_SLACK_MESSAGE_MCP_ID,
+    EDIT_AGENT_SKILL_MCP_ID, EXPOSE_PORT_MCP_ID, LIST_SUB_AGENTS_MCP_ID,
+    REQUEST_HUMAN_APPROVAL_MCP_ID, RUN_SUB_AGENT_MCP_ID,
 };
 
 pub fn tool_defs() -> Vec<Value> {
@@ -12,11 +12,11 @@ pub fn tool_defs() -> Vec<Value> {
         session_management::send_tool_def(),
         agent_memory_tool(),
         edit_agent_skill_tool(),
-        send_slack_message_tool(),
         list_sub_agents_tool(),
         run_sub_agent_tool(),
         request_human_approval_tool(),
         check_human_approval_tool(),
+        expose_port_tool(),
     ];
     tools.extend(factory::tool_defs());
     tools
@@ -54,6 +54,34 @@ fn request_human_approval_tool() -> Value {
                 }
             },
             "required": ["title"]
+        }
+    })
+}
+
+fn expose_port_tool() -> Value {
+    json!({
+        "name": EXPOSE_PORT_MCP_ID,
+        "description": "Expose an interactive service (dashboard, live UI, WebSocket app) to the user's browser. Call this BEFORE starting the server: the platform allocates a port, registers it, and returns a public URL. You must then start your HTTP/WebSocket server listening on 0.0.0.0 at the returned port. IMPORTANT: the app is served under the returned URL's /apps/{app_id}/ path prefix. Two modes: (1) default — the gateway strips the prefix before forwarding, so your server serves at / and all asset references must be RELATIVE paths (./main.js); works for `python3 -m http.server` and plain static servers. (2) preserve_prefix=true — the gateway forwards the full /apps/{app_id}/... path; use this for dev servers configured with a base path (vite.config.js base: '/apps/{app_id}/', webpack publicPath). Pick exactly one mode: base config WITHOUT preserve_prefix (or vice versa) causes 404s on assets.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "integer",
+                    "description": "Optional specific port (1024-65535). Omit to let the platform allocate one from its managed range (recommended)."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional human-readable name for this app (e.g. 'sales-dashboard')."
+                },
+                "ttl_seconds": {
+                    "type": "integer",
+                    "description": "Optional lifetime in seconds before the exposure is revoked. Defaults to 24 hours."
+                },
+                "preserve_prefix": {
+                    "type": "boolean",
+                    "description": "Forward the full /apps/{app_id}/... path to your server instead of stripping it. Set true when your server is configured with a matching base path (Vite base / webpack publicPath). Default false."
+                }
+            }
         }
     })
 }
@@ -148,32 +176,6 @@ fn edit_agent_skill_tool() -> Value {
                 }
             },
             "required": ["action"]
-        }
-    })
-}
-
-fn send_slack_message_tool() -> Value {
-    json!({
-        "name": SEND_SLACK_MESSAGE_MCP_ID,
-        "description": "Send a Slack channel message or DM using this agent's connected Slack bot.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "channel_id": {
-                    "type": "string",
-                    "description": "Slack channel ID, such as C123. When omitted, sends a DM."
-                },
-                "user_id": {
-                    "type": "string",
-                    "description": "Slack user ID, such as U123. Used for DMs only."
-                },
-                "email": {
-                    "type": "string",
-                    "description": "Slack user email. Used for DMs when user_id is omitted."
-                },
-                "text": { "type": "string" }
-            },
-            "required": ["text"]
         }
     })
 }

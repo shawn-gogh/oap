@@ -23,6 +23,20 @@ test("insertSessionEvent with same event_id is idempotent", () => {
   }
 });
 
+test("insertSessionEvent updates lifecycle payload for the same event_id", () => {
+  const { store, cleanup } = tmpStore();
+  try {
+    store.insertSessionEvent("ses1", { event: "agent.tool_use", data: { id: "tool1", status: "pending" } }, "tool1");
+    store.insertSessionEvent("ses1", { event: "agent.tool_use", data: { id: "tool1", status: "running", input: { command: "analyze" } } }, "tool1");
+    const events = store.listSessionEvents("ses1");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].data.status, "running");
+    assert.equal(events[0].data.input.command, "analyze");
+  } finally {
+    cleanup();
+  }
+});
+
 test("insertSessionEvent without event_id always appends", () => {
   const { store, cleanup } = tmpStore();
   try {

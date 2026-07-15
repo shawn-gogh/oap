@@ -17,30 +17,24 @@ use crate::{
 mod approval;
 mod catalog;
 mod definitions;
+mod expose_port;
 mod factory;
-mod factory_slack;
-pub(crate) mod factory_slack_app;
-mod factory_slack_dm_access;
-mod factory_slack_manifest;
 mod selection;
 mod session_management;
 mod skill;
-mod slack;
 mod tools;
 
 pub const PLATFORM_SESSION_MCP_ID: &str = "read_platform_session";
 pub const SEND_PLATFORM_SESSION_MESSAGE_MCP_ID: &str = "send_platform_session_message";
 pub const AGENT_MEMORY_MCP_ID: &str = "agent_memory";
-pub const SEND_SLACK_MESSAGE_MCP_ID: &str = "send_slack_message";
 pub const EDIT_AGENT_SKILL_MCP_ID: &str = "edit_agent_skill";
 pub const PLATFORM_MCP_SERVER_NAME: &str = "platform";
 pub const CREATE_MANAGED_AGENT_MCP_ID: &str = "create_managed_agent";
-pub const CONNECT_AGENT_TO_SLACK_MCP_ID: &str = "connect_agent_to_slack";
-pub const LIST_SLACK_AGENT_BINDINGS_MCP_ID: &str = "list_slack_agent_bindings";
 pub const LIST_SUB_AGENTS_MCP_ID: &str = "list_sub_agents";
 pub const RUN_SUB_AGENT_MCP_ID: &str = "run_sub_agent";
 pub const REQUEST_HUMAN_APPROVAL_MCP_ID: &str = "request_human_approval";
 pub const CHECK_HUMAN_APPROVAL_MCP_ID: &str = "check_human_approval";
+pub const EXPOSE_PORT_MCP_ID: &str = "expose_port";
 
 pub use catalog::{platform_mcps, PlatformMcp};
 pub use selection::selected_platform_mcp_ids;
@@ -183,17 +177,8 @@ async fn call_tool(
         }
         AGENT_MEMORY_MCP_ID => tools::agent_memory(pool, agent_id, arguments).await?,
         EDIT_AGENT_SKILL_MCP_ID => skill::edit_agent_skill(pool, agent_id, arguments).await?,
-        SEND_SLACK_MESSAGE_MCP_ID => {
-            slack::send_message(state.as_ref(), pool, agent_id, arguments).await?
-        }
         CREATE_MANAGED_AGENT_MCP_ID => {
             factory::create_managed_agent(state.as_ref(), pool, arguments).await?
-        }
-        CONNECT_AGENT_TO_SLACK_MCP_ID => {
-            factory_slack::connect_agent_to_slack(state.as_ref(), pool, agent_id, arguments).await?
-        }
-        LIST_SLACK_AGENT_BINDINGS_MCP_ID => {
-            factory_slack::list_slack_bindings(pool, agent_id).await?
         }
         LIST_SUB_AGENTS_MCP_ID => tools::list_sub_agents(pool, agent_id).await?,
         RUN_SUB_AGENT_MCP_ID => {
@@ -204,6 +189,9 @@ async fn call_tool(
                 .await?
         }
         CHECK_HUMAN_APPROVAL_MCP_ID => approval::check_human_approval(pool, arguments).await?,
+        EXPOSE_PORT_MCP_ID => {
+            expose_port::expose_port(state.as_ref(), pool, agent_id, session_id, arguments).await?
+        }
         _ => {
             return Ok(json!({
                 "isError": true,

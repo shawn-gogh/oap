@@ -27,7 +27,12 @@ async fn mount_mcp_agent_create(server: &MockServer) {
             "model": "claude-opus-4-8",
             "system": "Use connected tools.",
             "tools": [{ "type": "mcp_toolset", "mcp_server_name": "gateway" }],
-            "mcp_servers": [{ "type": "url", "name": "gateway", "url": "https://gateway.example.com/mcp" }]
+            "mcp_servers": [{
+                "type": "url",
+                "name": "gateway",
+                "url": "https://gateway.example.com/mcp",
+                "authorization_token": "sk-local"
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "agent_mcp",

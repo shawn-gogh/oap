@@ -29,23 +29,23 @@ interface ScheduleEditorProps {
 }
 
 const DAYS = [
-  ["1", "Mon"],
-  ["2", "Tue"],
-  ["3", "Wed"],
-  ["4", "Thu"],
-  ["5", "Fri"],
-  ["6", "Sat"],
-  ["0", "Sun"],
+  ["1", "星期一"],
+  ["2", "星期二"],
+  ["3", "星期三"],
+  ["4", "星期四"],
+  ["5", "星期五"],
+  ["6", "星期六"],
+  ["0", "星期日"],
 ] as const;
 
 const FREQUENCIES: Array<{ mode: ScheduleMode; label: string }> = [
-  { mode: "manual", label: "On demand" },
-  { mode: "hourly", label: "Hourly" },
-  { mode: "daily", label: "Daily" },
-  { mode: "weekdays", label: "Weekdays" },
-  { mode: "weekly", label: "Weekly" },
-  { mode: "monthly", label: "Monthly" },
-  { mode: "custom", label: "Custom" },
+  { mode: "manual", label: "按需运行" },
+  { mode: "hourly", label: "每小时" },
+  { mode: "daily", label: "每天" },
+  { mode: "weekdays", label: "工作日" },
+  { mode: "weekly", label: "每周" },
+  { mode: "monthly", label: "每月" },
+  { mode: "custom", label: "自定义" },
 ];
 
 function toTime(hour: string, minute: string): string {
@@ -121,7 +121,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
     <section className="grid gap-3 rounded-md border border-border bg-muted/10 p-3">
       <div className="flex items-center gap-2">
         <Clock className="size-3.5 text-muted-foreground" />
-        <Label className="text-sm font-medium">Run schedule</Label>
+        <Label className="text-sm font-medium">运行计划</Label>
         <span className="min-w-0 truncate text-xs text-muted-foreground">
           {scheduleLabel(cron, tz)}
         </span>
@@ -129,7 +129,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
 
       <div className="grid gap-2 sm:grid-cols-[160px_1fr]">
         <div className="grid gap-1.5">
-          <Label className="text-xs" htmlFor="schedule-frequency">Frequency</Label>
+          <Label className="text-xs" htmlFor="schedule-frequency">频率</Label>
           <Select
             value={parsed.mode}
             onValueChange={(value) => value && commit({ mode: value as ScheduleMode })}
@@ -149,13 +149,13 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
 
         {parsed.mode === "manual" && (
           <div className="flex items-end text-xs text-muted-foreground">
-            Runs only when started manually.
+            仅在人工启动时运行。
           </div>
         )}
 
         {parsed.mode === "hourly" && (
           <div className="grid gap-1.5">
-            <Label className="text-xs" htmlFor="schedule-hourly-tz">Timezone</Label>
+            <Label className="text-xs" htmlFor="schedule-hourly-tz">时区</Label>
             <Input
               id="schedule-hourly-tz"
               value={tz}
@@ -169,7 +169,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
           <div className="grid gap-2 sm:grid-cols-3">
           {parsed.mode === "weekly" && (
             <div className="grid gap-1.5">
-              <Label className="text-xs">Day</Label>
+              <Label className="text-xs">星期</Label>
               <Select value={parsed.dayOfWeek} onValueChange={(value) => value && commit({ dayOfWeek: value })}>
                 <SelectTrigger className="h-8 w-full">
                   <SelectValue />
@@ -184,7 +184,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
           )}
           {parsed.mode === "monthly" && (
             <div className="grid gap-1.5">
-              <Label className="text-xs" htmlFor="schedule-month-day">Day</Label>
+              <Label className="text-xs" htmlFor="schedule-month-day">日期</Label>
               <Input
                 id="schedule-month-day"
                 type="number"
@@ -197,7 +197,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
             </div>
           )}
           <div className="grid gap-1.5">
-            <Label className="text-xs" htmlFor="schedule-time">Time</Label>
+            <Label className="text-xs" htmlFor="schedule-time">时间</Label>
             <Input
               id="schedule-time"
               type="time"
@@ -207,7 +207,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
             />
           </div>
           <div className="grid gap-1.5">
-            <Label className="text-xs" htmlFor="schedule-tz">Timezone</Label>
+            <Label className="text-xs" htmlFor="schedule-tz">时区</Label>
             <Input
               id="schedule-tz"
               value={tz}
@@ -231,7 +231,7 @@ export function ScheduleEditor({ cron, timezone, onChange }: ScheduleEditorProps
             />
           </div>
           <div className="grid gap-1.5">
-            <Label className="text-xs" htmlFor="schedule-custom-tz">Timezone</Label>
+            <Label className="text-xs" htmlFor="schedule-custom-tz">时区</Label>
             <Input
               id="schedule-custom-tz"
               value={tz}

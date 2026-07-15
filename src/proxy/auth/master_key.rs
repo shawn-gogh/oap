@@ -4,7 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::http::{header::AUTHORIZATION, HeaderMap};
+use axum::http::{
+    header::{AUTHORIZATION, COOKIE},
+    HeaderMap,
+};
 
 use crate::{errors::GatewayError, proxy::state::AppState};
 
@@ -16,6 +19,7 @@ static LITELLM_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 // Same TTL cache for DB-backed gateway keys, keyed by key hash.
 static GATEWAY_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 const CACHE_TTL: Duration = Duration::from_secs(60);
+pub const WEB_SESSION_COOKIE: &str = "lap_session";
 
 /// Identity derived from the presented key. `user_id` is the ownership
 /// boundary for sessions/agents/workspaces; admins bypass it.
@@ -61,6 +65,9 @@ pub async fn authenticate(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<AuthContext, GatewayError> {
+    if let Some(auth) = authenticate_web_session(headers, state).await? {
+        return Ok(auth);
+    }
     authenticate_key(presented_key(headers), state).await
 }
 
@@ -72,7 +79,30 @@ pub async fn authenticate_with_fallback_key(
     fallback_key: Option<&str>,
     state: &AppState,
 ) -> Result<AuthContext, GatewayError> {
+    if let Some(auth) = authenticate_web_session(headers, state).await? {
+        return Ok(auth);
+    }
     authenticate_key(presented_key(headers).or(fallback_key), state).await
+}
+
+pub async fn authenticate_explicit_key(
+    key: &str,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
+    authenticate_key(Some(key), state).await
+}
+
+async fn authenticate_web_session(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<Option<AuthContext>, GatewayError> {
+    let Some(token) = session_token(headers) else {
+        return Ok(None);
+    };
+    let Some(pool) = &state.db else {
+        return Ok(None);
+    };
+    crate::db::managed_agents::web_sessions::authenticate(pool, token).await
 }
 
 async fn authenticate_key(
@@ -250,6 +280,18 @@ pub fn presented_key(headers: &HeaderMap) -> Option<&str> {
         return Some(bearer);
     }
     headers.get("x-api-key").and_then(|v| v.to_str().ok())
+}
+
+pub fn session_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (name, value) = cookie.trim().split_once('=')?;
+                (name == WEB_SESSION_COOKIE).then_some(value)
+            })
+        })
 }
 
 #[cfg(test)]

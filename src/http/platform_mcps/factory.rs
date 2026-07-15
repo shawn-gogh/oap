@@ -10,57 +10,26 @@ use crate::{
     proxy::state::AppState,
 };
 
-use super::{
-    public_base_url, required_str, CONNECT_AGENT_TO_SLACK_MCP_ID, CREATE_MANAGED_AGENT_MCP_ID,
-    LIST_SLACK_AGENT_BINDINGS_MCP_ID,
-};
+use super::{public_base_url, required_str, CREATE_MANAGED_AGENT_MCP_ID};
 
 pub(super) const FACTORY_RUNTIME: &str = "claude_managed_agents";
 
 pub fn tool_defs() -> Vec<Value> {
-    vec![
-        json!({
-            "name": CREATE_MANAGED_AGENT_MCP_ID,
-            "description": "Create a DB-backed Claude managed agent. If the user asked to add/install/connect it to Slack, call connect_agent_to_slack immediately after this tool returns.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string" },
-                    "instructions": { "type": "string" },
-                    "owner_id": { "type": "string" },
-                    "description": { "type": "string" },
-                    "model": { "type": "string" }
-                },
-                "required": ["name", "instructions"]
-            }
-        }),
-        json!({
-            "name": CONNECT_AGENT_TO_SLACK_MCP_ID,
-            "description": "Install or bind a managed agent to the current Slack thread. Use the Slack context values provided in the prompt for team_id, channel_id, thread_ts, dm_user_id, and requested_by instead of asking the user.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "agent_id": { "type": "string" },
-                    "channel_id": { "type": "string" },
-                    "thread_ts": { "type": "string" },
-                    "team_id": { "type": "string" },
-                    "dm_user_id": { "type": "string" },
-                    "requested_by": { "type": "string" },
-                    "allowed_dm_user_ids": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Slack user IDs allowed to DM the agent. Omit or pass an empty list to allow anyone."
-                    }
-                },
-                "required": ["agent_id", "channel_id", "thread_ts"]
-            }
-        }),
-        json!({
-            "name": LIST_SLACK_AGENT_BINDINGS_MCP_ID,
-            "description": "List Slack channel bindings for this factory agent.",
-            "inputSchema": { "type": "object", "properties": {} }
-        }),
-    ]
+    vec![json!({
+        "name": CREATE_MANAGED_AGENT_MCP_ID,
+        "description": "Create a DB-backed managed agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "instructions": { "type": "string" },
+                "owner_id": { "type": "string" },
+                "description": { "type": "string" },
+                "model": { "type": "string" }
+            },
+            "required": ["name", "instructions"]
+        }
+    })]
 }
 
 pub async fn create_managed_agent(
@@ -83,7 +52,7 @@ fn create_agent_input(arguments: &Value) -> Result<CreateManagedAgent, GatewayEr
     Ok(CreateManagedAgent {
         name: required_str(arguments, "name")?.to_owned(),
         owner_id: optional_string(arguments, "owner_id")
-            .unwrap_or_else(|| "slack-agent-factory".to_owned()),
+            .unwrap_or_else(|| "agent-factory".to_owned()),
         description: optional_string(arguments, "description"),
         runtime: Some(FACTORY_RUNTIME.to_owned()),
         harness: None,

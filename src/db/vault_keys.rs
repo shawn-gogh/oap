@@ -112,6 +112,20 @@ pub async fn delete_vault_key(
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn delete_personal_vault_keys_for_user(
+    pool: &PgPool,
+    owner_id: &str,
+) -> Result<u64, GatewayError> {
+    let result = sqlx::query(
+        r#"DELETE FROM "LiteLLM_CredentialsTable" WHERE scope = 'personal' AND owner_id = $1"#,
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected())
+}
+
 /// List vault keys for a user: returns their personal keys + all global keys.
 /// Does NOT return internal provider/runtime metadata credentials.
 pub async fn list_vault_keys_for_user(

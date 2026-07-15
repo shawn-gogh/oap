@@ -28,7 +28,6 @@ fn config_with_models(model_list: Vec<ModelEntry>) -> GatewayConfig {
             master_key: Some("sk-local".to_owned()),
             ..Default::default()
         },
-        slack: Default::default(),
         agents: Vec::new(),
     }
 }
@@ -212,7 +211,7 @@ async fn rejects_runtime_models_without_database() {
         StatusCode::SERVICE_UNAVAILABLE,
     )
     .await;
-    assert_eq!(body["error"]["message"], "database is not configured");
+    assert_eq!(body["error"]["message"], "数据库未配置。");
 }
 
 #[tokio::test]
@@ -221,6 +220,6 @@ async fn rejects_unknown_runtime_models_without_database() {
     let body = get_json(app, "/v1/models?runtime=unknown", StatusCode::BAD_REQUEST).await;
     assert_eq!(
         body["error"]["message"],
-        "invalid request json: unsupported runtime: unknown"
+        "请求 JSON 无效：unsupported runtime: unknown"
     );
 }

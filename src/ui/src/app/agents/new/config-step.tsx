@@ -34,6 +34,8 @@ export function ConfigStep({
   copied,
   draft,
   draftNotice,
+  modelSuggestion,
+  onModelSuggestion,
   drafting,
   draftProgress,
   error,
@@ -66,6 +68,8 @@ export function ConfigStep({
   copied: boolean;
   draft: AgentDraft;
   draftNotice: string | null;
+  modelSuggestion: { suggested: string; current: string } | null;
+  onModelSuggestion: (accept: boolean) => void;
   drafting: boolean;
   draftProgress: string | null;
   error: string | null;
@@ -123,7 +127,7 @@ export function ConfigStep({
             </div>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button type="button" onClick={onCreate} disabled={!canCreate || drafting}>
-                {saving ? "创建中..." : "进入复核并创建"}
+                {saving ? "处理中..." : "进入评估与验证"}
               </Button>
               <Button
                 type="button"
@@ -133,6 +137,31 @@ export function ConfigStep({
                 继续调整
               </Button>
             </div>
+            {modelSuggestion && (
+              <div className="mt-4 flex max-w-xl flex-wrap items-center gap-2 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-sm text-sky-800 dark:text-sky-300">
+                <span className="min-w-0">
+                  AI 建议将模型从 <span className="font-mono text-xs">{modelSuggestion.current}</span> 改为{" "}
+                  <span className="font-mono text-xs">{modelSuggestion.suggested}</span>
+                  （当前保留了你的选择）
+                </span>
+                <span className="ml-auto flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-sky-500/40 px-2 py-0.5 text-xs hover:bg-sky-500/20"
+                    onClick={() => onModelSuggestion(true)}
+                  >
+                    使用建议
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+                    onClick={() => onModelSuggestion(false)}
+                  >
+                    保留当前
+                  </button>
+                </span>
+              </div>
+            )}
             {draftNotice && (
               <div className="mt-4 max-w-xl rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
                 {draftNotice}
@@ -178,7 +207,11 @@ export function ConfigStep({
               className="size-9 rounded-full"
               aria-label="调整配置"
             >
-              {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
+              {drafting ? (
+                <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+              ) : (
+                <ArrowUp className="size-4" />
+              )}
             </Button>
           </div>
         </div>
@@ -199,7 +232,7 @@ export function ConfigStep({
                 )}
               >
                 <Code2 className="size-3.5" />
-                Config
+                配置文件
               </Button>
               <Button
                 type="button"
@@ -212,7 +245,7 @@ export function ConfigStep({
                 )}
               >
                 <FileSearch className="size-3.5" />
-                Preview
+                预览
               </Button>
               <Button
                 type="button"
@@ -225,7 +258,7 @@ export function ConfigStep({
                 )}
               >
                 <Bot className="size-3.5" />
-                Edit UI
+                表单编辑
               </Button>
             </div>
             <div className="flex items-center gap-2">
@@ -276,7 +309,7 @@ export function ConfigStep({
               onChange={(event) => onConfigChange(event.target.value)}
               spellCheck={false}
               className="min-h-0 flex-1 resize-none rounded-none border-0 bg-editor-surface px-5 py-4 font-mono text-[13px] leading-6 text-editor-accent shadow-none outline-none focus-visible:ring-0"
-              aria-label="Agent YAML config"
+              aria-label="智能体 YAML 配置"
             />
           ) : (
             <ConfigPreview draft={draft} mcpIntegrations={mcpIntegrations} />
@@ -294,11 +327,7 @@ export function ConfigStep({
   );
 }
 
-function AssistantChangeMessage({
-  message,
-}: {
-  message: Extract<BuilderChatMessage, { role: "assistant" }>;
-}) {
+function AssistantChangeMessage({ message }: { message: Extract<BuilderChatMessage, { role: "assistant" }> }) {
   return (
     <div className="mr-auto max-w-[92%] rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-sm">
       <p className="leading-6 text-foreground">{message.summary}</p>
@@ -383,7 +412,7 @@ function AgentBuilderCopilot({
       });
       setResponse(next);
     } catch (err) {
-      setError(apiErrorMessage(err, "Builder Copilot failed"));
+      setError(apiErrorMessage(err, "智能体创建助手调用失败"));
     } finally {
       setLoadingMode(null);
     }
@@ -397,7 +426,10 @@ function AgentBuilderCopilot({
       if (recommendation.action === "add") next.add(recommendation.tool);
       if (recommendation.action === "remove") next.delete(recommendation.tool);
     }
-    onDraftChange({ ...draft, tools: Array.from(next).map((type) => ({ type })) });
+    onDraftChange({
+      ...draft,
+      tools: Array.from(next).map((type) => ({ type })),
+    });
   };
 
   return (
@@ -406,7 +438,7 @@ function AgentBuilderCopilot({
         <div className="grid gap-1">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <MessageSquareText className="size-4" />
-            Agent Builder Copilot
+            智能体创建助手
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
             用当前草案和输入框里的补充需求，让 LLM 做澄清、解释和工具建议。
@@ -436,15 +468,13 @@ function AgentBuilderCopilot({
           {response.summary && <p className="leading-6 text-foreground">{response.summary}</p>}
           <CopilotList title="需要确认的问题" items={response.clarification_questions} />
           <CopilotList title="风险提醒" items={response.risks} />
-          <CopilotList title="可加入 system prompt 的约束" items={response.suggested_system_notes} />
+          <CopilotList title="可加入系统提示词的约束" items={response.suggested_system_notes} />
           {response.tool_recommendations.length > 0 && (
             <div className="grid gap-2">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  工具建议
-                </h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">工具建议</h3>
                 <Button type="button" size="sm" variant="outline" onClick={applyToolRecommendations}>
-                  应用 add/remove
+                  应用增删建议
                 </Button>
               </div>
               <div className="grid gap-2">
@@ -455,17 +485,13 @@ function AgentBuilderCopilot({
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant={recommendation.action === "remove" ? "destructive" : "secondary"}>
-                        {recommendation.action}
+                        {recommendation.action === "add" ? "添加" : recommendation.action === "remove" ? "移除" : "保留"}
                       </Badge>
                       <span className="font-mono text-xs">{recommendation.tool}</span>
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {recommendation.reason}
-                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{recommendation.reason}</p>
                     {recommendation.risk && (
-                      <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
-                        {recommendation.risk}
-                      </p>
+                      <p className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">{recommendation.risk}</p>
                     )}
                   </div>
                 ))}
@@ -492,7 +518,11 @@ function CopilotButton({
   const loading = loadingMode === mode;
   return (
     <Button type="button" size="sm" variant="outline" onClick={onClick} disabled={loadingMode !== null}>
-      {loading ? <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Sparkles className="size-3.5" />}
+      {loading ? (
+        <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+      ) : (
+        <Sparkles className="size-3.5" />
+      )}
       {children}
     </Button>
   );

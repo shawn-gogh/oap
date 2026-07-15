@@ -1,10 +1,9 @@
 use serde::Serialize;
 
 use super::{
-    AGENT_MEMORY_MCP_ID, CHECK_HUMAN_APPROVAL_MCP_ID, CONNECT_AGENT_TO_SLACK_MCP_ID,
-    CREATE_MANAGED_AGENT_MCP_ID, EDIT_AGENT_SKILL_MCP_ID, LIST_SLACK_AGENT_BINDINGS_MCP_ID,
-    LIST_SUB_AGENTS_MCP_ID, PLATFORM_SESSION_MCP_ID, REQUEST_HUMAN_APPROVAL_MCP_ID,
-    RUN_SUB_AGENT_MCP_ID, SEND_PLATFORM_SESSION_MESSAGE_MCP_ID, SEND_SLACK_MESSAGE_MCP_ID,
+    AGENT_MEMORY_MCP_ID, CHECK_HUMAN_APPROVAL_MCP_ID, CREATE_MANAGED_AGENT_MCP_ID,
+    EDIT_AGENT_SKILL_MCP_ID, EXPOSE_PORT_MCP_ID, LIST_SUB_AGENTS_MCP_ID, PLATFORM_SESSION_MCP_ID,
+    REQUEST_HUMAN_APPROVAL_MCP_ID, RUN_SUB_AGENT_MCP_ID, SEND_PLATFORM_SESSION_MESSAGE_MCP_ID,
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -40,24 +39,9 @@ const CATALOG: &[PlatformMcp] = &[
         description: "List, read, and update DB-backed skills attached to this agent.",
     },
     PlatformMcp {
-        id: SEND_SLACK_MESSAGE_MCP_ID,
-        name: "Send Slack message",
-        description: "Send a channel message or DM from this agent's connected Slack bot.",
-    },
-    PlatformMcp {
         id: CREATE_MANAGED_AGENT_MCP_ID,
         name: "Create managed agent",
-        description: "Create a Claude managed agent from a Slack or platform request.",
-    },
-    PlatformMcp {
-        id: CONNECT_AGENT_TO_SLACK_MCP_ID,
-        name: "Connect agent to Slack",
-        description: "Create a dedicated Slack app for a managed agent and return its install URL.",
-    },
-    PlatformMcp {
-        id: LIST_SLACK_AGENT_BINDINGS_MCP_ID,
-        name: "List Slack agent bindings",
-        description: "List channel bindings created by this platform agent factory.",
+        description: "Create a managed agent from a chat request.",
     },
     PlatformMcp {
         id: LIST_SUB_AGENTS_MCP_ID,
@@ -79,5 +63,10 @@ const CATALOG: &[PlatformMcp] = &[
         id: CHECK_HUMAN_APPROVAL_MCP_ID,
         name: "Check human approval",
         description: "Check the current decision state for a filed approval request.",
+    },
+    PlatformMcp {
+        id: EXPOSE_PORT_MCP_ID,
+        name: "Expose service port",
+        description: "Register a container port so the service the agent starts on it is reachable from the host browser via the gateway.",
     },
 ];

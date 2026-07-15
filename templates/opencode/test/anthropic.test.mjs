@@ -101,6 +101,25 @@ test("reasoning delta strings translate to agent.thinking", () => {
   );
 });
 
+test("completed assistant tool steps do not terminate the whole turn", () => {
+  assert.equal(
+    translateOpencodeEvent(
+      {
+        type: "message.updated",
+        properties: {
+          sessionID: "ses_123",
+          info: {
+            role: "assistant",
+            time: { completed: 1234 },
+          },
+        },
+      },
+      ctx,
+    ),
+    null,
+  );
+});
+
 test("pending tool updates include stable id and name without empty input", () => {
   assert.deepEqual(
     translateOpencodeEvent(
@@ -195,9 +214,32 @@ test("completed tool updates translate to agent.tool_result with output", () => 
         tool: "sandbox_exec",
         content: [{ type: "text", text: "hello world\n" }],
         output: "hello world\n",
+        status: "completed",
       },
     },
   );
+});
+
+test("shell timeouts are classified as timed_out tool results", () => {
+  const output = "partial progress\n\n<shell_metadata>\nshell tool terminated command after exceeding timeout 600000 ms.\n</shell_metadata>";
+  const translated = translateOpencodeEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_123",
+        part: {
+          id: "part_tool_timeout",
+          type: "tool",
+          tool: "bash",
+          state: { status: "completed", output },
+        },
+      },
+    },
+    ctx,
+  );
+  assert.equal(translated.data.status, "timed_out");
+  assert.equal(translated.data.error_code, "tool_timeout");
+  assert.match(translated.data.error_message, /600000ms/);
 });
 
 test("events for another session are dropped", () => {

@@ -4,12 +4,17 @@ pub async fn reset_tables(pool: &PgPool) {
     sqlx::query(
         r#"
         TRUNCATE
-          "LiteLLM_ManagedAgentSlackOAuthStatesTable",
-          "LiteLLM_SlackPendingInstallsTable",
-          "LiteLLM_SlackAgentBindingsTable",
-          "LiteLLM_ManagedAgentSlackEventsTable",
+          "LiteLLM_AuditLogsTable",
+          "LiteLLM_WebSessionsTable",
+          "LiteLLM_AgentGroupGrantsTable",
+          "LiteLLM_GroupMembersTable",
+          "LiteLLM_GroupsTable",
+          "LiteLLM_AgentGrantsTable",
+          "LiteLLM_GatewayApiKeysTable",
+          "LiteLLM_UsersTable",
+          "LiteLLM_AgentEvalRunsTable",
+          "LiteLLM_ManagedAgentRevisionsTable",
           "LiteLLM_CredentialsTable",
-          "LiteLLM_ManagedAgentSlackThreadSessionsTable",
           "LiteLLM_ManagedAgentInboxItemsTable",
           "LiteLLM_ManagedAgentRoutinesTable",
           "LiteLLM_ManagedAgentRunsTable",
@@ -18,6 +23,7 @@ pub async fn reset_tables(pool: &PgPool) {
           "LiteLLM_ManagedAgentsTable",
           "LiteLLM_ManagedAgentSessionsTable",
           "LiteLLM_ManagedAgentSkillsTable",
+          "LiteLLM_ManagedAgentRulesTable",
           "LiteLLM_GatewaySettingsTable",
           "LiteLLM_SavedAgentsTable"
         CASCADE

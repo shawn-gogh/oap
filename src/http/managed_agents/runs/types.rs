@@ -15,6 +15,8 @@ pub struct RunCreateResponse {
     pub status: String,
     pub event_url: String,
     pub logs_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

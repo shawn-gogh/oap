@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applicationGatePassed,
   blankAgentDraft,
   blankDesign,
+  buildAgentDraftFromPrompt,
+  createInputFromDraft,
   evalGatePassed,
   parseAgentDraftConfig,
   stringifyAgentDraft,
@@ -11,7 +14,12 @@ import type { AgentDesign, AgentDraft } from "./agent-builder";
 
 function fullDraft(): AgentDraft {
   const design: AgentDesign = {
-    feasibility: { complexity: true, value: true, model_fit: false, recoverable_errors: true },
+    feasibility: {
+      complexity: true,
+      value: true,
+      model_fit: false,
+      recoverable_errors: true,
+    },
     evaluation: {
       task_distribution: [{ type: "primary", example: "summarize a report" }],
       success_criteria: "Output is a correct, reviewable summary.",
@@ -44,6 +52,36 @@ function fullDraft(): AgentDraft {
     sub_agents: [{ agent_id: "agent_123" }],
     mcp_server_ids: ["mcp_github"],
     max_runtime_minutes: 45,
+    application: {
+      version: 1,
+      objective: "Review code changes and produce evidence-backed security findings.",
+      audience: ["security reviewer", "pull request author"],
+      interaction_mode: "manual",
+      inputs: [
+        {
+          type: "diff",
+          source: "repository",
+          description: "The proposed code changes.",
+        },
+      ],
+      outputs: [
+        {
+          type: "review",
+          description: "Severity-ranked findings with file references.",
+        },
+      ],
+      dashboard: {
+        title: "安全审查大屏",
+        description: "展示风险指标和审查明细。",
+        template: "analysis",
+        metrics: ["风险总数", "高危数量"],
+        dimensions: ["文件", "严重程度"],
+        visualizations: ["指标卡", "明细表"],
+      },
+      non_goals: ["Do not modify the repository."],
+      completion_criteria: ["Every finding includes evidence and a severity."],
+      failure_behavior: "Report missing repository context and stop.",
+    },
     design,
   };
 }
@@ -67,6 +105,7 @@ describe("stringify/parse round trip", () => {
     expect(parsed.sub_agents).toEqual(draft.sub_agents);
     expect(parsed.mcp_server_ids).toEqual(draft.mcp_server_ids);
     expect(parsed.max_runtime_minutes).toBe(45);
+    expect(parsed.application).toEqual(draft.application);
   });
 
   it("round-trips the design block with correct scalar types", () => {
@@ -77,20 +116,40 @@ describe("stringify/parse round trip", () => {
       model_fit: false,
       recoverable_errors: true,
     });
-    expect(parsed.design?.evaluation?.success_criteria).toBe(
-      "Output is a correct, reviewable summary.",
-    );
+    expect(parsed.design?.evaluation?.success_criteria).toBe("Output is a correct, reviewable summary.");
     expect(parsed.design?.evaluation?.normal_cases).toEqual(["clear request with full context"]);
     expect(parsed.design?.evaluation?.safety_cases).toEqual(["asks for destructive action"]);
     expect(parsed.design?.governance?.timeout_minutes).toBe(45);
     expect(parsed.design?.governance?.write_requires_approval).toBe(true);
   });
 
+  it("persists the application contract in the create payload", () => {
+    const draft = fullDraft();
+    const input = createInputFromDraft(draft, []);
+    expect(input.config.application).toEqual(draft.application);
+  });
+
+  it("creates a built-in dashboard contract from a dashboard request", () => {
+    const draft = buildAgentDraftFromPrompt("创建一个数据分析智能体，用大屏展示结果");
+    expect(draft.application?.outputs).toContainEqual(
+      expect.objectContaining({ type: "interactive_dashboard" }),
+    );
+    expect(draft.application?.dashboard?.metrics.length).toBeGreaterThan(0);
+    expect(draft.system).toContain("metrics");
+    expect(draft.system).toContain("rows");
+  });
+
+  it("keeps legacy configs without an application contract compatible", () => {
+    const { draft, error } = parseAgentDraftConfig("name: legacy\nmodel: m\nruntime: r\nsystem: s");
+    expect(error).toBeNull();
+    expect(draft.application).toBeUndefined();
+  });
+
   it("round-trips values that need quoting", () => {
     const draft = {
       ...fullDraft(),
       name: "agent: with colon",
-      description: 'says "hello" and uses \'quotes\'',
+      description: "says \"hello\" and uses 'quotes'",
     };
     const { draft: parsed, error } = parseAgentDraftConfig(stringifyAgentDraft(draft));
     expect(error).toBeNull();
@@ -108,17 +167,17 @@ describe("stringify/parse round trip", () => {
 describe("parseAgentDraftConfig validation", () => {
   it("requires a name", () => {
     const { error } = parseAgentDraftConfig("name: \nmodel: m\nruntime: r\nsystem: s");
-    expect(error).toBe("Agent name is required.");
+    expect(error).toBe("必须填写智能体名称。");
   });
 
   it("requires a model", () => {
     const { error } = parseAgentDraftConfig("name: a\nmodel: \nruntime: r\nsystem: s");
-    expect(error).toBe("Model is required.");
+    expect(error).toBe("必须选择模型。");
   });
 
   it("requires a runtime", () => {
     const { error } = parseAgentDraftConfig("name: a\nmodel: m\nruntime: \nsystem: s");
-    expect(error).toBe("Runtime is required.");
+    expect(error).toBe("必须选择运行时。");
   });
 
   it("reports the line it cannot parse", () => {
@@ -159,5 +218,16 @@ describe("evalGatePassed", () => {
       evaluator: "rule",
     };
     expect(evalGatePassed(design)).toBe(true);
+  });
+});
+
+describe("applicationGatePassed", () => {
+  it("requires an objective, input, output, and completion criterion", () => {
+    const application = fullDraft().application!;
+    expect(applicationGatePassed(application)).toBe(true);
+    expect(applicationGatePassed({ ...application, inputs: [] })).toBe(false);
+    expect(applicationGatePassed({ ...application, outputs: [] })).toBe(false);
+    expect(applicationGatePassed({ ...application, completion_criteria: [] })).toBe(false);
+    expect(applicationGatePassed({ ...application, objective: "" })).toBe(false);
   });
 });

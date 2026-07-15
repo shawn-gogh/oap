@@ -1,23 +1,29 @@
-use futures_util::StreamExt;
 use serde_json::Value;
 use sqlx::PgPool;
 
 use crate::{
     agents::runs::AgentRunStatus,
-    db::managed_agents::{runtime_events, sessions},
+    db::managed_agents::{id, runtime_events, sessions},
     errors::GatewayError,
     proxy::state::AppState,
-    sdk::agents::{AgentEvent, AgentEventStream},
+    sdk::agents::AgentEvent,
 };
 
-use super::runtime_sdk::agent_sdk_error;
-
-pub(super) async fn mark_session_idle(
+pub(super) async fn emit_runtime_stage(
     state: &AppState,
     pool: &PgPool,
     session_id: &str,
+    phase: &str,
 ) -> Result<(), GatewayError> {
-    mark_session_status(state, pool, session_id, "idle", None).await
+    tracing::info!(session_id, phase, "runtime session stage changed");
+    let event = serde_json::json!({
+        "id": id("stage"),
+        "type": "session.status",
+        "status": { "type": "running", "phase": phase },
+    });
+    runtime_events::repository::append(pool, session_id, event.clone()).await?;
+    state.local_session_events.publish(session_id, event);
+    Ok(())
 }
 
 pub(super) async fn mark_session_error(
@@ -38,13 +44,31 @@ pub(super) async fn mark_session_status(
 ) -> Result<(), GatewayError> {
     sessions::repository::set_status(pool, session_id, status).await?;
     match status {
-        "idle" => state
-            .agent_runs
-            .update_status(session_id, AgentRunStatus::Completed),
-        "error" => state.agent_runs.set_error(
-            session_id,
-            error.unwrap_or_else(|| "managed agent interaction failed".to_owned()),
-        ),
+        "starting" | "running" | "busy" => {
+            crate::db::managed_agents::tasks::repository::mark_running_for_session(
+                pool, session_id,
+            )
+            .await?;
+        }
+        "idle" => {
+            state
+                .agent_runs
+                .update_status(session_id, AgentRunStatus::Completed);
+            crate::db::managed_agents::tasks::artifacts::capture_session_output(pool, session_id)
+                .await?;
+            crate::db::managed_agents::tasks::repository::mark_verifying_for_session(
+                pool, session_id,
+            )
+            .await?;
+        }
+        "error" => {
+            let message = error.unwrap_or_else(|| "managed agent interaction failed".to_owned());
+            state.agent_runs.set_error(session_id, message.clone());
+            crate::db::managed_agents::tasks::repository::fail_for_session(
+                pool, session_id, &message,
+            )
+            .await?;
+        }
         _ => {}
     }
     Ok(())
@@ -59,54 +83,6 @@ pub(super) async fn persist_send_response_events(
     for event in resolved.adapter.events_from_send_response_raw(raw) {
         runtime_events::repository::append(pool, session_id, event).await?;
     }
-    Ok(())
-}
-
-pub(super) async fn drain_provider_stream(
-    state: &AppState,
-    pool: &PgPool,
-    session_id: &str,
-    provider_stream: AgentEventStream,
-) -> Result<(), GatewayError> {
-    futures_util::pin_mut!(provider_stream);
-    let mut terminal_status = None;
-    let mut terminal_error = None;
-    let mut provider_run_id: Option<String> = None;
-    while let Some(event) = provider_stream.next().await {
-        let event = match event {
-            Ok(event) => event,
-            Err(error) => {
-                let error = agent_sdk_error(error);
-                mark_session_error(state, pool, session_id, error.to_string()).await?;
-                return Err(error);
-            }
-        };
-        // Runtimes that establish their provider run mid-stream (e.g. Elastic's
-        // conversation_id) surface it as `provider_run_id` on their events.
-        if let Some(run_id) = event
-            .data
-            .get("provider_run_id")
-            .and_then(Value::as_str)
-            .filter(|run_id| !run_id.is_empty())
-        {
-            provider_run_id = Some(run_id.to_owned());
-        }
-        if let Some(status) = terminal_event_status(&event) {
-            terminal_status = Some(status);
-            if status == "error" {
-                terminal_error = Some(event_error_message(&event));
-            }
-        }
-        persist_runtime_event(pool, session_id, &event).await?;
-        if terminal_status.is_some() {
-            break;
-        }
-    }
-    let status = terminal_status.unwrap_or("idle");
-    if let Some(run_id) = provider_run_id {
-        sessions::repository::set_provider_run(pool, session_id, &run_id, status).await?;
-    }
-    mark_session_status(state, pool, session_id, status, terminal_error).await?;
     Ok(())
 }
 
@@ -148,10 +124,29 @@ pub(super) fn provider_run_status(raw: &Value) -> &'static str {
 
 pub(super) fn terminal_event_status(event: &AgentEvent) -> Option<&'static str> {
     match event.event_type.as_str() {
-        "session.status_idle" => Some("idle"),
+        "assistant_response" | "agent.message" => Some("idle"),
         "session.error" => Some("error"),
         _ => None,
     }
+}
+
+pub(super) fn event_keeps_turn_running(event: &AgentEvent) -> bool {
+    let event_type = event.event_type.as_str();
+    event_type == "user.message"
+        || event_type == "session.status_running"
+        || event_type == "session.thread_status_running"
+        || event_type == "thinking_back"
+        || event_type == "agent.thinking"
+        || event_type == "agent.reasoning"
+        || event_type == "tool_call"
+        || event_type == "tool_result"
+        || event_type == "agent.tool_use"
+        || event_type == "agent.tool_result"
+        || event_type == "content_block_start"
+        || event_type == "content_block_delta"
+        || event_type == "message_delta"
+        || event_type == "message.part.updated"
+        || event_type == "message.part.delta"
 }
 
 pub(super) fn event_error_message(event: &AgentEvent) -> String {

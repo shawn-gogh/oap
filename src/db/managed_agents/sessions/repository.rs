@@ -19,6 +19,7 @@ pub struct CreateRuntimeSession<'a> {
     pub provider_session_id: Option<&'a str>,
     pub provider_run_id: Option<&'a str>,
     pub owner_id: Option<&'a str>,
+    pub task_id: Option<&'a str>,
 }
 
 pub async fn create(
@@ -28,13 +29,20 @@ pub async fn create(
     title: &str,
     timezone: Option<&str>,
     owner_id: Option<&str>,
+    task_id: Option<&str>,
 ) -> Result<SessionRow, GatewayError> {
     let session_id = id("ses");
     sqlx::query_as::<_, SessionRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentSessionsTable"
-          (id, harness, agent_id, title, created_at, tz, owner_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (id, harness, agent_id, title, created_at, tz, owner_id, task_id, attempt_number)
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          CASE
+            WHEN $8::TEXT IS NULL THEN 1
+            ELSE (SELECT current_attempt_number FROM "LiteLLM_ManagedAgentTasksTable" WHERE id = $8)
+          END
+        )
         RETURNING *
         "#,
     )
@@ -45,6 +53,7 @@ pub async fn create(
     .bind(now_ms())
     .bind(timezone)
     .bind(owner_id)
+    .bind(task_id)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -60,9 +69,15 @@ pub async fn create_runtime(
         INSERT INTO "LiteLLM_ManagedAgentSessionsTable" (
           id, harness, agent_id, title, created_at, tz, runtime,
           runtime_agent_ref_id, environment_json, provider_session_id,
-          provider_run_id, status, owner_id
+          provider_run_id, status, owner_id, task_id, attempt_number
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $2, $7, $8, $9, $10, 'starting', $11)
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $2, $7, $8, $9, $10, 'starting', $11, $12,
+          CASE
+            WHEN $12::TEXT IS NULL THEN 1
+            ELSE (SELECT current_attempt_number FROM "LiteLLM_ManagedAgentTasksTable" WHERE id = $12)
+          END
+        )
         RETURNING *
         "#,
     )
@@ -77,6 +92,7 @@ pub async fn create_runtime(
     .bind(input.provider_session_id)
     .bind(input.provider_run_id)
     .bind(input.owner_id)
+    .bind(input.task_id)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
@@ -96,7 +112,7 @@ pub async fn set_runtime_refs(
         SET runtime_agent_ref_id = $2,
             provider_session_id = COALESCE($3, provider_session_id),
             provider_run_id = COALESCE($4, provider_run_id),
-            status = $5,
+            status = CASE WHEN status IN ('cancelled', 'timed_out') THEN status ELSE $5 END,
             updated_at = $6
         WHERE id = $1
         RETURNING *
@@ -123,7 +139,7 @@ pub async fn set_provider_run(
         r#"
         UPDATE "LiteLLM_ManagedAgentSessionsTable"
         SET provider_run_id = $2,
-            status = $3,
+            status = CASE WHEN status IN ('cancelled', 'timed_out') THEN status ELSE $3 END,
             updated_at = $4
         WHERE id = $1
         "#,
@@ -138,6 +154,8 @@ pub async fn set_provider_run(
     Ok(())
 }
 
+const TERMINAL_STATUSES: &[&str] = &["cancelled", "timed_out", "completed", "failed", "error"];
+
 pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result<(), GatewayError> {
     sqlx::query(
         r#"
@@ -145,6 +163,7 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
         SET status = $2,
             updated_at = $3
         WHERE id = $1
+          AND (status NOT IN ('cancelled', 'timed_out') OR status = $2)
         "#,
     )
     .bind(session_id)
@@ -153,6 +172,18 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     .execute(pool)
     .await
     .map_err(GatewayError::Database)?;
+    // Session over — release its exposed app ports so the slots can be
+    // reallocated; best-effort, the TTL sweeper covers any miss.
+    if TERMINAL_STATUSES.contains(&status) {
+        if let Err(error) =
+            crate::db::managed_agents::exposed_apps::repository::soft_delete_for_session(
+                pool, session_id,
+            )
+            .await
+        {
+            tracing::warn!(session_id, "failed to release exposed apps: {error}");
+        }
+    }
     Ok(())
 }
 
@@ -196,6 +227,57 @@ pub async fn get(pool: &PgPool, session_id: &str) -> Result<Option<SessionRow>, 
         r#"SELECT * FROM "LiteLLM_ManagedAgentSessionsTable" WHERE id = $1"#,
     )
     .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn latest_for_task(
+    pool: &PgPool,
+    task_id: &str,
+) -> Result<Option<SessionRow>, GatewayError> {
+    sqlx::query_as::<_, SessionRow>(
+        r#"
+        SELECT *
+        FROM "LiteLLM_ManagedAgentSessionsTable"
+        WHERE task_id = $1
+        ORDER BY attempt_number DESC, created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn list_for_task(pool: &PgPool, task_id: &str) -> Result<Vec<SessionRow>, GatewayError> {
+    sqlx::query_as::<_, SessionRow>(
+        r#"
+        SELECT *
+        FROM "LiteLLM_ManagedAgentSessionsTable"
+        WHERE task_id = $1
+        ORDER BY attempt_number DESC, created_at DESC
+        "#,
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+/// Looks up by the *provider-side* session id (e.g. opencode's own session
+/// id), not LAP's own `id` — the two are distinct values assigned
+/// independently at provisioning time. Used to resolve inbound callbacks from
+/// a runtime wrapper, which only knows its own session id.
+pub async fn get_by_provider_session_id(
+    pool: &PgPool,
+    provider_session_id: &str,
+) -> Result<Option<SessionRow>, GatewayError> {
+    sqlx::query_as::<_, SessionRow>(
+        r#"SELECT * FROM "LiteLLM_ManagedAgentSessionsTable" WHERE provider_session_id = $1"#,
+    )
+    .bind(provider_session_id)
     .fetch_optional(pool)
     .await
     .map_err(GatewayError::Database)

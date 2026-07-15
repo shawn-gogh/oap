@@ -1,31 +1,51 @@
 use std::sync::Arc;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{delete, get, post},
     Router,
 };
 
-use crate::{
-    channels::{google_chat, webhook},
-    proxy::state::AppState,
-};
+use crate::{channels::webhook, proxy::state::AppState};
+
+// Bundle/opencode-files imports carry a base64-encoded zip in the JSON body,
+// which inflates the payload ~33% over the raw file size (plus the
+// MAX_BUNDLE_BYTES uncompressed-size guard in import_files.rs already caps
+// the decoded archive at 20MB). Axum's default 2MB body limit is far too
+// small for these routes, so it's raised just for them.
+const IMPORT_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .merge(agent_routes())
-        .merge(import_routes())
         .merge(rule_routes())
         .merge(routine_routes())
         .merge(skill_routes())
         .merge(inbox_routes())
-        .merge(slack_routes())
-        .merge(teams_routes())
-        .merge(google_chat_routes())
         .merge(webhook_routes())
+        .merge(mattermost_routes())
 }
 
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/api/agents/import/opencode-files",
+            post(super::import_files::import_opencode_files)
+                .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/agents/import/bundle",
+            post(super::import_files::import_agent_bundle)
+                .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/agents/import/{provider_id}/discover",
+            post(super::import::discover),
+        )
+        .route(
+            "/api/agents/import/{provider_id}",
+            post(super::import::import),
+        )
         .route(
             "/api/agents",
             post(super::registry::create::create).get(super::registry::list::list),
@@ -45,8 +65,68 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::registry::resume::resume),
         )
         .route(
+            "/api/agents/{agent_id}/restore",
+            post(super::registry::restore::restore),
+        )
+        .route(
+            "/api/agents/{agent_id}/preflight",
+            get(super::registry::preflight::preflight),
+        )
+        .route(
+            "/api/agents/{agent_id}/activate",
+            post(super::registry::preflight::activate),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks",
+            get(super::tasks::list).post(super::tasks::create),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}",
+            get(super::tasks::get),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/artifacts",
+            get(super::tasks::list_artifacts).post(super::tasks::create_artifact),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/acceptance",
+            get(super::tasks::list_acceptance).post(super::tasks::update_acceptance),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/resume",
+            post(super::tasks::resume),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/attempts",
+            get(super::tasks::list_attempts),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/retry",
+            post(super::tasks::retry),
+        )
+        .route(
+            "/api/agents/{agent_id}/tasks/{task_id}/cancel",
+            post(super::tasks::cancel),
+        )
+        .route(
             "/api/agents/{agent_id}/revisions",
             get(super::registry::revisions::list),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance",
+            get(super::governance::get),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/test",
+            post(super::governance::test),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/request-publish",
+            post(super::governance::request_publish),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/rollback",
+            post(super::governance::rollback),
         )
         .route(
             "/api/agents/{agent_id}/eval-runs",
@@ -62,6 +142,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
             get(super::grants::list).post(super::grants::create),
         )
         .route(
+            "/api/agents/{agent_id}/grants/batch",
+            post(super::grants::create_batch),
+        )
+        .route(
             "/api/agents/{agent_id}/grantable-users",
             get(super::grants::grantable_users),
         )
@@ -72,6 +156,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/group-grants",
             get(super::grants::list_group_grants).post(super::grants::create_group_grant),
+        )
+        .route(
+            "/api/agents/{agent_id}/group-grants/batch",
+            post(super::grants::create_batch_group_grant),
         )
         .route(
             "/api/agents/{agent_id}/group-grants/{group_id}",
@@ -109,26 +197,6 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/runs/{run_id}/logs",
             get(super::runs::logs::logs),
-        )
-}
-
-fn import_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route(
-            "/api/agents/import/opencode-files",
-            post(super::import_files::import_opencode_files),
-        )
-        .route(
-            "/api/agents/import/bundle",
-            post(super::import_files::import_agent_bundle),
-        )
-        .route(
-            "/api/agents/import/{provider_id}/discover",
-            post(super::import::discover),
-        )
-        .route(
-            "/api/agents/import/{provider_id}",
-            post(super::import::import),
         )
 }
 
@@ -193,42 +261,25 @@ fn inbox_routes() -> Router<Arc<AppState>> {
             "/api/approvals/{item_id}/reject",
             post(super::inbox::approvals::reject),
         )
-}
-
-fn slack_routes() -> Router<Arc<AppState>> {
-    Router::new()
         .route(
-            "/api/agents/{agent_id}/slack/events",
-            post(super::slack::events),
+            "/api/approvals/{item_id}/retry",
+            post(super::inbox::approvals::retry),
         )
-        .route(
-            "/api/agents/{agent_id}/slack/interactivity",
-            post(super::slack::interactivity),
-        )
-        .route(
-            "/api/agents/{agent_id}/slack/oauth-state",
-            post(super::slack::oauth_state),
-        )
-        .route(
-            "/host-oauth-callback/{provider_id}",
-            get(super::slack::oauth_callback),
-        )
-}
-
-fn teams_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/api/agents/{agent_id}/teams/messages",
-        post(super::teams::messages),
-    )
-}
-
-fn google_chat_routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/api/agents/{agent_id}/google-chat/events",
-        post(google_chat::events),
-    )
+        .route("/api/tool-approvals", post(super::tool_approvals::asked))
 }
 
 fn webhook_routes() -> Router<Arc<AppState>> {
     Router::new().route("/api/agents/{agent_id}/webhook", post(webhook::events))
+}
+
+fn mattermost_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/api/agents/{agent_id}/mattermost/events",
+            post(super::mattermost::events),
+        )
+        .route(
+            "/api/agents/{agent_id}/mattermost/connect",
+            post(super::mattermost::connect),
+        )
 }

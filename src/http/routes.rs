@@ -23,6 +23,7 @@ use crate::{
 pub fn router(state: Arc<AppState>) -> Router {
     public_routes()
         .merge(api_routes())
+        .merge(exposed_app_routes())
         .merge(session_routes())
         .merge(crate::http::observability::routes::router())
         .merge(crate::http::management::routes::router())
@@ -30,6 +31,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(mcp_routes())
         .merge(mcp_registry_routes())
         .fallback_service(ui::static_files())
+        // Outermost: reroute absolute-path asset requests escaping an exposed
+        // app's /apps/{id}/ prefix (identified via Referer) back under it.
+        .layer(axum::middleware::from_fn(
+            crate::http::exposed_apps::proxy::referer_fallback,
+        ))
         .with_state(state)
 }
 
@@ -100,6 +106,22 @@ fn api_routes() -> Router<Arc<AppState>> {
                 .delete(crate::http::provider_credentials::delete_provider),
         )
         .merge(vault_routes())
+}
+
+fn exposed_app_routes() -> Router<Arc<AppState>> {
+    use crate::http::exposed_apps::{api, proxy};
+    Router::new()
+        // Browser-facing reverse proxy into agent runtime containers.
+        .route("/apps/{app_id}", any(proxy::root))
+        .route("/apps/{app_id}/", any(proxy::root_slash))
+        .route("/apps/{app_id}/{*path}", any(proxy::proxy))
+        // Owner management API.
+        .route("/api/apps", get(api::list))
+        .route("/api/apps/{app_id}", delete(api::delete))
+        .route(
+            "/api/apps/{app_id}/share",
+            post(api::create_share).delete(api::revoke_share),
+        )
 }
 
 fn vault_routes() -> Router<Arc<AppState>> {
@@ -221,5 +243,45 @@ fn session_routes() -> Router<Arc<AppState>> {
         .route(
             "/session/{session_id}/workspace/files/download-url",
             get(sessions::download_url),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/move",
+            post(sessions::move_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/copy",
+            post(sessions::copy_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/batch-delete",
+            post(sessions::batch_delete_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/browse",
+            get(sessions::browse_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/folders",
+            get(sessions::list_folders).post(sessions::create_folder),
+        )
+        .route(
+            "/session/{session_id}/workspace/files/batch-transfer",
+            post(sessions::batch_transfer_files),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash",
+            get(sessions::list_workspace_trash).post(sessions::trash_workspace_paths),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash/restore",
+            post(sessions::restore_workspace_trash),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash/delete",
+            post(sessions::delete_workspace_trash),
+        )
+        .route(
+            "/session/{session_id}/workspace/trash/empty",
+            post(sessions::empty_workspace_trash),
         )
 }

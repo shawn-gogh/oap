@@ -9,7 +9,7 @@ name = "lite"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 crypto_secretbox = { version = "0.1", features = ["std"] }
 dotenvy = "0.15"
@@ -32,6 +32,7 @@ sha2 = "0.10"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "migrate"] }
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = "0.26"
 tokio-util = "0.7"
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing = "0.1"

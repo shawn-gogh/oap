@@ -19,6 +19,7 @@ import {
   acceptApproval,
   listInbox,
   rejectApproval,
+  retryApprovalDelivery,
   resolveInboxItem,
   type InboxFilter,
   type InboxItem,
@@ -66,7 +67,30 @@ const statusStyles: Record<string, { label: string; cls: string }> = {
     label: "已解决",
     cls: "border-border bg-muted text-muted-foreground",
   },
+  expired: {
+    label: "已过期",
+    cls: "border-border bg-muted text-muted-foreground",
+  },
 };
+
+function isApprovalKind(kind: InboxItem["kind"]): boolean {
+  return kind !== "issue";
+}
+
+function approvalKindLabel(item: InboxItem): string {
+  const labels: Partial<Record<InboxItem["kind"], string>> = {
+    approval: "兼容审批",
+    business_decision: "业务决策",
+    tool_permission: "运行时权限（兼容）",
+    runtime_permission: "运行时权限",
+    unlisted_data_egress: "数据外发（兼容）",
+    data_egress: "数据外发",
+    agent_publish: "智能体发布",
+    agent_change: "智能体变更",
+    platform_action: "平台操作",
+  };
+  return labels[item.kind] ?? item.kind;
+}
 
 function StatusTag({ item }: { item: InboxItem }) {
   const s =
@@ -163,7 +187,7 @@ function InboxInner() {
   const counts = useMemo(() => {
     const list = items ?? [];
     return {
-      approvals: list.filter((i) => i.kind === "approval").length,
+      approvals: list.filter((i) => isApprovalKind(i.kind)).length,
       issues: list.filter((i) => i.kind === "issue").length,
       blocked: list.filter((i) => i.status === "pending" || i.status === "open").length,
     };
@@ -174,8 +198,8 @@ function InboxInner() {
       setBusy(true);
       const sessionId = items?.find((item) => item.id === id)?.sessionId ?? null;
       try {
-        await acceptApproval(id, args);
-        if (sessionId) {
+        const result = await acceptApproval(id, args);
+        if (sessionId && result.delivery_status === "applied") {
           router.push(`/chat/?id=${encodeURIComponent(sessionId)}&resumed=true`);
           return;
         }
@@ -194,14 +218,34 @@ function InboxInner() {
       setBusy(true);
       const sessionId = items?.find((item) => item.id === id)?.sessionId ?? null;
       try {
-        await rejectApproval(id, feedback);
-        if (sessionId) {
+        const result = await rejectApproval(id, feedback);
+        if (sessionId && result.delivery_status === "applied") {
           router.push(`/chat/?id=${encodeURIComponent(sessionId)}&resumed=true`);
           return;
         }
         await load(tab);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [items, load, router, tab],
+  );
+
+  const onAcceptAlways = useCallback(
+    async (id: string, args: Record<string, unknown>) => {
+      setBusy(true);
+      const sessionId = items?.find((item) => item.id === id)?.sessionId ?? null;
+      try {
+        const result = await acceptApproval(id, args, "session");
+        if (sessionId && result.delivery_status === "applied") {
+          router.push(`/chat/?id=${encodeURIComponent(sessionId)}&resumed=true`);
+          return;
+        }
+        await load(tab);
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
@@ -217,6 +261,21 @@ function InboxInner() {
         await load(tab);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load, tab],
+  );
+
+  const onRetryDelivery = useCallback(
+    async (id: string) => {
+      setBusy(true);
+      try {
+        await retryApprovalDelivery(id);
+        await load(tab);
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
@@ -383,7 +442,14 @@ function InboxInner() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusTag item={selected} />
-                          <span className="text-xs text-muted-foreground">{selected.kind}</span>
+                          {selected.escalatedAt && (
+                            <span className="inline-flex h-6 items-center rounded-md border border-amber-500/30 bg-amber-500/10 px-2 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                              已升级至 {selected.escalationRole}
+                            </span>
+                          )}
+                          <span className="text-xs text-muted-foreground">
+                            {approvalKindLabel(selected)} · {selected.enforcementOwner} 执行
+                          </span>
                         </div>
                         <h2 className="mt-3 text-base font-semibold tracking-tight leading-snug">{selected.title}</h2>
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -423,31 +489,52 @@ function InboxInner() {
                         <div className="mt-1">{statusStyles[selected.status]?.label ?? selected.status}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">反馈</div>
-                        <div className="mt-1 truncate">{selected.feedback ? "Provided" : "None"}</div>
+                        <div className="text-muted-foreground">交付状态</div>
+                        <div className="mt-1 truncate">{selected.deliveryStatus}</div>
                       </div>
                     </div>
                   </div>
 
-                  {selected.kind === "approval" && selected.status === "pending" && (
+                  {isApprovalKind(selected.kind) && selected.status === "pending" && (
                     <ToolApprovalPanel
                       key={selected.id}
                       approval={{
                         id: selected.id,
+                        kind: selected.kind,
                         tool: selected.title,
                         arguments: selected.args ?? {},
                         createdAt: selected.createdAt,
                         sessionId: selected.sessionId,
+                        canDecide: true,
                       }}
                       onAccept={onAccept}
+                      onAcceptAlways={onAcceptAlways}
                       onReject={onReject}
                       busy={busy}
                     />
                   )}
 
-                  {selected.kind === "approval" && selected.status !== "pending" && (
+                  {isApprovalKind(selected.kind) && selected.status !== "pending" && (
                     <div className="rounded-lg border border-border bg-card p-4">
-                      <div className="mb-3 text-sm font-medium">审批记录</div>
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="text-sm font-medium">审批记录</div>
+                        {selected.deliveryStatus === "delivery_failed" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void onRetryDelivery(selected.id)}
+                            disabled={busy}
+                          >
+                            <RefreshCw className="size-3.5" />
+                            重试交付
+                          </Button>
+                        )}
+                      </div>
+                      {selected.lastDeliveryError && (
+                        <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                          {selected.lastDeliveryError}
+                        </div>
+                      )}
                       {selected.args && Object.keys(selected.args).length > 0 ? (
                         <div className="space-y-3">
                           {Object.entries(selected.args).map(([k, v]) => (

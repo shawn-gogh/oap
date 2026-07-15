@@ -3,7 +3,12 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::{
-    db::{credentials, managed_agents::harnesses},
+    db::{
+        credentials,
+        managed_agents::{
+            harnesses, registry::schema::ManagedAgentRow, sessions::schema::SessionRow,
+        },
+    },
     errors::GatewayError,
     http::agent_runtimes::{load_credential, RuntimeCredential},
     proxy::{credential_crypto, state::AppState},
@@ -67,6 +72,57 @@ pub(crate) async fn resolve_runtime(
     })
 }
 
+/// Resolves the runtime and, for imported agents, replaces its shared/global
+/// credential with the credential stored under that agent owner's scope.
+pub(crate) async fn resolve_runtime_for_agent(
+    pool: &PgPool,
+    state: &AppState,
+    alias: &str,
+    agent: &ManagedAgentRow,
+) -> Result<ResolvedRuntime, GatewayError> {
+    let mut resolved = resolve_runtime(pool, state, alias).await?;
+    let source = agent.config.get("source");
+    let credential_name = source
+        .and_then(|value| value.get("credential_name"))
+        .and_then(serde_json::Value::as_str);
+    let credential_mode = source
+        .and_then(|value| value.get("credential_mode"))
+        .and_then(serde_json::Value::as_str);
+    if credential_mode != Some("shared") {
+        return Ok(resolved);
+    }
+    let credential_name = credential_name.ok_or_else(|| {
+        GatewayError::InvalidConfig("导入智能体缺少隔离运行凭据名称。".to_owned())
+    })?;
+    let owner_id = agent
+        .owner_id
+        .as_deref()
+        .ok_or_else(|| GatewayError::InvalidConfig("导入智能体缺少凭据属主。".to_owned()))?;
+    let row = credentials::get_personal_by_name(pool, credential_name, owner_id)
+        .await?
+        .ok_or_else(|| {
+            GatewayError::InvalidConfig("导入智能体的隔离运行凭据不存在。".to_owned())
+        })?;
+    resolved.credential = credential_from_row(state, row)?;
+    Ok(resolved)
+}
+
+pub(crate) async fn resolve_runtime_for_session(
+    pool: &PgPool,
+    state: &AppState,
+    runtime: &str,
+    session: &SessionRow,
+) -> Result<ResolvedRuntime, GatewayError> {
+    let Some(agent_id) = session.agent_id.as_deref() else {
+        return resolve_runtime(pool, state, runtime).await;
+    };
+    let Some(agent) = crate::db::managed_agents::registry::repository::get(pool, agent_id).await?
+    else {
+        return resolve_runtime(pool, state, runtime).await;
+    };
+    resolve_runtime_for_agent(pool, state, runtime, &agent).await
+}
+
 /// Loads and decrypts a DB-registered harness's api_base/api_key. Shared by
 /// runtime resolution and specs that don't go through the SDK adapter (e.g.
 /// generic_chat, whose "runtime" is the gateway itself).
@@ -105,4 +161,19 @@ fn decrypt_field(
         GatewayError::InvalidConfig(format!("harness credential missing field: {field}"))
     })?;
     credential_crypto::decrypt_value(enc, key)
+}
+
+fn credential_from_row(
+    state: &AppState,
+    row: credentials::CredentialRow,
+) -> Result<RuntimeCredential, GatewayError> {
+    let key =
+        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref())?;
+    let values = row.credential_values.as_object().ok_or_else(|| {
+        GatewayError::InvalidConfig("credential_values must be an object".to_owned())
+    })?;
+    Ok(RuntimeCredential {
+        api_key: decrypt_field(values, "api_key", &key)?,
+        api_base: decrypt_field(values, "api_base", &key)?,
+    })
 }

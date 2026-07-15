@@ -28,7 +28,7 @@ pub async fn get_by_name(
         r#"
         SELECT credential_values
         FROM "LiteLLM_CredentialsTable"
-        WHERE credential_name = $1
+        WHERE credential_name = $1 AND scope = 'global'
         "#,
     )
     .bind(credential_name)
@@ -85,6 +85,40 @@ pub async fn upsert(
     .bind(credential_name)
     .bind(credential_values)
     .bind(credential_info)
+    .bind(actor)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(())
+}
+
+pub async fn upsert_personal(
+    pool: &PgPool,
+    credential_name: &str,
+    owner_id: &str,
+    credential_values: Value,
+    credential_info: Value,
+    actor: &str,
+) -> Result<(), GatewayError> {
+    sqlx::query(
+        r#"
+        INSERT INTO "LiteLLM_CredentialsTable" (
+            credential_id, credential_name, credential_values, credential_info,
+            scope, owner_id, created_by, updated_by
+        )
+        VALUES ($1, $2, $3, $4, 'personal', $5, $6, $6)
+        ON CONFLICT (credential_name, owner_id) WHERE scope = 'personal' DO UPDATE SET
+            credential_values = EXCLUDED.credential_values,
+            credential_info = EXCLUDED.credential_info,
+            updated_at = CURRENT_TIMESTAMP,
+            updated_by = EXCLUDED.updated_by
+        "#,
+    )
+    .bind(format!("cred_{}", uuid::Uuid::new_v4().simple()))
+    .bind(credential_name)
+    .bind(credential_values)
+    .bind(credential_info)
+    .bind(owner_id)
     .bind(actor)
     .execute(pool)
     .await

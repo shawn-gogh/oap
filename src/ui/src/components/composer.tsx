@@ -1,9 +1,17 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, FileText, Square } from "lucide-react";
 import { sendMessage } from "@/lib/api";
 import { useAutosizeTextarea } from "@/lib/hooks/use-autosize-textarea";
+
+// Extracts an "@token" being typed at the caret, e.g. "看下 @src/ma".
+function mentionQueryAt(text: string, caret: number): { query: string; start: number } | null {
+  const upToCaret = text.slice(0, caret);
+  const match = /(^|\s)@([^\s@]*)$/.exec(upToCaret);
+  if (!match) return null;
+  return { query: match[2], start: caret - match[2].length - 1 };
+}
 
 export function Composer({
   sessionId,
@@ -15,6 +23,10 @@ export function Composer({
   busy = false,
   disabled = false,
   disabledHint,
+  draftValue,
+  onDraftChange,
+  focusVersion,
+  mentionFiles,
 }: {
   sessionId: string;
   model: string;
@@ -25,11 +37,55 @@ export function Composer({
   busy?: boolean;
   disabled?: boolean;
   disabledHint?: string;
+  draftValue?: string;
+  onDraftChange?: React.Dispatch<React.SetStateAction<string>>;
+  focusVersion?: number;
+  /** Workspace file paths offered when the user types "@". */
+  mentionFiles?: string[];
 }) {
-  const [draft, setDraft] = useState("");
+  const [localDraft, setLocalDraft] = useState("");
+  const draft = draftValue ?? localDraft;
+  const setDraft = onDraftChange ?? setLocalDraft;
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useAutosizeTextarea(draft);
+
+  // ↑/↓ recall of previously sent prompts (only when the draft is empty or
+  // already navigating history, so normal multi-line editing is unaffected).
+  const historyRef = useRef<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+
+  // @-mention state.
+  const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionMatches = useMemo(() => {
+    if (!mention || !mentionFiles?.length) return [];
+    const q = mention.query.toLowerCase();
+    return mentionFiles
+      .filter((path) => path.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [mention, mentionFiles]);
+
+  useEffect(() => {
+    if (!focusVersion) return;
+    textareaRef.current?.focus();
+  }, [focusVersion, textareaRef]);
+
+  const refreshMention = useCallback((value: string) => {
+    const caret = textareaRef.current?.selectionStart ?? value.length;
+    const next = mentionFiles?.length ? mentionQueryAt(value, caret) : null;
+    setMention(next);
+    setMentionIndex(0);
+  }, [mentionFiles, textareaRef]);
+
+  const insertMention = useCallback((path: string) => {
+    if (!mention) return;
+    const caret = textareaRef.current?.selectionStart ?? draft.length;
+    const next = `${draft.slice(0, mention.start)}@${path} ${draft.slice(caret)}`;
+    setDraft(next);
+    setMention(null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [draft, mention, setDraft, textareaRef]);
 
   const handleSend = useCallback(async () => {
     const t = draft.trim();
@@ -39,6 +95,8 @@ export function Composer({
     onSendStart?.(t);
     try {
       await (onSend ? onSend(t) : sendMessage({ sessionId, text: t, model }));
+      historyRef.current = [...historyRef.current.filter((item) => item !== t), t].slice(-50);
+      setHistoryIndex(null);
       setDraft((current) => (current.trim() === t ? "" : current));
       onSent?.();
     } catch (e) {
@@ -46,17 +104,61 @@ export function Composer({
     } finally {
       setSending(false);
     }
-  }, [draft, sending, disabled, sessionId, model, onSent, onSend, onSendStart]);
+  }, [draft, sending, disabled, sessionId, model, onSent, onSend, onSendStart, setDraft]);
 
   // Plain Enter sends, Shift+Enter inserts a newline. Matches LAP.
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (mention && mentionMatches.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setMentionIndex((i) => (i + 1) % mentionMatches.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setMentionIndex((i) => (i - 1 + mentionMatches.length) % mentionMatches.length);
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          insertMention(mentionMatches[mentionIndex]);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setMention(null);
+          return;
+        }
+      }
+      if (e.key === "ArrowUp" && (draft === "" || historyIndex !== null)) {
+        const history = historyRef.current;
+        if (history.length > 0) {
+          e.preventDefault();
+          const next = historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
+          setHistoryIndex(next);
+          setDraft(history[next]);
+          return;
+        }
+      }
+      if (e.key === "ArrowDown" && historyIndex !== null) {
+        e.preventDefault();
+        const history = historyRef.current;
+        if (historyIndex >= history.length - 1) {
+          setHistoryIndex(null);
+          setDraft("");
+        } else {
+          setHistoryIndex(historyIndex + 1);
+          setDraft(history[historyIndex + 1]);
+        }
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         void handleSend();
       }
     },
-    [handleSend],
+    [handleSend, mention, mentionMatches, mentionIndex, insertMention, draft, historyIndex, setDraft],
   );
 
   const canSend = draft.trim().length > 0 && !sending && !disabled;
@@ -65,19 +167,45 @@ export function Composer({
     : disabled
       ? (disabledHint ?? "等待运行时就绪...")
       : busy
-        ? "排队追加一条消息"
+        ? "发送将打断当前运行并转向新指令"
     : "输入消息...";
 
   return (
     <div className="border-t border-border bg-background/95 backdrop-blur">
       <div className="mx-auto max-w-5xl px-6 py-4">
         <div className="relative">
+          {mention && mentionMatches.length > 0 && (
+            <div className="absolute bottom-full left-0 z-20 mb-1 w-full max-w-md overflow-hidden rounded-lg border border-border bg-popover shadow-md">
+              {mentionMatches.map((path, index) => (
+                <button
+                  key={path}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertMention(path);
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${
+                    index === mentionIndex ? "bg-muted text-foreground" : "text-muted-foreground"
+                  }`}
+                >
+                  <FileText className="size-3 shrink-0" />
+                  <span className="mono truncate">{path}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition-all focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
             <textarea
+              id="chat-composer"
               ref={textareaRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                if (historyIndex !== null) setHistoryIndex(null);
+                refreshMention(e.target.value);
+              }}
               onKeyDown={handleKeyDown}
+              onBlur={() => setMention(null)}
               placeholder={placeholder}
               disabled={disabled}
               rows={1}

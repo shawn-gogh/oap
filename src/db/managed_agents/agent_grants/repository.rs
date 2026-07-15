@@ -16,6 +16,7 @@ pub async fn upsert(
     agent_id: &str,
     grantee_user_id: &str,
     permission: &str,
+    expires_at: Option<i64>,
     granted_by: &str,
 ) -> Result<AgentGrantRow, GatewayError> {
     let permission = match permission {
@@ -25,10 +26,11 @@ pub async fn upsert(
     sqlx::query_as::<_, AgentGrantRow>(
         r#"
         INSERT INTO "LiteLLM_AgentGrantsTable"
-          (id, agent_id, grantee_user_id, permission, granted_by, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (id, agent_id, grantee_user_id, permission, granted_by, created_at, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (agent_id, grantee_user_id)
-          DO UPDATE SET permission = EXCLUDED.permission, granted_by = EXCLUDED.granted_by
+          DO UPDATE SET permission = EXCLUDED.permission, granted_by = EXCLUDED.granted_by,
+                        expires_at = EXCLUDED.expires_at
         RETURNING *
         "#,
     )
@@ -38,9 +40,52 @@ pub async fn upsert(
     .bind(permission)
     .bind(granted_by)
     .bind(now_ms())
+    .bind(expires_at)
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
+}
+
+pub async fn upsert_many(
+    pool: &PgPool,
+    agent_id: &str,
+    grantee_user_ids: &[String],
+    permission: &str,
+    expires_at: Option<i64>,
+    granted_by: &str,
+) -> Result<Vec<AgentGrantRow>, GatewayError> {
+    let permission = match permission {
+        "edit" => "edit",
+        _ => "use",
+    };
+    let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
+    let mut grants = Vec::with_capacity(grantee_user_ids.len());
+    for user_id in grantee_user_ids {
+        let grant = sqlx::query_as::<_, AgentGrantRow>(
+            r#"
+            INSERT INTO "LiteLLM_AgentGrantsTable"
+              (id, agent_id, grantee_user_id, permission, granted_by, created_at, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (agent_id, grantee_user_id)
+              DO UPDATE SET permission = EXCLUDED.permission, granted_by = EXCLUDED.granted_by,
+                            expires_at = EXCLUDED.expires_at
+            RETURNING *
+            "#,
+        )
+        .bind(id("grant"))
+        .bind(agent_id)
+        .bind(user_id)
+        .bind(permission)
+        .bind(granted_by)
+        .bind(now_ms())
+        .bind(expires_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(GatewayError::Database)?;
+        grants.push(grant);
+    }
+    tx.commit().await.map_err(GatewayError::Database)?;
+    Ok(grants)
 }
 
 pub async fn find(
@@ -52,10 +97,12 @@ pub async fn find(
         r#"
         SELECT * FROM "LiteLLM_AgentGrantsTable"
         WHERE agent_id = $1 AND grantee_user_id = $2
+          AND (expires_at IS NULL OR expires_at > $3)
         "#,
     )
     .bind(agent_id)
     .bind(grantee_user_id)
+    .bind(now_ms())
     .fetch_optional(pool)
     .await
     .map_err(GatewayError::Database)
@@ -86,13 +133,24 @@ pub async fn agent_ids_for_user(
     sqlx::query_scalar::<_, String>(
         r#"
         SELECT agent_id FROM "LiteLLM_AgentGrantsTable"
-        WHERE grantee_user_id = $1
+        WHERE grantee_user_id = $1 AND (expires_at IS NULL OR expires_at > $2)
         "#,
     )
     .bind(grantee_user_id)
+    .bind(now_ms())
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)
+}
+
+pub async fn delete_all_for_user(pool: &PgPool, user_id: &str) -> Result<u64, GatewayError> {
+    let result =
+        sqlx::query(r#"DELETE FROM "LiteLLM_AgentGrantsTable" WHERE grantee_user_id = $1"#)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected())
 }
 
 pub async fn delete(

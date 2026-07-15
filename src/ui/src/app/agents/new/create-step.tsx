@@ -89,28 +89,18 @@ export function CreateStep({
             </div>
           ) : (
             <div>
-              <h1 className="text-2xl font-semibold text-foreground">
-                用对话创建智能体
-              </h1>
+              <h1 className="text-2xl font-semibold text-foreground">描述要部署的智能体应用</h1>
               <p className="mt-4 text-base text-muted-foreground">
-                描述目标即可，助手会推荐运行时、模型、工具、技能和评估用例。
+                说明业务目标、输入、交付结果和禁止动作，系统会先生成应用蓝图，再配置执行能力。
               </p>
               <div className="mt-6 grid gap-2 text-left sm:grid-cols-3">
                 <ConversationHint
                   title="运行时"
                   value={`${connectedRuntimes.length || 0} 个可选`}
-                  detail="优先选择已连接 runtime/harness"
+                  detail="优先选择已连接的运行时"
                 />
-                <ConversationHint
-                  title="模型"
-                  value="自动推荐"
-                  detail="按任务复杂度和可用模型选择"
-                />
-                <ConversationHint
-                  title="技能"
-                  value={`${skills.length} 个可用`}
-                  detail="只附加真正相关的 skill"
-                />
+                <ConversationHint title="模型" value="自动推荐" detail="按任务复杂度和可用模型选择" />
+                <ConversationHint title="技能" value={`${skills.length} 个可用`} detail="只附加真正相关的技能" />
               </div>
             </div>
           )}
@@ -126,12 +116,12 @@ export function CreateStep({
                 onGenerate();
               }
             }}
-            placeholder="描述你想要的智能体..."
+            placeholder="例如：每个工作日上午整理客服邮箱，在 Slack 交付优先级报告和回复草稿，但不要直接发送邮件。"
             className="min-h-24 resize-none border-0 bg-transparent px-4 py-4 text-[15px] text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-3 py-3">
             <span className="text-xs text-muted-foreground">
-              {modelsLoading ? "正在读取可用模型..." : "运行时、模型、工具和技能会在草案中推荐"}
+              {modelsLoading ? "正在读取可用模型..." : "先生成应用蓝图，再推荐运行时、模型、工具和技能"}
             </span>
             {modelsError && <span className="text-xs text-destructive">{modelsError}</span>}
             <Button
@@ -143,7 +133,7 @@ export function CreateStep({
               className="gap-1.5"
             >
               <Bot className="size-3.5" />
-              使用 UI 编辑器
+              使用表单编辑器
             </Button>
             <div className="ml-auto" />
             <Button
@@ -154,17 +144,18 @@ export function CreateStep({
               className="size-9 rounded-full"
               aria-label="生成配置"
             >
-              {drafting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-4" />}
+              {drafting ? (
+                <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+              ) : (
+                <ArrowUp className="size-4" />
+              )}
             </Button>
           </div>
         </div>
       </section>
 
       <section className="min-h-0">
-        <TemplateBrowser
-          selectedTemplateId={selectedTemplateId}
-          onSelect={onTemplateSelect}
-        />
+        <TemplateBrowser selectedTemplateId={selectedTemplateId} onSelect={onTemplateSelect} />
       </section>
     </div>
   );
@@ -191,12 +182,7 @@ function TemplateBrowser({
   const normalized = query.trim().toLowerCase();
   const templates = normalized
     ? AGENT_TEMPLATES.filter((template) =>
-        [
-          template.title,
-          template.description,
-          ...template.tags,
-          template.draft.name,
-        ]
+        [template.title, template.description, ...template.tags, template.draft.name]
           .join(" ")
           .toLowerCase()
           .includes(normalized),

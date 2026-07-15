@@ -11,6 +11,8 @@ export interface OpencodeSession {
   status?: string;
   workspace_bucket?: string;
   owner_id?: string;
+  task_id?: string;
+  attempt_number?: number;
   environment?: Record<string, unknown>;
   /** @deprecated use agent */
   harness?: string;
@@ -29,6 +31,7 @@ export interface AgentRuntimeTool {
   name: string;
   description: string;
   enabled_by_default: boolean;
+  risk?: string | null;
 }
 
 export interface AgentRuntime {
@@ -38,6 +41,7 @@ export interface AgentRuntime {
   credential_provider_id: string;
   credential_provider_name: string;
   tools: AgentRuntimeTool[];
+  approval_enforcement?: "enforced" | "advisory";
   connected: boolean;
   api_base?: string | null;
   masked_api_key?: string | null;
@@ -52,6 +56,7 @@ export interface RuntimeHarness {
   connected: boolean;
   masked_api_key?: string | null;
   tools: AgentRuntimeTool[];
+  approval_enforcement?: "enforced" | "advisory";
 }
 
 export function resolveApiSpec(
@@ -154,6 +159,90 @@ export interface Routine {
   updated_at: number;
 }
 
+export type AgentTaskStatus =
+  | "draft"
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "verifying"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface AgentTask {
+  id: string;
+  agent_id: string;
+  application_version: number;
+  source: "manual" | "routine" | "api" | "event" | "test" | string;
+  source_id?: string | null;
+  title: string;
+  input_json: Record<string, unknown>;
+  status: AgentTaskStatus | string;
+  created_by: string;
+  created_at: number;
+  started_at?: number | null;
+  completed_at?: number | null;
+  failure_reason?: string | null;
+  failure_code?: string | null;
+  deadline_at?: number | null;
+  current_attempt_number: number;
+}
+
+export interface TaskArtifact {
+  id: string;
+  task_id: string;
+  session_id?: string | null;
+  run_id?: string | null;
+  attempt_number: number;
+  artifact_type: string;
+  name: string;
+  content_json?: unknown;
+  location?: string | null;
+  created_by: string;
+  created_at: number;
+}
+
+export interface TaskAcceptanceCheck {
+  id: string;
+  task_id: string;
+  attempt_number: number;
+  criterion_index: number;
+  criterion: string;
+  verdict: "pending" | "passed" | "failed";
+  evidence?: string | null;
+  checked_by?: string | null;
+  checked_at?: number | null;
+}
+
+export interface TaskSessionAttempt {
+  id: string;
+  harness: string;
+  runtime?: string | null;
+  status: string;
+  created_at: number;
+  updated_at?: number | null;
+  attempt_number: number;
+  environment_json: Record<string, unknown>;
+}
+
+export interface TaskRunAttempt {
+  id: string;
+  session_id?: string | null;
+  status: string;
+  started_at: number;
+  finished_at?: number | null;
+  error?: string | null;
+  attempt_number: number;
+}
+
+export interface TaskAttempts {
+  sessions: TaskSessionAttempt[];
+  runs: TaskRunAttempt[];
+  artifacts: TaskArtifact[];
+  acceptance_checks: TaskAcceptanceCheck[];
+  max_attempts: number;
+}
+
 export interface AgentFile {
   agent_id: string;
   path: string;
@@ -168,6 +257,17 @@ export interface WorkspaceFile {
   path: string;
   size_bytes: number;
   updated_at: number | null;
+  content_type?: string;
+  etag?: string | null;
+}
+
+export interface WorkspaceTrashItem {
+  id: string;
+  paths: string[];
+  deleted_at: number;
+  expires_at: number;
+  size_bytes: number;
+  object_count: number;
 }
 
 export interface AgentRunStart {

@@ -76,6 +76,17 @@ impl ProviderConsumers {
         true
     }
 
+    /// Makes a newly submitted turn's stream the canonical consumer. Any
+    /// idle/reconnect consumer opened before the provider accepted the turn is
+    /// aborted so two tasks never compete for the same provider event feed.
+    pub fn replace(&self, session_id: &str, spawn: impl FnOnce() -> tokio::task::JoinHandle<()>) {
+        let mut tasks = self.tasks.lock().expect("provider consumers lock");
+        if let Some(previous) = tasks.remove(session_id) {
+            previous.abort();
+        }
+        tasks.insert(session_id.to_owned(), spawn());
+    }
+
     pub fn remove(&self, session_id: &str) {
         let _ = self
             .tasks

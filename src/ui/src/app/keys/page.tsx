@@ -24,7 +24,7 @@ export default function KeysPage() {
             <div className="flex flex-col gap-1">
               <h2 className="text-lg font-semibold">API 密钥</h2>
               <p className="text-sm text-muted-foreground">
-                Create and revoke gateway keys for local CLIs and AI agents.
+                创建、查看和撤销网关访问密钥；可跳转查看密钥归属用户。
               </p>
             </div>
             <ApiKeysPanel />

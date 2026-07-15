@@ -10,12 +10,15 @@ import { Input } from "@/components/ui/input";
 import {
   addGroupMember,
   createGroup,
+  deleteGroupAgentGrant,
   deleteGroupMember,
+  listGroupAgentGrants,
   listGroupMembers,
   listGroups,
   listUsers,
   updateGroupStatus,
   type GroupMember,
+  type AgentGroupGrant,
   type ManagedGroup,
   type ManagedUser,
 } from "@/lib/api";
@@ -24,6 +27,7 @@ export default function GroupsPage() {
   const [groups, setGroups] = useState<ManagedGroup[]>([]);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [members, setMembers] = useState<GroupMember[]>([]);
+  const [agentGrants, setAgentGrants] = useState<AgentGroupGrant[]>([]);
   const [selectedGroup, setSelectedGroup] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -46,10 +50,13 @@ export default function GroupsPage() {
   const loadMembers = async (groupId: string) => {
     if (!groupId) {
       setMembers([]);
+      setAgentGrants([]);
       return;
     }
     try {
-      setMembers(await listGroupMembers(groupId));
+      const [memberRows, grantRows] = await Promise.all([listGroupMembers(groupId), listGroupAgentGrants(groupId)]);
+      setMembers(memberRows);
+      setAgentGrants(grantRows);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -107,6 +114,16 @@ export default function GroupsPage() {
     }
   };
 
+  const removeAgentGrant = async (agentId: string) => {
+    if (!selectedGroup) return;
+    try {
+      await deleteGroupAgentGrant(selectedGroup, agentId);
+      await loadMembers(selectedGroup);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="flex h-screen bg-background text-foreground">
       <Sidebar />
@@ -125,6 +142,8 @@ export default function GroupsPage() {
             <div><h2 className="text-lg font-semibold">成员</h2><p className="text-sm text-muted-foreground">{selectedGroup ? "管理当前用户组的成员。" : "请选择一个用户组以管理成员。"}</p></div>
             {selectedGroup && <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]"><select value={memberId} onChange={(event) => setMemberId(event.target.value)} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"><option value="">选择用户</option>{users.map((user) => <option key={user.id} value={user.id}>{user.display_name} ({user.id})</option>)}</select><select value={memberRole} onChange={(event) => setMemberRole(event.target.value)} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"><option value="member">成员</option><option value="group_admin">组管理员</option></select><Button onClick={() => void addMember()} disabled={!memberId || busy}><Plus className="size-4" />添加</Button></div>}
             {members.length === 0 ? <p className="text-sm text-muted-foreground">暂无成员。</p> : <div className="divide-y divide-border">{members.map((member) => <div key={member.user_id} className="flex items-center justify-between py-2"><div><span className="font-mono text-sm">{member.user_id}</span><span className="ml-2 text-xs text-muted-foreground">{member.member_role === "group_admin" ? "组管理员" : "成员"}</span></div><Button variant="ghost" size="icon-sm" className="text-destructive" onClick={() => void removeMember(member.user_id)} aria-label={`移除 ${member.user_id}`}><Trash2 className="size-4" /></Button></div>)}</div>}
+            <div className="border-t border-border pt-4"><h2 className="text-lg font-semibold">已授权智能体</h2><p className="text-sm text-muted-foreground">组管理员可以撤销本组已有的智能体授权。</p></div>
+            {agentGrants.length === 0 ? <p className="text-sm text-muted-foreground">暂无智能体授权。</p> : <div className="divide-y divide-border">{agentGrants.map((grant) => <div key={grant.id} className="flex items-center justify-between py-2"><div><span className="font-mono text-sm">{grant.agent_id}</span><span className="ml-2 text-xs text-muted-foreground">{grant.permission}</span></div><Button variant="ghost" size="icon-sm" className="text-destructive" onClick={() => void removeAgentGrant(grant.agent_id)} aria-label={`撤销 ${grant.agent_id} 的授权`}><Trash2 className="size-4" /></Button></div>)}</div>}
           </section>
         </div></main>
       </div>

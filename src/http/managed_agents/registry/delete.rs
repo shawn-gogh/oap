@@ -7,7 +7,7 @@ use axum::{
 };
 
 use crate::{
-    db::managed_agents::{memory, registry},
+    db::managed_agents::registry,
     errors::GatewayError,
     proxy::state::AppState,
 };
@@ -25,21 +25,11 @@ pub async fn delete(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_access(&auth, &existing)?;
-    if !registry::repository::delete(pool, &agent_id).await? {
+
+    let now = crate::db::managed_agents::now_ms();
+    if !registry::repository::soft_delete(pool, &agent_id, now).await? {
         return Err(GatewayError::NotFound("not found".to_owned()));
     }
-    memory::repository::delete_all(pool, &agent_id).await?;
-    let _ =
-        crate::db::managed_agents::agent_grants::repository::delete_all_for_agent(pool, &agent_id)
-            .await;
-    let _ = crate::db::managed_agents::groups::agent_grants::delete_all_for_agent(pool, &agent_id)
-        .await;
-    // Best-effort workspace cleanup; a stuck bucket must not block deletion.
-    if let Some(storage) = &state.object_storage {
-        let bucket = crate::object_storage::ObjectStorageClient::agent_bucket_name(&agent_id);
-        if storage.bucket_exists(&bucket).await {
-            let _ = storage.delete_bucket_recursive(&bucket).await;
-        }
-    }
+
     Ok(Json(DeleteResponse { ok: true }))
 }

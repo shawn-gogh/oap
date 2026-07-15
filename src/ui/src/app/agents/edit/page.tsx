@@ -29,11 +29,13 @@ import {
   listAgents,
   listModels,
   listAgentRuntimes,
+  listRuntimeHarnesses,
   listMcpServerTools,
   listMcpUserCredentials,
   listPublicMcpServers,
   listVaultKeysForUser,
 } from "@/lib/api";
+import { selectableAgentRuntimes } from "@/lib/agent-runtime-options";
 import {
   integrationFromMcpServer,
   sortIntegrations,
@@ -46,7 +48,7 @@ import {
   selectedRuntimeModel,
 } from "@/lib/model-options";
 import { DEFAULT_TIMEZONE } from "@/lib/schedule";
-import type { Agent, AgentRuntime, AgentRuntimeId, VaultKeyEntry } from "@/lib/types";
+import type { Agent, AgentRuntime, AgentRuntimeId, RuntimeHarness, VaultKeyEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface FormState {
@@ -218,7 +220,7 @@ function AgentEdit() {
     description: "",
     prompt: "",
     model: "",
-    runtime: "claude_managed_agents",
+    runtime: "local-opencode",
     cron: "",
     timezone: DEFAULT_TIMEZONE,
     subAgentIds: [],
@@ -231,6 +233,7 @@ function AgentEdit() {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [runtimes, setRuntimes] = useState<AgentRuntime[]>([]);
+  const [runtimeHarnesses, setRuntimeHarnesses] = useState<RuntimeHarness[]>([]);
   const [mcpIntegrations, setMcpIntegrations] = useState<Integration[]>([]);
   const [mcpLoading, setMcpLoading] = useState(true);
   const [mcpError, setMcpError] = useState<string | null>(null);
@@ -248,9 +251,10 @@ function AgentEdit() {
       try {
         const ag = await getAgent(id);
         const owner = vaultUserFromAgent(ag);
-        const [agentList, runtimeList, keyEntries] = await Promise.all([
+        const [agentList, runtimeList, harnessList, keyEntries] = await Promise.all([
           listAgents(),
           listAgentRuntimes(),
+          listRuntimeHarnesses().catch(() => []),
           listVaultKeysForUser(owner).catch(() => []),
         ]);
         if (cancelled) return;
@@ -273,6 +277,7 @@ function AgentEdit() {
         });
         setAgents(agentList.filter((agent) => agent.id !== id));
         setRuntimes(runtimeList);
+        setRuntimeHarnesses(harnessList);
         setStoredKeyEntries(keyEntries);
       } catch (e) {
         if (cancelled) return;
@@ -481,7 +486,7 @@ function AgentEdit() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {runtimeOptions(runtimes).map((runtime) => (
+                        {selectableAgentRuntimes(runtimes, runtimeHarnesses, form.runtime).map((runtime) => (
                           <SelectItem key={runtime.id} value={runtime.id}>
                             {runtime.name}
                           </SelectItem>
@@ -793,38 +798,5 @@ function runtimeFromAgent(agent: Agent): AgentRuntimeId {
     if (isAgentRuntimeId(runtime)) return runtime.trim();
   }
   if (isLegacyBuiltinRuntime(agent.harness)) return agent.harness;
-  return "claude_managed_agents";
-}
-
-function runtimeOptions(runtimes: AgentRuntime[]): AgentRuntime[] {
-  if (runtimes.length > 0) return runtimes;
-  return [
-    {
-      id: "claude_managed_agents",
-      name: "Claude Managed Agents",
-      default_api_base: "",
-      credential_provider_id: "anthropic",
-      credential_provider_name: "Anthropic",
-      tools: [],
-      connected: false,
-    },
-    {
-      id: "cursor",
-      name: "Cursor",
-      default_api_base: "",
-      credential_provider_id: "cursor",
-      credential_provider_name: "Cursor",
-      tools: [],
-      connected: false,
-    },
-    {
-      id: "gemini_antigravity",
-      name: "Gemini Antigravity",
-      default_api_base: "",
-      credential_provider_id: "gemini",
-      credential_provider_name: "Gemini",
-      tools: [],
-      connected: false,
-    },
-  ];
+  return "local-opencode";
 }
