@@ -233,6 +233,13 @@ fn forward_request_headers(headers: &HeaderMap) -> Vec<(HeaderName, HeaderValue)
         }
         forwarded.push((name.clone(), value.clone()));
     }
+    // Preserve the browser's original Host (standard reverse-proxy behavior):
+    // dev servers with host checks (e.g. Vite's server.allowedHosts) reject
+    // the container-internal hostname but allow localhost.
+    if let Some(host) = headers.get(HOST) {
+        forwarded.push((HOST, host.clone()));
+        forwarded.push((HeaderName::from_static("x-forwarded-host"), host.clone()));
+    }
     // Forward the app's own cookies but never the gateway's auth cookies.
     if let Some(filtered) = filtered_cookie_header(headers) {
         forwarded.push((COOKIE, filtered));
@@ -314,6 +321,12 @@ async fn proxy_websocket(
             request
                 .headers_mut()
                 .insert("sec-websocket-protocol", value);
+        }
+    }
+    // Same original-Host preservation as the HTTP path (Vite HMR checks it).
+    if let Some(host) = headers.get(HOST) {
+        if let Ok(value) = tungstenite::http::HeaderValue::from_bytes(host.as_bytes()) {
+            request.headers_mut().insert("host", value);
         }
     }
 

@@ -61,7 +61,7 @@ fn request_human_approval_tool() -> Value {
 fn expose_port_tool() -> Value {
     json!({
         "name": EXPOSE_PORT_MCP_ID,
-        "description": "Expose an interactive service (dashboard, live UI, WebSocket app) to the user's browser. Call this BEFORE starting the server: the platform allocates a port, registers it, and returns a public URL. You must then start your HTTP/WebSocket server listening on 0.0.0.0 at the returned port. Serve the app with root-relative or relative asset paths.",
+        "description": "Expose an interactive service (dashboard, live UI, WebSocket app) to the user's browser. Call this BEFORE starting the server: the platform allocates a port, registers it, and returns a public URL. You must then start your HTTP/WebSocket server listening on 0.0.0.0 at the returned port. IMPORTANT: the app is served under the returned URL's /apps/{app_id}/ path prefix, so all asset references must be RELATIVE paths (./main.js), not absolute (/main.js). For Vite/webpack apps set the base/publicPath option to the returned URL path (e.g. vite.config.js: base: '/apps/{app_id}/'), or build statically and serve the dist directory with `python3 -m http.server`.",
         "inputSchema": {
             "type": "object",
             "properties": {
