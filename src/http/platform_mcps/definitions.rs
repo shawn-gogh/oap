@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 
 use super::{
     factory, session_management, AGENT_MEMORY_MCP_ID, CHECK_HUMAN_APPROVAL_MCP_ID,
-    EDIT_AGENT_SKILL_MCP_ID, LIST_SUB_AGENTS_MCP_ID, REQUEST_HUMAN_APPROVAL_MCP_ID,
-    RUN_SUB_AGENT_MCP_ID,
+    EDIT_AGENT_SKILL_MCP_ID, EXPOSE_PORT_MCP_ID, LIST_SUB_AGENTS_MCP_ID,
+    REQUEST_HUMAN_APPROVAL_MCP_ID, RUN_SUB_AGENT_MCP_ID,
 };
 
 pub fn tool_defs() -> Vec<Value> {
@@ -16,6 +16,7 @@ pub fn tool_defs() -> Vec<Value> {
         run_sub_agent_tool(),
         request_human_approval_tool(),
         check_human_approval_tool(),
+        expose_port_tool(),
     ];
     tools.extend(factory::tool_defs());
     tools
@@ -53,6 +54,30 @@ fn request_human_approval_tool() -> Value {
                 }
             },
             "required": ["title"]
+        }
+    })
+}
+
+fn expose_port_tool() -> Value {
+    json!({
+        "name": EXPOSE_PORT_MCP_ID,
+        "description": "Expose an interactive service (dashboard, live UI, WebSocket app) to the user's browser. Call this BEFORE starting the server: the platform allocates a port, registers it, and returns a public URL. You must then start your HTTP/WebSocket server listening on 0.0.0.0 at the returned port. Serve the app with root-relative or relative asset paths.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "integer",
+                    "description": "Optional specific port (1024-65535). Omit to let the platform allocate one from its managed range (recommended)."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional human-readable name for this app (e.g. 'sales-dashboard')."
+                },
+                "ttl_seconds": {
+                    "type": "integer",
+                    "description": "Optional lifetime in seconds before the exposure is revoked. Defaults to 24 hours."
+                }
+            }
         }
     })
 }

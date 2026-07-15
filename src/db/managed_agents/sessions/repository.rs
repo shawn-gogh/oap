@@ -154,6 +154,8 @@ pub async fn set_provider_run(
     Ok(())
 }
 
+const TERMINAL_STATUSES: &[&str] = &["cancelled", "timed_out", "completed", "failed", "error"];
+
 pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result<(), GatewayError> {
     sqlx::query(
         r#"
@@ -170,6 +172,18 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     .execute(pool)
     .await
     .map_err(GatewayError::Database)?;
+    // Session over — release its exposed app ports so the slots can be
+    // reallocated; best-effort, the TTL sweeper covers any miss.
+    if TERMINAL_STATUSES.contains(&status) {
+        if let Err(error) =
+            crate::db::managed_agents::exposed_apps::repository::soft_delete_for_session(
+                pool, session_id,
+            )
+            .await
+        {
+            tracing::warn!(session_id, "failed to release exposed apps: {error}");
+        }
+    }
     Ok(())
 }
 

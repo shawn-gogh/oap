@@ -23,6 +23,7 @@ use crate::{
 pub fn router(state: Arc<AppState>) -> Router {
     public_routes()
         .merge(api_routes())
+        .merge(exposed_app_routes())
         .merge(session_routes())
         .merge(crate::http::observability::routes::router())
         .merge(crate::http::management::routes::router())
@@ -100,6 +101,22 @@ fn api_routes() -> Router<Arc<AppState>> {
                 .delete(crate::http::provider_credentials::delete_provider),
         )
         .merge(vault_routes())
+}
+
+fn exposed_app_routes() -> Router<Arc<AppState>> {
+    use crate::http::exposed_apps::{api, proxy};
+    Router::new()
+        // Browser-facing reverse proxy into agent runtime containers.
+        .route("/apps/{app_id}", any(proxy::root))
+        .route("/apps/{app_id}/", any(proxy::root_slash))
+        .route("/apps/{app_id}/{*path}", any(proxy::proxy))
+        // Owner management API.
+        .route("/api/apps", get(api::list))
+        .route("/api/apps/{app_id}", delete(api::delete))
+        .route(
+            "/api/apps/{app_id}/share",
+            post(api::create_share).delete(api::revoke_share),
+        )
 }
 
 fn vault_routes() -> Router<Arc<AppState>> {

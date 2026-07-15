@@ -85,6 +85,10 @@ services:
       # platform MCPs (e.g. request_human_approval) at {url}/mcp/platform/{agent}.
       # `lap` is this service's name on the compose network.
       LITELLM_PROXY_BASE_URL: ${LITELLM_PROXY_BASE_URL:-http://lap:4000}
+      # Browser-facing base URL used in links returned to users (e.g. the
+      # expose_port app URLs). Distinct from LITELLM_PROXY_BASE_URL, which is
+      # the compose-internal address runtimes use to reach the gateway.
+      LAP_PUBLIC_BASE_URL: ${LAP_PUBLIC_BASE_URL:-http://localhost:4000}
       # Internal (docker-network) endpoint used by lap itself to talk to MinIO.
       MINIO_ENDPOINT: http://minio:9000
       # Endpoint used to SIGN presigned URLs. Must be reachable from the

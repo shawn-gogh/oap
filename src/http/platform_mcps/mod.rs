@@ -17,6 +17,7 @@ use crate::{
 mod approval;
 mod catalog;
 mod definitions;
+mod expose_port;
 mod factory;
 mod selection;
 mod session_management;
@@ -33,6 +34,7 @@ pub const LIST_SUB_AGENTS_MCP_ID: &str = "list_sub_agents";
 pub const RUN_SUB_AGENT_MCP_ID: &str = "run_sub_agent";
 pub const REQUEST_HUMAN_APPROVAL_MCP_ID: &str = "request_human_approval";
 pub const CHECK_HUMAN_APPROVAL_MCP_ID: &str = "check_human_approval";
+pub const EXPOSE_PORT_MCP_ID: &str = "expose_port";
 
 pub use catalog::{platform_mcps, PlatformMcp};
 pub use selection::selected_platform_mcp_ids;
@@ -187,6 +189,9 @@ async fn call_tool(
                 .await?
         }
         CHECK_HUMAN_APPROVAL_MCP_ID => approval::check_human_approval(pool, arguments).await?,
+        EXPOSE_PORT_MCP_ID => {
+            expose_port::expose_port(state.as_ref(), pool, agent_id, session_id, arguments).await?
+        }
         _ => {
             return Ok(json!({
                 "isError": true,

@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use super::{
     AGENT_MEMORY_MCP_ID, CHECK_HUMAN_APPROVAL_MCP_ID, CREATE_MANAGED_AGENT_MCP_ID,
-    EDIT_AGENT_SKILL_MCP_ID, LIST_SUB_AGENTS_MCP_ID, PLATFORM_SESSION_MCP_ID,
+    EDIT_AGENT_SKILL_MCP_ID, EXPOSE_PORT_MCP_ID, LIST_SUB_AGENTS_MCP_ID, PLATFORM_SESSION_MCP_ID,
     REQUEST_HUMAN_APPROVAL_MCP_ID, RUN_SUB_AGENT_MCP_ID, SEND_PLATFORM_SESSION_MESSAGE_MCP_ID,
 };
 
@@ -63,5 +63,10 @@ const CATALOG: &[PlatformMcp] = &[
         id: CHECK_HUMAN_APPROVAL_MCP_ID,
         name: "Check human approval",
         description: "Check the current decision state for a filed approval request.",
+    },
+    PlatformMcp {
+        id: EXPOSE_PORT_MCP_ID,
+        name: "Expose service port",
+        description: "Register a container port so the service the agent starts on it is reachable from the host browser via the gateway.",
     },
 ];

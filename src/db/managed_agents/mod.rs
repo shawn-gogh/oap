@@ -2,6 +2,7 @@ pub mod agent_grants;
 pub mod api_keys;
 pub mod audit;
 pub mod eval_runs;
+pub mod exposed_apps;
 pub mod files;
 pub mod governance;
 pub mod groups;
