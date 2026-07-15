@@ -4,26 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  Check,
   ChevronDown,
-  CircleAlert,
-  FileText,
-  Globe,
-  ListChecks,
   Loader2,
-  Search,
   Send,
   Terminal,
-  Wrench,
   X,
 } from "lucide-react";
-import { BrandIcon } from "@/components/brand-icons";
 import { CopyButton } from "@/components/copy-button";
 import { MarkdownCodeBlock, MarkdownPre, HighlightedCode } from "@/components/code-block";
-import { ContextToolBatch } from "@/components/context-tool-batch";
 import { ToolErrorCard } from "@/components/tool-error-card";
 import { TodoList, parseTodoItems, todoProgress } from "@/components/todo-list";
-import { defaultOpenForTool, groupToolParts } from "@/lib/tool-classification";
 import { usePacedText } from "@/lib/hooks/use-paced-text";
 import type { HarnessMessage, HarnessMessagePart } from "@/lib/types";
 
@@ -49,6 +39,16 @@ interface LocalMessage {
 type RenderItem =
   | { type: "part"; part: HarnessMessagePart; key: string }
   | { type: "toolGroup"; parts: HarnessMessagePart[]; key: string };
+
+type ToolPart = Extract<HarnessMessagePart, { type: "tool" }>;
+
+/** Stable key from the part's runtime id — index-based keys shift when a
+ * burst grows during the 2s poll merge, resetting expand state to the wrong
+ * row. */
+function partKey(part: HarnessMessagePart, fallback: string): string {
+  const id = (part as { id?: unknown }).id;
+  return typeof id === "string" && id ? id : fallback;
+}
 
 function toLocal(m: HarnessMessage): LocalMessage {
   const role = m.info.role;
@@ -253,7 +253,9 @@ function AssistantBlock({
     (part) => part.type === "tool" && (part.state.status === "running" || part.state.status === "pending"),
   );
   const details = messageDetails(msg);
-  if (!failed && !queued && visibleParts.length === 0 && !showProgressIndicator) return null;
+  // An in-progress turn always renders at least a waiting line — returning
+  // null here left blank gaps that read as "the session stopped responding".
+  if (!failed && !queued && !inProgress && visibleParts.length === 0) return null;
 
   return (
     <article className="group/turn flex flex-col gap-3 py-1">
@@ -297,7 +299,7 @@ function AssistantBlock({
             </button>
           )}
         </div>
-      ) : inProgress && visibleParts.length === 0 && showProgressIndicator ? (
+      ) : inProgress && visibleParts.length === 0 ? (
         msg.text ? (
           <div className="sessions-md max-w-[920px] text-[15px] leading-7 text-foreground">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.text}</ReactMarkdown>
@@ -365,7 +367,7 @@ function groupRenderItems(parts: HarnessMessagePart[]): RenderItem[] {
     items.push({
       type: "toolGroup",
       parts: toolRun,
-      key: `tools-${items.length}`,
+      key: partKey(toolRun[0], `tools-${items.length}`),
     });
     toolRun = [];
   };
@@ -377,7 +379,7 @@ function groupRenderItems(parts: HarnessMessagePart[]): RenderItem[] {
       return;
     }
     flushTools();
-    items.push({ type: "part", part, key: `${t || "part"}-${index}` });
+    items.push({ type: "part", part, key: partKey(part, `${t || "part"}-${index}`) });
   });
   flushTools();
 
@@ -507,80 +509,91 @@ export function toolLabel(tool: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function toolBrand(tool: string): string | null {
-  const n = tool.toLowerCase();
-  if (n.includes("gmail")) return "gmail";
-  if (n.includes("pylon")) return "pylon";
-  if (n.includes("linear")) return "linear";
-  return null;
+function isFailedToolStatus(status: string): boolean {
+  return status === "error" || status === "timed_out" || status === "aborted";
 }
 
-function ToolIcon({
-  tool,
-  status,
-}: {
-  tool: string;
-  status: string;
-}) {
-  const brand = toolBrand(tool);
-  if (brand) {
-    return (
-      <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border bg-background shadow-sm">
-        <BrandIcon id={brand} className="size-3.5" />
-      </span>
-    );
-  }
-
-  const n = tool.toLowerCase();
-  const failed = status === "error" || status === "timed_out" || status === "aborted";
-  const Icon = isTodoTool(n)
-    ? ListChecks
-    : n === "bash"
-      ? Terminal
-      : n.includes("read") || n.includes("write") || n.includes("edit")
-        ? FileText
-        : n.includes("grep") || n.includes("search") || n.includes("find")
-          ? Search
-          : n.includes("web") || n.includes("browser")
-            ? Globe
-            : failed
-              ? CircleAlert
-              : Wrench;
-
-  return (
-    <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground shadow-sm">
-      <Icon className="size-3.5" />
-    </span>
-  );
+function toolPartStatus(part: ToolPart): string {
+  const status = part.state?.status;
+  return typeof status === "string" ? status : "running";
 }
 
+function basename(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index >= 0 ? path.slice(index + 1) : path;
+}
+
+/** Codex-style work burst: a collapsed summary line ("已编辑 N 个文件 · …"),
+ * a live activity line while a tool is running, and — on expand — a flat
+ * list of compact one-line entries. */
 function ToolCluster({ parts }: { parts: HarnessMessagePart[] }) {
-  const [open, setOpen] = useState(true);
-  const groups = groupToolParts(parts);
+  const [open, setOpen] = useState(false);
+  const toolParts = parts.filter((p): p is ToolPart => p.type === "tool");
   const summary = toolActivitySummary(parts);
+  const runningPart = toolParts.find((part) => {
+    const status = toolPartStatus(part);
+    return status === "running" || status === "pending";
+  });
+  const failedCount = toolParts.filter((part) => isFailedToolStatus(toolPartStatus(part))).length;
+
+  const startedAt =
+    typeof runningPart?.state?.startedAt === "number" ? runningPart.state.startedAt : undefined;
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if (!runningPart || startedAt === undefined) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runningPart, startedAt]);
+  const runningDuration =
+    startedAt !== undefined && now > 0 ? formatToolDuration(Math.max(0, now - startedAt)) : "";
+
   return (
     <div className="max-w-[920px] py-0.5 text-[13px]">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="mb-1 flex max-w-full items-center gap-2 text-left text-muted-foreground transition-colors hover:text-foreground"
+        className="flex max-w-full items-center gap-2 text-left text-muted-foreground transition-colors hover:text-foreground"
       >
-        <Terminal className="size-3.5 shrink-0" />
-        <span className="truncate">{summary}</span>
-        <ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
-      </button>
-      {open && <div className="flex flex-col gap-0.5 pl-0.5">
-        {groups.map((group, index) =>
-          group.kind === "context-batch" ? (
-            <ContextToolBatch key={`batch-${index}`} parts={group.parts} />
-          ) : (
-            <ToolBlock key={`${group.part.id ?? "tool"}-${index}`} part={group.part} />
-          ),
+        {runningPart ? (
+          <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+        ) : (
+          <Terminal className="size-3.5 shrink-0" />
         )}
-      </div>}
+        <span className="truncate">{summary}</span>
+        {failedCount > 0 && (
+          <span className="shrink-0 text-red-600 dark:text-red-400">{failedCount} 个失败</span>
+        )}
+        <ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {runningPart && !open && (
+        <div className="mt-1 pl-[22px] text-[13px] text-muted-foreground/80">
+          {liveActivityLabel(runningPart)}
+          {runningDuration && `，已持续 ${runningDuration}`}
+        </div>
+      )}
+      {open && (
+        <div className="mt-1 flex flex-col pl-[22px]">
+          {toolParts.map((part, index) => (
+            <ToolBlock key={partKey(part, `tool-${index}`)} part={part} />
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+function liveActivityLabel(part: ToolPart): string {
+  const n = part.tool.toLowerCase();
+  const desc = toolDescriptor(part.tool, part.state?.input);
+  if (n === "bash" || n.includes("shell") || n.includes("exec")) return "正在运行命令";
+  if (n.includes("edit") || n.includes("write") || n.includes("patch"))
+    return `正在编辑 ${desc ? basename(desc) : "文件"}`;
+  if (n.includes("read")) return `正在读取 ${desc ? basename(desc) : "文件"}`;
+  if (n.includes("grep") || n.includes("search") || n.includes("find") || n.includes("glob"))
+    return "正在搜索代码";
+  return `正在运行 ${toolLabel(part.tool)}`;
 }
 
 function toolActivitySummary(parts: HarnessMessagePart[]): string {
@@ -604,51 +617,61 @@ function toolActivitySummary(parts: HarnessMessagePart[]): string {
   return labels.join(" · ") || "运行活动";
 }
 
+/** Line delta for edit/write style tools, computed from the tool input —
+ * the runtime provides no numstat. */
+export function diffStat(tool: string, input: unknown): { added: number; removed: number } | null {
+  const n = tool.toLowerCase();
+  if (!n.includes("edit") && !n.includes("write") && !n.includes("patch")) return null;
+  const oldText = inputString(input, "oldString", "old_string");
+  const newText = inputString(input, "newString", "new_string", "content", "text");
+  if (!oldText && !newText) return null;
+  const lines = (text: string) => (text ? text.split("\n").length : 0);
+  return { added: lines(newText), removed: lines(oldText) };
+}
+
+/** Compact one-line tool entry (Codex style): verbed title, filename in
+ * accent color, +N -N for edits; details expand on click. */
 export function ToolBlock({ part }: { part: HarnessMessagePart }) {
-  const p = part as Extract<HarnessMessagePart, { type: "tool" }>;
+  const p = part as ToolPart;
   const toolName = typeof p.tool === "string" ? p.tool : "tool";
   const state = (p.state as Record<string, unknown> | undefined) ?? {};
   const status = typeof state.status === "string" ? state.status : "running";
-  const [open, setOpen] = useState(() => defaultOpenForTool(toolName, status));
+  const failedStatus = isFailedToolStatus(status);
+  const [open, setOpen] = useState(failedStatus);
+  // A tool that fails after mount pops its details open so the error is seen.
+  useEffect(() => {
+    if (failedStatus) setOpen(true);
+  }, [failedStatus]);
   const input = state.input;
   const output = state.output;
   const errorOut = state.error;
   const errorMessage = typeof state.errorMessage === "string" ? state.errorMessage : "";
   const startedAt = typeof state.startedAt === "number" ? state.startedAt : undefined;
-  const completedAt = typeof state.completedAt === "number" ? state.completedAt : undefined;
+  const running = status === "running" || status === "pending";
   const [now, setNow] = useState(0);
   useEffect(() => {
-    if ((status !== "running" && status !== "pending") || startedAt === undefined) return;
+    if (!running || startedAt === undefined) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [startedAt, status]);
+  }, [running, startedAt]);
   const duration = useMemo(() => {
-    if (startedAt === undefined) return "";
-    return formatToolDuration(Math.max(0, (completedAt ?? now) - startedAt));
-  }, [completedAt, now, startedAt]);
+    if (!running || startedAt === undefined || now === 0) return "";
+    return formatToolDuration(Math.max(0, now - startedAt));
+  }, [now, running, startedAt]);
+
   const desc = toolDescriptor(toolName, input);
   const todoItems = isTodoTool(toolName) ? parseTodoItems(input, output) : null;
-
-  const label = todoItems ? "Todos" : toolLabel(toolName);
-  const hasDetails =
-    input !== undefined || output !== undefined || errorOut !== undefined;
-
-  const failedStatus = status === "error" || status === "timed_out" || status === "aborted";
-  const statusColor =
-    status === "completed"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : failedStatus
-        ? "text-red-600 dark:text-red-400"
-        : "text-amber-600 dark:text-amber-400";
-  const StatusIcon =
-    status === "completed" ? Check : failedStatus ? X : Loader2;
+  const hasDetails = input !== undefined || output !== undefined || errorOut !== undefined;
+  const n = toolName.toLowerCase();
+  const stat = diffStat(toolName, input);
+  const isEdit = n.includes("edit") || n.includes("write") || n.includes("patch");
+  const isCommand = n === "bash" || n.includes("shell") || n.includes("exec");
+  const isSearch =
+    n.includes("grep") || n.includes("search") || n.includes("find") || n.includes("glob");
+  const isRead = n.includes("read") || n.includes("list") || n.endsWith("ls");
   const statusLabel =
-    status === "completed" ? "完成" :
-    status === "timed_out" ? "已超时" :
-    status === "aborted" ? "已中断" :
-    status === "error" ? "失败" :
-    status === "pending" ? "等待中" : "运行中";
+    status === "timed_out" ? "已超时" : status === "aborted" ? "已中断" : "失败";
 
   return (
     <div className="max-w-[920px] text-[13px]">
@@ -656,33 +679,67 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
         type="button"
         onClick={() => hasDetails && setOpen((v) => !v)}
         aria-expanded={hasDetails ? open : undefined}
-        className={`inline-flex max-w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1.5 text-left ${
-          hasDetails ? "cursor-pointer transition-colors hover:bg-muted/45" : "cursor-default"
+        className={`flex max-w-full min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left leading-6 text-muted-foreground ${
+          hasDetails ? "cursor-pointer transition-colors hover:bg-muted/40 hover:text-foreground" : "cursor-default"
         }`}
       >
-        <ToolIcon tool={toolName} status={status} />
-        <span className="shrink-0 text-sm font-medium text-foreground">{label}</span>
-        {desc && (
-          <span className="mono min-w-0 max-w-[min(38rem,42vw)] truncate text-xs text-muted-foreground">{desc}</span>
+        {todoItems ? (
+          <span className="min-w-0 truncate">Todos {desc && <span className="mono">{desc}</span>}</span>
+        ) : isEdit && desc ? (
+          <span className="min-w-0 truncate">
+            已编辑{" "}
+            <span className="text-primary" title={desc}>
+              {basename(desc)}
+            </span>
+            {stat && (
+              <>
+                {" "}
+                <span className="text-emerald-600 dark:text-emerald-400">+{stat.added}</span>{" "}
+                <span className="text-red-600 dark:text-red-400">-{stat.removed}</span>
+              </>
+            )}
+          </span>
+        ) : isCommand ? (
+          <span className="min-w-0 truncate">
+            {running ? "正在运行" : "已运行"}{" "}
+            <span className="mono text-muted-foreground/80" title={desc}>
+              {desc || toolLabel(toolName)}
+            </span>
+          </span>
+        ) : isSearch ? (
+          <span className="min-w-0 truncate">
+            Searched for <span className="mono text-muted-foreground/80">{desc}</span>
+          </span>
+        ) : isRead && desc ? (
+          <span className="min-w-0 truncate">
+            Read{" "}
+            <span title={desc} className="text-foreground/80">
+              {basename(desc)}
+            </span>
+          </span>
+        ) : (
+          <span className="min-w-0 truncate">
+            {toolLabel(toolName)}
+            {desc && <span className="mono ml-1.5 text-muted-foreground/80">{desc}</span>}
+          </span>
         )}
-        {duration && <span className="mono shrink-0 text-xs text-muted-foreground">{duration}</span>}
-        <span className={`mono inline-flex shrink-0 items-center gap-1 rounded-full border border-current/15 px-2 py-0.5 text-[11px] ${statusColor}`}>
-          <StatusIcon
-            className={`size-3 shrink-0 ${status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`}
-          />
-          {statusLabel}
-        </span>
+        {running && duration && (
+          <span className="shrink-0 text-amber-600 dark:text-amber-400">已持续 {duration}</span>
+        )}
+        {failedStatus && (
+          <span className="shrink-0 text-red-600 dark:text-red-400">{statusLabel}</span>
+        )}
         {hasDetails && (
           <ChevronDown
-            className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${
-              open ? "" : "-rotate-90"
+            className={`size-3 shrink-0 text-muted-foreground/60 transition-transform ${
+              open ? "rotate-180" : ""
             }`}
           />
         )}
       </button>
 
       {open && hasDetails && (
-        <div className="ml-8 mt-1 flex flex-col gap-2 rounded-lg border border-border bg-muted/25 p-3 shadow-sm">
+        <div className="ml-4 mt-1 mb-1.5 flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/20 p-3">
           {todoItems ? (
             <TodoList items={todoItems} />
           ) : (

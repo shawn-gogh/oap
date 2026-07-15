@@ -1355,8 +1355,8 @@ export default function ChatPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen flex items-center justify-center text-muted-foreground text-sm">
-          Loading…
+        <div className="mx-auto min-h-screen w-full max-w-5xl px-6 py-8">
+          <SessionLoadingSkeleton />
         </div>
       }
     >
