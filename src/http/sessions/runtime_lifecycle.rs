@@ -124,10 +124,29 @@ pub(super) fn provider_run_status(raw: &Value) -> &'static str {
 
 pub(super) fn terminal_event_status(event: &AgentEvent) -> Option<&'static str> {
     match event.event_type.as_str() {
-        "session.status_idle" => Some("idle"),
+        "session.status_idle" | "assistant_response" | "agent.message" => Some("idle"),
         "session.error" => Some("error"),
         _ => None,
     }
+}
+
+pub(super) fn event_keeps_turn_running(event: &AgentEvent) -> bool {
+    let event_type = event.event_type.as_str();
+    event_type == "user.message"
+        || event_type == "session.status_running"
+        || event_type == "session.thread_status_running"
+        || event_type == "thinking_back"
+        || event_type == "agent.thinking"
+        || event_type == "agent.reasoning"
+        || event_type == "tool_call"
+        || event_type == "tool_result"
+        || event_type == "agent.tool_use"
+        || event_type == "agent.tool_result"
+        || event_type == "content_block_start"
+        || event_type == "content_block_delta"
+        || event_type == "message_delta"
+        || event_type == "message.part.updated"
+        || event_type == "message.part.delta"
 }
 
 pub(super) fn event_error_message(event: &AgentEvent) -> String {

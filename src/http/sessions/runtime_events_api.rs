@@ -21,7 +21,8 @@ use super::{
         event_items, persist_runtime_event_values, reconcile_terminal_status_from_events,
     },
     runtime_lifecycle::{
-        event_error_message, mark_session_status, persist_runtime_event, terminal_event_status,
+        event_error_message, event_keeps_turn_running, mark_session_status, persist_runtime_event,
+        terminal_event_status,
     },
     runtime_sdk::{
         agent_sdk_error, agent_sdk_error_message, provider_event_line, register_runtime_session,
@@ -189,13 +190,16 @@ async fn consume_provider_stream(
                     if status == "error" {
                         terminal_error = Some(event_error_message(&event));
                     }
+                } else if event_keeps_turn_running(&event) {
+                    terminal_status = None;
+                    terminal_error = None;
                 }
                 let _ = persist_runtime_event(&pool, &session_id, &event).await;
                 emit_runtime_event(&callbacks, &session_id, &event).await;
                 if let Ok(value) = serde_json::to_value(&event) {
                     state.local_session_events.publish(&session_id, value);
                 }
-                if terminal_status.is_some() {
+                if terminal_status == Some("error") {
                     break;
                 }
             }

@@ -27,15 +27,15 @@ function appUrl(appId: string): string {
  * expose_port, with open / share / revoke / take-offline actions. Renders
  * nothing until the session has at least one active app.
  */
-export function ExposedAppsMenu({ sessionId }: { sessionId: string }) {
+export function ExposedAppsMenu({ sessionId, agentId }: { sessionId: string; agentId?: string }) {
   const [apps, setApps] = useState<ExposedApp[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    listExposedApps(sessionId)
+    listExposedApps(sessionId, agentId)
       .then(setApps)
       .catch(() => {});
-  }, [sessionId]);
+  }, [sessionId, agentId]);
 
   useEffect(() => {
     refresh();

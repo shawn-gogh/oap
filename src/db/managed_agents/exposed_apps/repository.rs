@@ -131,6 +131,23 @@ pub async fn list_for_session(
     .map_err(GatewayError::Database)
 }
 
+pub async fn list_for_agent(
+    pool: &PgPool,
+    agent_id: &str,
+) -> Result<Vec<ExposedAppRow>, GatewayError> {
+    sqlx::query_as::<_, ExposedAppRow>(
+        r#"
+        SELECT * FROM "LiteLLM_ExposedAppsTable"
+        WHERE agent_id = $1 AND status = 'active'
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn soft_delete(pool: &PgPool, app_id: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(
         r#"

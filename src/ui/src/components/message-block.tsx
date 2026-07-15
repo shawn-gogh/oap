@@ -317,7 +317,7 @@ function AssistantBlock({
             <PartBlock key={partKey(part, `reasoning-${index}`)} part={part} />
           ))}
           {sections.activity.length > 0 && (
-            <ActivityCluster parts={sections.activity} running={inProgress} />
+            <ActivityCluster parts={sections.activity} />
           )}
           {sections.response.map((part, index) => (
             <PartBlock
@@ -361,7 +361,7 @@ function AssistantBlock({
   );
 }
 
-function ActivityCluster({ parts, running }: { parts: HarnessMessagePart[]; running: boolean }) {
+function ActivityCluster({ parts }: { parts: HarnessMessagePart[] }) {
   const [open, setOpen] = useState(false);
   const items = groupRenderItems(parts);
   const tools = parts.filter((part): part is ToolPart => part.type === "tool");
@@ -369,6 +369,7 @@ function ActivityCluster({ parts, running }: { parts: HarnessMessagePart[]; runn
     const status = toolPartStatus(part);
     return status === "running" || status === "pending";
   });
+  const running = Boolean(runningTool);
   const latestNarration = parts.findLast((part) => part.type === "text");
   const latestText =
     latestNarration?.type === "text"

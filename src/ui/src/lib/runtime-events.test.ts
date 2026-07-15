@@ -152,15 +152,39 @@ describe("runtimeEventsToMessages", () => {
     expect(textPart && "text" in textPart ? textPart.text : "").toContain("boom");
     expect(assistant.info.finish).toBe("stop");
   });
+
+  it("ignores an idle marker superseded by more activity in the same turn", () => {
+    const messages = runtimeEventsToMessages(SID, [
+      userMessage("change it", { id: "u1" }),
+      { id: "r1", type: "session.status_running" },
+      { id: "m1", type: "agent.message", text: "I will check" },
+      { id: "i1", type: "session.status_idle" },
+      { id: "t1", type: "agent.tool_use", name: "bash", status: "running" },
+      { id: "t2", type: "agent.tool_result", tool_use_id: "t1", name: "bash", status: "completed" },
+      { id: "m2", type: "agent.message", text: "Done" },
+    ], "idle");
+    const assistants = messages.filter((message) => message.info.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].info.finish).toBe("stop");
+    expect(assistants[0].parts.filter((part) => part.type === "tool")).toHaveLength(1);
+  });
 });
 
 describe("status derivation", () => {
-  it("treats activity after a stale idle marker as a running turn", () => {
+  it("treats a final agent response after a stale idle marker as terminal", () => {
     expect(runtimeStatusFromEvents([
       { type: "session.status_running" },
       { type: "session.status_idle" },
       { type: "agent.tool_result", tool_use_id: "tool_1", output: "done" },
       { type: "agent.message", text: "continuing" },
+    ])).toBe("idle");
+  });
+
+  it("keeps running when a tool follows agent narration", () => {
+    expect(runtimeStatusFromEvents([
+      { type: "session.status_running" },
+      { type: "agent.message", text: "checking" },
+      { type: "agent.tool_use", id: "tool_1", status: "running" },
     ])).toBe("busy");
   });
 
@@ -174,8 +198,8 @@ describe("status derivation", () => {
     ).toBe("idle");
   });
 
-  it("derives busy from conversation activity even before a status event arrives", () => {
-    expect(runtimeStatusFromEvents([{ id: "1", type: "agent.message", text: "x" }])).toBe("busy");
+  it("treats a complete agent response as terminal even without a status event", () => {
+    expect(runtimeStatusFromEvents([{ id: "1", type: "agent.message", text: "x" }])).toBe("idle");
   });
 
   it("maps session metadata to busy/idle", () => {

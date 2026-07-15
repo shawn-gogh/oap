@@ -3149,8 +3149,10 @@ export interface ExposedApp {
   expires_at: number | null;
 }
 
-export async function listExposedApps(sessionId: string): Promise<ExposedApp[]> {
-  const res = await req(`/api/apps?session_id=${encodeURIComponent(sessionId)}`);
+export async function listExposedApps(sessionId: string, agentId?: string): Promise<ExposedApp[]> {
+  const params = new URLSearchParams({ session_id: sessionId });
+  if (agentId) params.set("agent_id", agentId);
+  const res = await req(`/api/apps?${params.toString()}`);
   const data = await jsonOrThrow<{ apps: ExposedApp[] }>(res);
   return data.apps ?? [];
 }

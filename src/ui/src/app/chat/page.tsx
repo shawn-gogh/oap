@@ -1036,7 +1036,10 @@ function ChatInner() {
                 }
               />
             )}
-            <ExposedAppsMenu sessionId={sid} />
+            <ExposedAppsMenu
+              sessionId={sid}
+              agentId={sessionHarness.startsWith("agent_") ? sessionHarness : undefined}
+            />
             {workspaceBucket && (
               <Button
                 variant={workspacePanelOpen ? "default" : "outline"}

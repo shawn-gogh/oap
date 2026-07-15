@@ -71,6 +71,10 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
                 }
                 _ => {}
             },
+            Some("assistant_response" | "agent.message") => {
+                terminal_status = Some("idle");
+                terminal_error = None;
+            }
             // Conversation activity after the last status marker means a new
             // turn is underway: the replayed history ends with the PREVIOUS
             // turn's idle, and treating that as terminal flipped busy sessions
@@ -145,6 +149,27 @@ mod tests {
             { "type": "session.status_idle" },
             { "type": "user.message" },
             { "type": "agent.tool_use" }
+        ]));
+        assert_eq!(status, Some("running"));
+    }
+
+    #[test]
+    fn final_agent_response_closes_a_turn_without_a_trailing_idle() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_running" },
+            { "type": "agent.tool_use", "id": "tool_1" },
+            { "type": "agent.tool_result", "tool_use_id": "tool_1" },
+            { "type": "agent.message", "text": "done" }
+        ]));
+        assert_eq!(status, Some("idle"));
+    }
+
+    #[test]
+    fn tool_use_after_agent_narration_keeps_the_turn_running() {
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_running" },
+            { "type": "agent.message", "text": "checking" },
+            { "type": "agent.tool_use", "id": "tool_1" }
         ]));
         assert_eq!(status, Some("running"));
     }

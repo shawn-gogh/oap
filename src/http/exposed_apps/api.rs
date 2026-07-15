@@ -26,7 +26,12 @@ const DEFAULT_SHARE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    session_id: String,
+    session_id: Option<String>,
+    /// The platform MCP URL binds a session id at agent-registration time, so
+    /// apps exposed from later chats land under that original session.
+    /// Querying by agent catches them regardless of which session registered
+    /// the exposure.
+    agent_id: Option<String>,
 }
 
 pub async fn list(
@@ -36,11 +41,24 @@ pub async fn list(
 ) -> Result<Json<Value>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
-    let apps: Vec<ExposedAppRow> = repository::list_for_session(pool, &query.session_id)
-        .await?
-        .into_iter()
-        .filter(|app| is_owner(&auth, app))
-        .collect();
+    let mut apps: Vec<ExposedAppRow> = Vec::new();
+    if let Some(session_id) = query.session_id.as_deref().filter(|v| !v.is_empty()) {
+        apps.extend(repository::list_for_session(pool, session_id).await?);
+    }
+    if let Some(agent_id) = query.agent_id.as_deref().filter(|v| !v.is_empty()) {
+        for app in repository::list_for_agent(pool, agent_id).await? {
+            if !apps.iter().any(|existing| existing.id == app.id) {
+                apps.push(app);
+            }
+        }
+    }
+    if query.session_id.is_none() && query.agent_id.is_none() {
+        return Err(GatewayError::BadRequest(
+            "session_id or agent_id is required".to_owned(),
+        ));
+    }
+    apps.retain(|app| is_owner(&auth, app));
+    apps.sort_by_key(|app| std::cmp::Reverse(app.created_at));
     Ok(Json(json!({ "apps": apps })))
 }
 

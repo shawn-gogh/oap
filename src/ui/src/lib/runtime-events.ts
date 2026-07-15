@@ -63,6 +63,10 @@ export function isRuntimeAssistantTextEvent(type: string): boolean {
   );
 }
 
+function isRuntimeFinalResponseEvent(type: string): boolean {
+  return type === "assistant_response" || type === "agent.message";
+}
+
 export function isRuntimeThinkingEvent(type: string): boolean {
   return type === "thinking_back" || type === "agent.thinking" || type === "agent.reasoning";
 }
@@ -200,6 +204,24 @@ export function runtimeEventsToMessages(
   let assistant: HarnessMessage | null = null;
   let turnIndex = 0;
   const toolOwners = new Map<string, HarnessMessage>();
+
+  const idleHasLaterTurnActivity = (idleIndex: number): boolean => {
+    for (let index = idleIndex + 1; index < events.length; index += 1) {
+      const later = events[index];
+      const laterType = normalizedRuntimeEventType(later);
+      if (laterType === "user.message" || isRuntimeTurnStartEvent(laterType)) return false;
+      if (
+        isRuntimeAssistantTextEvent(laterType) ||
+        isRuntimeThinkingEvent(laterType) ||
+        isRuntimeToolEvent(laterType) ||
+        laterType === "message.part.updated" ||
+        laterType === "message.part.delta"
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   const ensureAssistant = (seed?: string, createdAt?: number): HarnessMessage => {
     if (assistant && !assistant.info.finish) return assistant;
@@ -356,6 +378,7 @@ export function runtimeEventsToMessages(
     }
 
     if (type === "session.status_idle") {
+      if (idleHasLaterTurnActivity(index)) return;
       if (assistant) assistant.info.finish = "stop";
       assistant = null;
       return;
@@ -372,7 +395,7 @@ export function runtimeEventsToMessages(
       if (statusType === "busy" || statusType === "running") {
         ensureAssistant(seed);
       }
-      if (statusType === "idle" && assistant) {
+      if (statusType === "idle" && assistant && !idleHasLaterTurnActivity(index)) {
         assistant.info.finish = "stop";
         assistant = null;
       }
@@ -462,12 +485,11 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
       next = "busy";
       continue;
     }
-    if (
-      type === "user.message" ||
-      isRuntimeAssistantTextEvent(type) ||
-      isRuntimeThinkingEvent(type) ||
-      isRuntimeToolEvent(type)
-    ) {
+    if (isRuntimeFinalResponseEvent(type)) {
+      next = "idle";
+      continue;
+    }
+    if (type === "user.message" || isRuntimeAssistantTextEvent(type) || isRuntimeThinkingEvent(type) || isRuntimeToolEvent(type)) {
       next = "busy";
       continue;
     }

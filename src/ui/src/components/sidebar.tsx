@@ -73,7 +73,7 @@ type SessionTone = "busy" | "failed" | "idle";
 
 function sessionTone(session: OpencodeSession): SessionTone {
   const status = (session.status ?? "").toLowerCase();
-  if (status === "busy" || status === "running" || status === "starting" || session.provider_run_id) {
+  if (status === "busy" || status === "running" || status === "starting") {
     return "busy";
   }
   if (status === "failed" || status === "error" || status === "timed_out") return "failed";
