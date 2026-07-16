@@ -210,6 +210,31 @@ function vaultUserFromAgent(agent: Agent): string {
   return agent.owner_id?.trim() || DEFAULT_VAULT_USER;
 }
 
+// design.governance.write_requires_approval gates opencode's own bash/edit/
+// webfetch permission prompts (runtime_provision.rs::write_requires_approval);
+// it's only set at creation time by the new-agent wizard today, with no way
+// to change it afterward — this reads/writes the same field from here.
+function writeRequiresApprovalFromConfig(config: Record<string, unknown>): boolean {
+  const design = isRecord(config.design) ? config.design : {};
+  const governance = isRecord(design.governance) ? design.governance : {};
+  return governance.write_requires_approval === true;
+}
+
+function configWithWriteRequiresApproval(
+  config: Record<string, unknown>,
+  enabled: boolean,
+): Record<string, unknown> {
+  const design = isRecord(config.design) ? config.design : {};
+  const governance = isRecord(design.governance) ? design.governance : {};
+  return {
+    ...config,
+    design: {
+      ...design,
+      governance: { ...governance, write_requires_approval: enabled },
+    },
+  };
+}
+
 function AgentEdit() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -494,6 +519,30 @@ function AgentEdit() {
                       </SelectContent>
                     </Select>
                   </div>
+                  <div className="grid gap-2 rounded-lg border border-border bg-card p-4">
+                    <h2 className="text-base font-semibold tracking-tight">Approval gate</h2>
+                    <label className="mt-1 flex cursor-pointer items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-3.5 shrink-0"
+                        checked={writeRequiresApprovalFromConfig(form.config)}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            config: configWithWriteRequiresApproval(form.config, e.target.checked),
+                          })
+                        }
+                      />
+                      <span>
+                        写操作需要人工确认
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          开启后，该智能体在自托管运行时（如 opencode）中执行 bash / 文件编辑 /
+                          联网前会暂停，等待你在会话里通过审批模式（请求批准 / 替我审批 / 完全访问）决定是否放行。关闭则写操作无人值守执行。
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+
                   <div className="grid gap-1.5">
                     <Label htmlFor="ag-prompt">System prompt</Label>
                     <Textarea id="ag-prompt" value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })}
