@@ -578,7 +578,7 @@ export function toolLabel(tool: string): string {
 }
 
 function isFailedToolStatus(status: string): boolean {
-  return status === "error" || status === "timed_out" || status === "aborted";
+  return status === "error" || status === "timed_out" || status === "aborted" || status === "rejected";
 }
 
 function toolPartStatus(part: ToolPart): string {
@@ -739,7 +739,13 @@ export function ToolBlock({ part }: { part: HarnessMessagePart }) {
     n.includes("grep") || n.includes("search") || n.includes("find") || n.includes("glob");
   const isRead = n.includes("read") || n.includes("list") || n.endsWith("ls");
   const statusLabel =
-    status === "timed_out" ? "已超时" : status === "aborted" ? "已中断" : "失败";
+    status === "timed_out"
+      ? "已超时"
+      : status === "aborted"
+        ? "已中断"
+        : status === "rejected"
+          ? "已拒绝"
+          : "失败";
 
   return (
     <div className="max-w-[920px] text-[13px]">

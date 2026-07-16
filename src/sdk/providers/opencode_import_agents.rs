@@ -13,7 +13,8 @@
 use serde_json::Value;
 
 use crate::sdk::providers::import_agents::{
-    ImportAgentsError, ImportAgentsFuture, ImportAgentsProvider, ImportedAgent,
+    ImportAgentsError, ImportAgentsFuture, ImportAgentsProvider, ImportProviderCapabilities,
+    ImportedAgent,
 };
 
 pub static OPENCODE_IMPORT_AGENTS: OpencodeImportAgents = OpencodeImportAgents;
@@ -35,6 +36,22 @@ impl ImportAgentsProvider for OpencodeImportAgents {
     /// `import.rs`); this api_spec is only the fallback.
     fn api_spec(&self) -> &'static str {
         "claude_managed_agents"
+    }
+
+    fn capabilities(&self) -> ImportProviderCapabilities {
+        ImportProviderCapabilities {
+            discover: true,
+            remote_import: true,
+            file_import: true,
+            bundle_import: true,
+            continuous_sync: true,
+            incremental_sync: false,
+            native_health: false,
+            remote_suspend: false,
+            remote_delete: false,
+            signed_webhooks: false,
+            runtime_contract: self.api_spec(),
+        }
     }
 
     fn discover<'a>(
@@ -198,5 +215,17 @@ mod tests {
             OPENCODE_IMPORT_AGENTS.system_prompt_from_raw("a1", &json!({})),
             "Imported opencode agent (external id: a1)."
         );
+    }
+
+    #[test]
+    fn declares_supported_import_modes() {
+        let capabilities = OPENCODE_IMPORT_AGENTS.capabilities();
+
+        assert!(capabilities.discover);
+        assert!(capabilities.remote_import);
+        assert!(capabilities.file_import);
+        assert!(capabilities.bundle_import);
+        assert!(capabilities.continuous_sync);
+        assert_eq!(capabilities.runtime_contract, "claude_managed_agents");
     }
 }

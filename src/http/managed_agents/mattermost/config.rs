@@ -61,6 +61,7 @@ pub(crate) async fn update_mattermost_config(
         UpdateManagedAgent {
             name: None,
             model: None,
+            tools: None,
             runtime: None,
             system: None,
             prompt: None,

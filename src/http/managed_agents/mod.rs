@@ -15,6 +15,8 @@ pub mod routines;
 pub mod rules;
 pub mod runs;
 pub mod skills;
+pub mod source_management;
+pub mod source_scheduler;
 pub mod tasks;
 pub mod tool_approvals;
 pub mod workspace;

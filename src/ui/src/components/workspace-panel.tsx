@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -76,6 +85,9 @@ import {
 
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
 const WORKSPACE_DRAG_TYPE = "application/x-oap-workspace-path";
+const DEFAULT_PANEL_WIDTH = 440;
+const MIN_PANEL_WIDTH = 360;
+const MAX_PANEL_WIDTH = 960;
 
 type UploadStatus = "queued" | "uploading" | "success" | "error" | "cancelled" | "skipped";
 
@@ -157,6 +169,7 @@ export function WorkspacePanel({
   const [trashMode, setTrashMode] = useState(false);
   const [trashItems, setTrashItems] = useState<WorkspaceTrashItem[]>([]);
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(new Set());
+  const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadControllersRef = useRef(new Map<string, AbortController>());
   const cancelledUploadsRef = useRef(new Set<string>());
@@ -220,6 +233,46 @@ export function WorkspacePanel({
   const uploadBusy = uploadItems.some(
     (item) => item.status === "queued" || item.status === "uploading",
   );
+
+  const resizePanel = useCallback((width: number) => {
+    setPanelWidth(Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, width)));
+  }, []);
+
+  const startPanelResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth < 1280) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = panelWidth;
+    const move = (moveEvent: globalThis.PointerEvent) => resizePanel(startWidth + startX - moveEvent.clientX);
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.body.style.removeProperty("cursor");
+      document.body.style.removeProperty("user-select");
+    };
+    document.body.style.setProperty("cursor", "col-resize");
+    document.body.style.setProperty("user-select", "none");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+
+  const handlePanelResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      resizePanel(panelWidth + 24);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      resizePanel(panelWidth - 24);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      resizePanel(MIN_PANEL_WIDTH);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      resizePanel(MAX_PANEL_WIDTH);
+    }
+  };
 
   const navigate = (path: string) => {
     setTrashMode(false);
@@ -704,29 +757,46 @@ export function WorkspacePanel({
         }
         void startUploads(Array.from(event.dataTransfer.files));
       }}
-      className="fixed inset-y-0 right-0 z-40 flex w-[min(760px,calc(100vw-1rem))] min-w-0 flex-col border-l border-border bg-background shadow-[-18px_0_60px_rgba(15,23,42,0.12)] xl:relative xl:inset-auto xl:z-auto xl:h-screen xl:w-[680px] xl:shrink-0 xl:shadow-none"
+      className="fixed inset-y-0 right-0 z-40 flex w-[min(440px,calc(100vw-1rem))] min-w-0 flex-col border-l border-border bg-background shadow-xl xl:relative xl:inset-auto xl:z-auto xl:h-screen xl:w-[var(--workspace-panel-width)] xl:shrink-0 xl:shadow-none"
+      style={{ "--workspace-panel-width": `${panelWidth}px` } as CSSProperties}
     >
+      <div
+        role="separator"
+        aria-label="调整工作区宽度"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_PANEL_WIDTH}
+        aria-valuemax={MAX_PANEL_WIDTH}
+        aria-valuenow={panelWidth}
+        tabIndex={0}
+        onPointerDown={startPanelResize}
+        onKeyDown={handlePanelResizeKeyDown}
+        onDoubleClick={() => setPanelWidth(DEFAULT_PANEL_WIDTH)}
+        className="group absolute inset-y-0 -left-1 z-50 hidden w-2 cursor-col-resize touch-none xl:block focus-visible:outline-none"
+        title="拖动调整宽度，双击复位"
+      >
+        <span className="mx-auto block h-full w-px bg-transparent transition-colors group-hover:bg-primary group-focus-visible:bg-primary" />
+      </div>
       {dragging && !trashMode && (
-        <div className="absolute inset-3 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed border-cyan-500 bg-background/90 backdrop-blur-sm">
+        <div className="absolute inset-3 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/95 backdrop-blur-sm">
           <div className="text-center">
-            <span className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-cyan-500/10 text-cyan-600">
+            <span className="mx-auto flex size-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Upload className="size-7" />
             </span>
-            <p className="mt-4 text-sm font-semibold">拖放到当前目录</p>
+            <p className="mt-4 text-sm font-medium">拖放到当前目录</p>
             <p className="mt-1 max-w-xs text-xs text-muted-foreground">
               文件将上传到 {currentPath || "我的文件"}，同名文件会先请求确认。
             </p>
           </div>
         </div>
       )}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+        <span className="flex size-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
           {trashMode ? <Trash2 className="size-4" /> : <FolderOpen className="size-4" />}
         </span>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold">{trashMode ? "回收站" : "会话工作区"}</h2>
-          <p className="text-[11px] text-muted-foreground">
-            {trashMode ? "已删除项目保留 30 天" : "浏览和预览智能体使用的文件"}
+          <h2 className="text-[13.5px] font-semibold tracking-tight">{trashMode ? "回收站" : "工作区"}</h2>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {trashMode ? "已删除项目保留 30 天" : `${totalFiles} 个文件 · 当前会话上下文`}
           </p>
         </div>
         <button
@@ -737,7 +807,7 @@ export function WorkspacePanel({
           title="刷新文件"
           aria-label="刷新工作区文件"
         >
-          <RefreshCw className={`size-4 text-muted-foreground ${loading ? "animate-spin" : ""}`} />
+          <RefreshCw className={`size-4 text-muted-foreground ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
         </button>
         <button
           type="button"
@@ -750,8 +820,9 @@ export function WorkspacePanel({
         </button>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[176px_minmax(0,1fr)] max-sm:grid-cols-1">
-        <nav className="min-h-0 overflow-y-auto border-r border-border bg-muted/20 p-2 max-sm:hidden" aria-label="工作区目录">
+      <div className="grid min-h-0 flex-1 grid-cols-[144px_minmax(0,1fr)] max-sm:grid-cols-1">
+        <nav className="min-h-0 overflow-y-auto border-r border-border bg-muted/30 p-2 max-sm:hidden" aria-label="工作区目录">
+          <div className="px-2 pb-2 pt-1 text-[11px] font-medium text-muted-foreground">目录</div>
           <DirectoryTree
             directory={tree}
             currentPath={currentPath}
@@ -913,7 +984,7 @@ export function WorkspacePanel({
           )}
 
           {!trashMode && selectedPaths.size > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-cyan-500/5 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-primary/5 px-3 py-2">
               <span className="mr-auto text-xs font-medium">已选择 {selectedPaths.size} 项</span>
               <SelectionAction label="插入对话" disabled={operationBusy || processingPaths} onClick={() => insertPathsIntoConversation([...selectedPaths])}>
                 <MessageSquarePlus className="size-3.5" />
@@ -947,7 +1018,7 @@ export function WorkspacePanel({
           )}
 
           {trashMode && selectedTrashIds.size > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-cyan-500/5 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-primary/5 px-3 py-2">
               <span className="mr-auto text-xs font-medium">已选择 {selectedTrashIds.size} 项</span>
               <SelectionAction label="还原" disabled={operationBusy} onClick={() => void handleRestoreTrash()}>
                 <RotateCcw className="size-3.5" />

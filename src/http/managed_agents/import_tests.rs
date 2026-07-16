@@ -120,3 +120,29 @@ fn admin_import_can_save_shared_credentials() {
 
     assert!(validate_credential_mode(&CredentialMode::Shared, &auth).is_ok());
 }
+
+#[test]
+fn provider_catalog_exposes_import_capabilities() {
+    let providers = import_runtime_providers();
+    let opencode = providers
+        .iter()
+        .find(|provider| provider.id == "opencode")
+        .expect("opencode provider");
+    let elastic = providers
+        .iter()
+        .find(|provider| provider.id == "elastic")
+        .expect("elastic provider");
+
+    assert!(opencode.capabilities.discover);
+    assert!(opencode.capabilities.remote_import);
+    assert!(opencode.capabilities.file_import);
+    assert!(opencode.capabilities.bundle_import);
+    assert!(opencode.capabilities.continuous_sync);
+    assert_eq!(opencode.capabilities.runtime_contract, opencode.api_spec);
+
+    assert!(elastic.capabilities.discover);
+    assert!(elastic.capabilities.remote_import);
+    assert!(!elastic.capabilities.file_import);
+    assert!(!elastic.capabilities.bundle_import);
+    assert!(elastic.capabilities.continuous_sync);
+}

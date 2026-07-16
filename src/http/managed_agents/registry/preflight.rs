@@ -29,6 +29,10 @@ use crate::{
     errors::GatewayError,
     http::{agent_runtime_tools::runtime_tools, runtime_resolution::resolve_runtime_for_agent},
     proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
+    sdk::agents::{
+        canonical::{normalize_agent, NormalizationSeverity},
+        conformance::inspect_runtime_contract,
+    },
 };
 
 /// Upper bound for each outbound connectivity probe so one hung server
@@ -68,6 +72,7 @@ pub async fn run_preflight(
     checks.push(check_tools(agent));
     checks.extend(check_vault_keys(pool, agent).await?);
     checks.extend(check_mcp_servers(state, pool, agent).await?);
+    checks.extend(check_source_contract(pool, agent).await?);
 
     let can_activate = checks.iter().all(|check| check.verdict != FAILED);
     Ok(PreflightReport {
@@ -76,6 +81,92 @@ pub async fn run_preflight(
         can_activate,
         checks,
     })
+}
+
+async fn check_source_contract(
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+) -> Result<Vec<PreflightCheck>, GatewayError> {
+    if !crate::db::managed_agents::governance::requires_governance(agent) {
+        return Ok(Vec::new());
+    }
+    let mut checks = Vec::new();
+    let normalization = normalize_agent(agent);
+    let blocking = normalization
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == NormalizationSeverity::Blocking)
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>();
+    checks.push(if blocking.is_empty() {
+        PreflightCheck {
+            id: "canonical_spec",
+            label: "统一规范".to_owned(),
+            verdict: if normalization.requires_approval {
+                EXISTS_ONLY
+            } else {
+                VERIFIED
+            },
+            detail: if normalization.requires_approval {
+                "规范化完成，但包含发布时必须人工确认的高风险来源字段。".to_owned()
+            } else {
+                "来源已成功归一化为平台统一规范。".to_owned()
+            },
+        }
+    } else {
+        PreflightCheck {
+            id: "canonical_spec",
+            label: "统一规范".to_owned(),
+            verdict: FAILED,
+            detail: blocking.join("；"),
+        }
+    });
+    let conformance = inspect_runtime_contract(agent);
+    checks.push(PreflightCheck {
+        id: "runtime_contract",
+        label: "运行时契约".to_owned(),
+        verdict: if conformance.status == "conformant" {
+            VERIFIED
+        } else {
+            FAILED
+        },
+        detail: format!(
+            "契约 {} 检查结果：{}。",
+            conformance.contract_version, conformance.status
+        ),
+    });
+    checks.push(
+        match crate::db::managed_agents::sources::repository::get_source_by_agent(pool, &agent.id)
+            .await?
+        {
+            Some(source)
+                if source.sync_state == "in_sync" && source.candidate_snapshot_id.is_none() =>
+            {
+                PreflightCheck {
+                    id: "source_sync",
+                    label: "来源同步".to_owned(),
+                    verdict: VERIFIED,
+                    detail: "来源处于同步状态且没有待处理漂移。".to_owned(),
+                }
+            }
+            Some(source) => PreflightCheck {
+                id: "source_sync",
+                label: "来源同步".to_owned(),
+                verdict: FAILED,
+                detail: format!(
+                    "来源状态为 {}，必须先处理同步错误、缺失或候选漂移。",
+                    source.sync_state
+                ),
+            },
+            None => PreflightCheck {
+                id: "source_sync",
+                label: "来源同步".to_owned(),
+                verdict: FAILED,
+                detail: "缺少统一来源记录。".to_owned(),
+            },
+        },
+    );
+    Ok(checks)
 }
 
 fn agent_runtime_alias(agent: &ManagedAgentRow) -> Option<String> {
@@ -418,7 +509,13 @@ pub async fn activate(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_edit(&auth, &agent, pool).await?;
-    if let Some(governance) = crate::db::managed_agents::governance::get(pool, &agent_id).await? {
+    let governance = crate::db::managed_agents::governance::get(pool, &agent_id).await?;
+    if crate::db::managed_agents::governance::requires_governance(&agent) && governance.is_none() {
+        return Err(GatewayError::BadRequest(
+            "外部智能体缺少纳管记录，必须重新导入或完成治理迁移后才能激活。".to_owned(),
+        ));
+    }
+    if let Some(governance) = governance {
         if !matches!(
             governance.lifecycle_status.as_str(),
             "published" | "rolled_back"

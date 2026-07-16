@@ -7,11 +7,17 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    db::managed_agents::registry::{
-        repository,
-        schema::{CreateManagedAgent, ManagedAgentRow},
+    db::managed_agents::{
+        audit,
+        governance::{self, ImportedSource},
+        registry::{
+            repository, revisions,
+            schema::{CreateManagedAgent, ManagedAgentRow},
+        },
+        sources::repository as source_repository,
     },
     errors::GatewayError,
     object_storage::ObjectStorageClient,
@@ -37,6 +43,7 @@ pub struct ImportOpencodeFile {
 #[derive(Debug, serde::Serialize)]
 pub struct ImportOpencodeFilesResponse {
     agents: Vec<ManagedAgentRow>,
+    results: Vec<super::import_types::ImportItemResult>,
 }
 
 pub async fn import_opencode_files(
@@ -61,23 +68,50 @@ pub async fn import_opencode_files(
         .to_owned();
 
     let mut rows = Vec::with_capacity(input.files.len());
+    let mut results = Vec::with_capacity(input.files.len());
     for file in input.files {
         let parsed = parse_opencode_agent_file(&file.filename, &file.content)?;
-        let row = repository::create(
+        let row = persist_imported_agent(
+            &state,
             pool,
-            create_input(parsed, &runtime, &owner_id, &file.filename),
+            &auth,
+            &owner_id,
+            &runtime,
+            "opencode-file://upload",
+            "opencode_agent_file",
+            None,
+            &file.filename,
+            &file.content,
+            parsed,
         )
         .await?;
-        archive_source(&state, &row.id, &file.filename, &file.content).await?;
-        let _ =
-            crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))
-                .await;
+        let source = source_repository::get_source_by_agent(pool, &row.id)
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("agent source not found".to_owned()))?;
+        let snapshot = source_repository::get_snapshot(pool, source.current_snapshot_id.as_deref())
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("source snapshot not found".to_owned()))?;
+        results.push(super::import_types::ImportItemResult {
+            external_id: row
+                .config
+                .pointer("/source/external_agent_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.id)
+                .to_owned(),
+            agent_id: Some(row.id.clone()),
+            status: "imported",
+            snapshot_id: Some(snapshot.id),
+            issues: snapshot.normalization_issues,
+        });
         rows.push(row);
     }
 
     Ok((
         StatusCode::CREATED,
-        Json(ImportOpencodeFilesResponse { agents: rows }),
+        Json(ImportOpencodeFilesResponse {
+            agents: rows,
+            results,
+        }),
     ))
 }
 
@@ -175,6 +209,7 @@ pub struct ImportBundleRequest {
 pub struct ImportBundleResponse {
     agents: Vec<ManagedAgentRow>,
     knowledge_files: Vec<String>,
+    results: Vec<super::import_types::ImportItemResult>,
 }
 
 pub async fn import_agent_bundle(
@@ -237,19 +272,41 @@ pub async fn import_agent_bundle(
     }
 
     let mut rows = Vec::with_capacity(agent_files.len());
+    let mut results = Vec::with_capacity(agent_files.len());
     for (path, text, parsed) in agent_files {
-        let mut create = create_input(parsed, &runtime, &owner_id, &path);
-        if let Some(config) = create.config.as_mut().and_then(Value::as_object_mut) {
-            if let Some(source) = config.get_mut("source").and_then(Value::as_object_mut) {
-                source.insert("kind".to_owned(), json!("agent_bundle"));
-                source.insert("bundle".to_owned(), json!(input.filename));
-            }
-        }
-        let row = repository::create(pool, create).await?;
-        archive_source(&state, &row.id, &path, &text).await?;
-        let _ =
-            crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))
-                .await;
+        let source_endpoint = format!("agent-bundle://upload/{}", safe_filename(&input.filename));
+        let row = persist_imported_agent(
+            &state,
+            pool,
+            &auth,
+            &owner_id,
+            &runtime,
+            &source_endpoint,
+            "agent_bundle",
+            Some(&input.filename),
+            &path,
+            &text,
+            parsed,
+        )
+        .await?;
+        let source = source_repository::get_source_by_agent(pool, &row.id)
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("agent source not found".to_owned()))?;
+        let snapshot = source_repository::get_snapshot(pool, source.current_snapshot_id.as_deref())
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("source snapshot not found".to_owned()))?;
+        results.push(super::import_types::ImportItemResult {
+            external_id: row
+                .config
+                .pointer("/source/external_agent_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.id)
+                .to_owned(),
+            agent_id: Some(row.id.clone()),
+            status: "imported",
+            snapshot_id: Some(snapshot.id),
+            issues: snapshot.normalization_issues,
+        });
         rows.push(row);
     }
 
@@ -274,8 +331,136 @@ pub async fn import_agent_bundle(
         Json(ImportBundleResponse {
             agents: rows,
             knowledge_files,
+            results,
         }),
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_imported_agent(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    auth: &AuthContext,
+    owner_id: &str,
+    runtime: &str,
+    source_endpoint: &str,
+    source_kind: &str,
+    bundle: Option<&str>,
+    filename: &str,
+    content: &str,
+    parsed: ParsedOpencodeAgent,
+) -> Result<ManagedAgentRow, GatewayError> {
+    let external_agent_id = parsed.id.clone();
+    let source_hash = imported_source_hash(content, runtime, source_endpoint);
+    let existing = governance::find_by_source(
+        pool,
+        owner_id,
+        "opencode",
+        source_endpoint,
+        &external_agent_id,
+    )
+    .await?;
+    let unchanged = existing
+        .as_ref()
+        .is_some_and(|governance| governance.source_hash == source_hash);
+    let mut create = create_input(parsed, runtime, owner_id, filename);
+    if let Some(source) = create
+        .config
+        .as_mut()
+        .and_then(|config| config.get_mut("source"))
+        .and_then(Value::as_object_mut)
+    {
+        source.insert("kind".to_owned(), json!(source_kind));
+        source.insert("source_hash".to_owned(), json!(source_hash));
+        if let Some(bundle) = bundle {
+            source.insert("bundle".to_owned(), json!(bundle));
+        }
+    }
+    let row = match existing.as_ref() {
+        Some(existing) if unchanged => repository::get(pool, &existing.agent_id)
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?,
+        Some(existing) => repository::update(
+            pool,
+            &existing.agent_id,
+            super::import::update_from_import(create),
+        )
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?,
+        None => repository::create(pool, create).await?,
+    };
+    archive_source(state, &row.id, filename, content).await?;
+    let revision = if unchanged {
+        match revisions::latest_version(pool, &row.id).await? {
+            Some(version) => version,
+            None => revisions::record(pool, &row, Some(&auth.user_id)).await?,
+        }
+    } else {
+        revisions::record(pool, &row, Some(&auth.user_id)).await?
+    };
+    let governance = governance::record_import(
+        pool,
+        ImportedSource {
+            agent_id: &row.id,
+            owner_id,
+            provider: "opencode",
+            endpoint: source_endpoint,
+            external_agent_id: &external_agent_id,
+            source_hash: &source_hash,
+            credential_scope: "byo",
+            credential_name: None,
+        },
+    )
+    .await?;
+    let source = source_repository::ensure_source(pool, &governance, "managed", None).await?;
+    let snapshot = source_repository::record_import_snapshot(
+        pool,
+        &source,
+        &row,
+        json!({
+            "filename": filename,
+            "archive_path": source_archive_path(filename),
+            "content_digest": source_hash,
+        }),
+        &source_hash,
+        revision,
+        &auth.user_id,
+    )
+    .await?;
+    audit::record(
+        pool,
+        &auth.user_id,
+        if unchanged {
+            "agent.source.checked"
+        } else {
+            "agent.source.imported"
+        },
+        "agent",
+        &row.id,
+        json!({
+            "provider": "opencode",
+            "source_kind": source_kind,
+            "source_endpoint": source_endpoint,
+            "external_agent_id": external_agent_id,
+            "source_version": governance.source_version,
+            "revision": revision,
+            "source_id": source.id,
+            "snapshot_id": snapshot.id,
+            "changed": !unchanged,
+        }),
+    )
+    .await?;
+    Ok(row)
+}
+
+fn imported_source_hash(content: &str, runtime: &str, source_endpoint: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(content.as_bytes());
+    hash.update([0]);
+    hash.update(runtime.as_bytes());
+    hash.update([0]);
+    hash.update(source_endpoint.as_bytes());
+    format!("{:x}", hash.finalize())
 }
 
 /// Vendor/build directories that never carry agent definitions or knowledge
@@ -546,5 +731,41 @@ You build agents.
         assert_eq!(parsed.display_name, "review-bot");
         assert_eq!(parsed.system, "Review code.");
         assert!(parsed.tools.is_empty());
+    }
+
+    #[test]
+    fn imported_source_hash_is_stable_and_scoped() {
+        let first = imported_source_hash(
+            "Review code.",
+            "claude_managed_agents",
+            "opencode-file://upload",
+        );
+        let same = imported_source_hash(
+            "Review code.",
+            "claude_managed_agents",
+            "opencode-file://upload",
+        );
+
+        assert_eq!(first, same);
+        assert_ne!(
+            first,
+            imported_source_hash(
+                "Review code carefully.",
+                "claude_managed_agents",
+                "opencode-file://upload"
+            )
+        );
+        assert_ne!(
+            first,
+            imported_source_hash("Review code.", "other_runtime", "opencode-file://upload")
+        );
+        assert_ne!(
+            first,
+            imported_source_hash(
+                "Review code.",
+                "claude_managed_agents",
+                "agent-bundle://upload/agents.zip"
+            )
+        );
     }
 }

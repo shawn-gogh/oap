@@ -10,7 +10,10 @@ use axum::{
 use sqlx::PgPool;
 
 use crate::{
-    db::managed_agents::inbox::{repository, schema::InboxItemRow},
+    db::managed_agents::{
+        inbox::{repository, schema::InboxItemRow},
+        runtime_events,
+    },
     errors::GatewayError,
     proxy::{auth::master_key::authenticate, state::AppState},
 };
@@ -232,7 +235,7 @@ pub(crate) async fn deliver_and_record(
     match result {
         Ok(()) => {
             repository::mark_delivery_applied(pool, item_id).await?;
-            publish_approval_reply(state, &item);
+            publish_approval_reply(state, pool, &item).await?;
             Ok("applied".to_owned())
         }
         Err(error) => {
@@ -285,17 +288,44 @@ async fn deliver(
     }
 }
 
-fn publish_approval_reply(state: &Arc<AppState>, item: &InboxItemRow) {
+async fn publish_approval_reply(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    item: &InboxItemRow,
+) -> Result<(), GatewayError> {
     let Some(session_id) = item.session_id.as_deref() else {
-        return;
+        return Ok(());
     };
-    state.local_session_events.publish(
-        session_id,
-        serde_json::json!({
-            "type": "approval.replied",
-            "approval": { "id": item.id }
-        }),
-    );
+    let reply = serde_json::json!({
+        "id": format!("approval_reply_{}", item.id),
+        "type": "approval.replied",
+        "approval": { "id": item.id, "status": item.status }
+    });
+    runtime_events::repository::append(pool, session_id, reply.clone()).await?;
+    state.local_session_events.publish(session_id, reply);
+
+    if item.status == "rejected" {
+        let message = item
+            .feedback
+            .as_deref()
+            .map(str::trim)
+            .filter(|feedback| !feedback.is_empty())
+            .map(|feedback| format!("用户拒绝了该操作：{feedback}"))
+            .unwrap_or_else(|| "用户拒绝了该操作".to_owned());
+        let result = serde_json::json!({
+            "id": format!("approval_rejected_{}", item.id),
+            "type": "agent.tool_result",
+            "tool_use_id": format!("approval_{}", item.id),
+            "name": item.title,
+            "status": "rejected",
+            "input": item.args_json.as_deref().and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+            "error": { "message": message },
+            "error_message": message,
+        });
+        runtime_events::repository::append(pool, session_id, result.clone()).await?;
+        state.local_session_events.publish(session_id, result);
+    }
+    Ok(())
 }
 
 async fn resume_linked_session(

@@ -224,24 +224,25 @@ pub async fn update(
         SET
           name = COALESCE($2, name),
           model = COALESCE($3, model),
-          system = COALESCE($4, system),
-          prompt = COALESCE($5, prompt),
-          cron = COALESCE($6, cron),
-          timezone = COALESCE($7, timezone),
-          vault_keys = COALESCE($8, vault_keys),
-          setup_commands = COALESCE($9, setup_commands),
-          max_runtime_minutes = COALESCE($10, max_runtime_minutes),
-          on_failure = COALESCE($11, on_failure),
+          tools = COALESCE($4, tools),
+          system = COALESCE($5, system),
+          prompt = COALESCE($6, prompt),
+          cron = COALESCE($7, cron),
+          timezone = COALESCE($8, timezone),
+          vault_keys = COALESCE($9, vault_keys),
+          setup_commands = COALESCE($10, setup_commands),
+          max_runtime_minutes = COALESCE($11, max_runtime_minutes),
+          on_failure = COALESCE($12, on_failure),
           config = CASE
-            WHEN $19::TEXT IS NULL THEN COALESCE($12, config)
-            ELSE jsonb_set(COALESCE($12, config), '{runtime}', to_jsonb($19::TEXT), true)
+            WHEN $20::TEXT IS NULL THEN COALESCE($13, config)
+            ELSE jsonb_set(COALESCE($13, config), '{runtime}', to_jsonb($20::TEXT), true)
           END,
-          owner_id = COALESCE($13, owner_id),
-          status = COALESCE($14, status),
-          description = COALESCE($15, description),
-          harness = COALESCE($16, harness),
-          skill_ids = COALESCE($17, skill_ids),
-          rule_ids = COALESCE($18, rule_ids)
+          owner_id = COALESCE($14, owner_id),
+          status = COALESCE($15, status),
+          description = COALESCE($16, description),
+          harness = COALESCE($17, harness),
+          skill_ids = COALESCE($18, skill_ids),
+          rule_ids = COALESCE($19, rule_ids)
         WHERE id = $1
         RETURNING *
         "#,
@@ -249,6 +250,7 @@ pub async fn update(
     .bind(agent_id)
     .bind(input.name)
     .bind(input.model)
+    .bind(input.tools)
     .bind(input.system)
     .bind(input.prompt)
     .bind(input.cron)
@@ -383,4 +385,3 @@ pub async fn restore(
     .map_err(GatewayError::Database)?;
     Ok(result.rows_affected() > 0)
 }
-

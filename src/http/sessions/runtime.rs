@@ -7,6 +7,7 @@ use crate::{
     db::managed_agents::{
         registry::{self, schema::ManagedAgentRow},
         sessions::{self, schema::SessionRow},
+        sources::repository as source_repository,
     },
     errors::GatewayError,
     proxy::state::AppState,
@@ -165,6 +166,17 @@ async fn create_generic_chat_session(
         },
     )
     .await?;
+    if let Some(agent_id) = agent_id {
+        let ttl_ms = i64::from(agent.max_runtime_minutes).saturating_mul(60_000);
+        source_repository::issue_capability_token(
+            pool,
+            &row.id,
+            agent_id,
+            capability_claims(&agent),
+            ttl_ms,
+        )
+        .await?;
+    }
     state.agent_runs.track_run(&agent.id, &row.id);
     if let Some(prompt) = prompt {
         if row.task_id.is_some() {
@@ -385,6 +397,19 @@ async fn create_runtime_session_row(
     )
     .await?;
     let mut provision_environment = stored_environment;
+    if let Some(agent_id) = agent_id {
+        let ttl_ms = i64::from(agent.max_runtime_minutes).saturating_mul(60_000);
+        let (token, expires_at) = source_repository::issue_capability_token(
+            pool,
+            &row.id,
+            agent_id,
+            capability_claims(&agent),
+            ttl_ms,
+        )
+        .await?;
+        provision_environment["LAP_CAPABILITY_TOKEN"] = json!(token);
+        provision_environment["LAP_CAPABILITY_TOKEN_EXPIRES_AT"] = json!(expires_at);
+    }
     resolve_agent_vault_keys(state, pool, &agent, &mut provision_environment).await?;
     let prompt = runtime_prompt(input.prompt, &agent);
     Ok(CreatedRuntimeSession {
@@ -395,6 +420,15 @@ async fn create_runtime_session_row(
         initial_user_prompt,
         prompt,
         row,
+    })
+}
+
+fn capability_claims(agent: &ManagedAgentRow) -> Value {
+    json!({
+        "tools": agent.tools,
+        "mcp_server_ids": agent.config.get("mcp_server_ids").cloned().unwrap_or_else(|| json!([])),
+        "network_access": agent.config.get("network_access").cloned().unwrap_or_else(|| json!([])),
+        "filesystem_access": agent.config.get("filesystem_access").cloned().unwrap_or_else(|| json!([])),
     })
 }
 

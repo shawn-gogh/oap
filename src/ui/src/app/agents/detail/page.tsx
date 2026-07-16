@@ -77,10 +77,18 @@ import {
   cancelAgentTask,
   getAgent,
   getAgentGovernance,
+  getAgentSource,
   preflightAgent,
   requestAgentPublish,
   rollbackAgent,
   testAgentGovernance,
+  syncAgentSource,
+  resolveAgentDrift,
+  checkAgentConformance,
+  checkAgentHealth,
+  emergencyStopAgent,
+  retireAgent,
+  type AgentSourceOverview,
   type AgentGovernanceResponse,
   type AgentPreflightReport,
   listAgentFiles,
@@ -2400,6 +2408,9 @@ const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
   published: "已发布",
   unhealthy: "运行检查失败",
   rolled_back: "已回滚",
+  mapping_failed: "映射失败",
+  suspended: "已暂停",
+  retired: "已退役",
 };
 
 function ManagedGovernancePanel({
@@ -2413,12 +2424,28 @@ function ManagedGovernancePanel({
   onAgentChange: (agent: Agent) => void;
   onReport: (report: AgentPreflightReport) => void;
 }) {
-  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | null>(null);
+  const confirmAction = useConfirm();
+  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | "sync" | "conformance" | "health" | "accept" | "reject" | "stop" | "retire" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState<AgentSourceOverview | null>(null);
   const governance = response.governance;
   const testedCurrentRevision =
     governance.runtime_health === "healthy" &&
     governance.tested_revision === response.current_revision;
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentSource(governance.agent_id)
+      .then((next) => {
+        if (!cancelled) setSource(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSource(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [governance.agent_id]);
 
   const runTest = async () => {
     setBusy("test");
@@ -2450,7 +2477,12 @@ function ManagedGovernancePanel({
   };
 
   const rollback = async () => {
-    if (!window.confirm("确认回滚到上一个已发布版本？回滚会生成新的版本记录。")) return;
+    const confirmed = await confirmAction({
+      title: "回滚智能体版本",
+      description: "回滚会恢复上一个已发布版本，并生成新的可审计版本记录。",
+      confirmLabel: "确认回滚",
+    });
+    if (!confirmed) return;
     setBusy("rollback");
     setError(null);
     try {
@@ -2463,6 +2495,71 @@ function ManagedGovernancePanel({
       toast.success("智能体已回滚到上一个已发布版本");
     } catch (e) {
       setError(apiErrorMessage(e, "回滚失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refreshSource = async () => {
+    const next = await getAgentSource(governance.agent_id);
+    setSource(next);
+    return next;
+  };
+
+  const runSourceAction = async (
+    action: "sync" | "conformance" | "health" | "accept" | "reject",
+  ) => {
+    setBusy(action);
+    setError(null);
+    try {
+      if (action === "sync") setSource(await syncAgentSource(governance.agent_id));
+      if (action === "accept") setSource(await resolveAgentDrift(governance.agent_id, "accept"));
+      if (action === "reject") setSource(await resolveAgentDrift(governance.agent_id, "reject"));
+      if (action === "conformance") {
+        await checkAgentConformance(governance.agent_id);
+        await refreshSource();
+      }
+      if (action === "health") {
+        const result = await checkAgentHealth(governance.agent_id);
+        onReport(result.preflight);
+        await refreshSource();
+      }
+      toast.success({
+        sync: "来源同步完成",
+        conformance: "运行时契约检查完成",
+        health: "健康检查完成",
+        accept: "来源变更已接受，智能体已回到草稿状态",
+        reject: "来源变更已拒绝",
+      }[action]);
+    } catch (e) {
+      setError(apiErrorMessage(e, "纳管操作失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stopOrRetire = async (action: "stop" | "retire") => {
+    const confirmed = await confirmAction({
+      title: action === "stop" ? "紧急停止智能体" : "退役智能体",
+      description:
+        action === "stop"
+          ? "将暂停新工作、取消进行中的会话和运行，并撤销会话能力令牌。"
+          : "将停止全部工作、撤销能力令牌、断开来源连接并保留审计证据。",
+      confirmLabel: action === "stop" ? "紧急停止" : "确认退役",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setBusy(action);
+    setError(null);
+    try {
+      if (action === "stop") await emergencyStopAgent(governance.agent_id);
+      else await retireAgent(governance.agent_id);
+      onAgentChange(await getAgent(governance.agent_id));
+      onChange(await getAgentGovernance(governance.agent_id));
+      await refreshSource();
+      toast.success(action === "stop" ? "智能体已紧急停止" : "智能体已退役");
+    } catch (e) {
+      setError(apiErrorMessage(e, action === "stop" ? "紧急停止失败" : "退役失败"));
     } finally {
       setBusy(null);
     }
@@ -2526,8 +2623,81 @@ function ManagedGovernancePanel({
             </Button>
           </div>
         </div>
-        {error && <p className="border-t border-border bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
       </Card>
+      {source && (
+        <Card className="mt-3 overflow-hidden">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold">来源、漂移与运行保障</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {source.source.management_mode} · {source.source.sync_state} · 来源快照 v
+                {source.current_snapshot?.version ?? "-"}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("sync")}>
+                <RefreshCw className={`size-3.5 ${busy === "sync" ? "animate-spin" : ""}`} />同步来源
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("conformance")}>
+                <ShieldCheck className="size-3.5" />契约检查
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("health")}>
+                <Activity className="size-3.5" />健康检查
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-4 p-4 lg:grid-cols-2">
+            <div className="grid gap-2 text-xs">
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">连接器</span>
+                <span className="font-mono">{source.source.connector_id ?? "平台托管来源"}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">运行时契约</span>
+                <span>{source.conformance ? `${source.conformance.contract_version} · ${source.conformance.status}` : "尚未检查"}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">规范化问题</span>
+                <span>{source.current_snapshot?.normalization_issues.length ?? 0} 项</span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">最近健康记录</span>
+                <span>{source.recent_health_checks.length} 项</span>
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xs font-semibold">漂移发现</h4>
+              {source.drift_findings.filter((finding) => finding.resolution === "open").length === 0 ? (
+                <p className="mt-2 rounded-md border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">没有待处理的来源漂移。</p>
+              ) : (
+                <div className="mt-2 grid max-h-44 gap-1.5 overflow-y-auto">
+                  {source.drift_findings.filter((finding) => finding.resolution === "open").map((finding) => (
+                    <div key={finding.id} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-xs">
+                      <span className="truncate font-mono">{finding.field_path}</span>
+                      <Badge variant={finding.risk === "critical" || finding.risk === "high" ? "destructive" : "outline"}>{finding.risk}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {source.candidate_snapshot && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" disabled={busy !== null} onClick={() => void runSourceAction("accept")}>接受候选版本</Button>
+                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("reject")}>拒绝候选版本</Button>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2 border-t border-border bg-muted/10 px-4 py-3">
+            <Button size="sm" variant="outline" className="text-destructive" disabled={busy !== null || governance.lifecycle_status === "retired"} onClick={() => void stopOrRetire("stop")}>
+              紧急停止
+            </Button>
+            <Button size="sm" variant="destructive" disabled={busy !== null || governance.lifecycle_status === "retired"} onClick={() => void stopOrRetire("retire")}>
+              退役智能体
+            </Button>
+          </div>
+        </Card>
+      )}
+      {error && <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
     </section>
   );
 }

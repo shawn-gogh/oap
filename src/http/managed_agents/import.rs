@@ -13,18 +13,20 @@ use crate::{
     db::{
         credentials,
         managed_agents::{
+            audit,
             governance::{self, ImportedSource},
             registry::{
-                repository,
+                repository, revisions,
                 schema::{CreateManagedAgent, UpdateManagedAgent},
             },
+            sources::repository as source_repository,
         },
     },
     errors::GatewayError,
     http::managed_agents::import_types::{
         provider_error, CredentialMode, DiscoverAgentsRequest, DiscoverAgentsResponse,
-        ExternalAgent, ImportAgent, ImportAgentsRequest, ImportAgentsResponse,
-        ImportProviderResponse,
+        ExternalAgent, ImportAgent, ImportAgentsRequest, ImportAgentsResponse, ImportItemResult,
+        ImportPreviewItem, ImportPreviewResponse, ImportProviderResponse,
     },
     proxy::{
         auth::master_key::{authenticate, require_any_gateway_key, AuthContext},
@@ -46,6 +48,7 @@ pub async fn discover(
     require_any_gateway_key(&headers, &state).await?;
     let provider = resolve_provider(&state, &provider_id).await?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
+    super::source_management::validate_connector_endpoint(&endpoint).await?;
     let agents = provider
         .discover(&state.http, &endpoint, input.api_key.trim())
         .await
@@ -71,6 +74,7 @@ pub async fn import(
     let provider = resolve_provider(&state, &provider_id).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
+    super::source_management::validate_connector_endpoint(&endpoint).await?;
     let owner_id = owner_id_for_import(&input, &auth);
     let api_key = input.api_key.as_deref().map(str::trim);
     let credential_mode = input.credential_mode;
@@ -78,6 +82,7 @@ pub async fn import(
     let runtime = runtime_for_import(&state, provider, &provider_id, &endpoint).await;
 
     let mut rows = Vec::with_capacity(input.agents.len());
+    let mut results = Vec::with_capacity(input.agents.len());
     for agent in input.agents {
         let external_agent_id = agent.external_id.clone();
         let source_hash = source_hash(&agent)?;
@@ -120,15 +125,15 @@ pub async fn import(
             }
             None => repository::create(pool, create).await?,
         };
-        if !unchanged {
-            let _ = crate::db::managed_agents::registry::revisions::record(
-                pool,
-                &row,
-                Some(&auth.user_id),
-            )
-            .await;
-        }
-        governance::record_import(
+        let revision = if unchanged {
+            match revisions::latest_version(pool, &row.id).await? {
+                Some(version) => version,
+                None => revisions::record(pool, &row, Some(&auth.user_id)).await?,
+            }
+        } else {
+            revisions::record(pool, &row, Some(&auth.user_id)).await?
+        };
+        let governance = governance::record_import(
             pool,
             ImportedSource {
                 agent_id: &row.id,
@@ -146,19 +151,150 @@ pub async fn import(
             },
         )
         .await?;
+        let source = source_repository::ensure_source(pool, &governance, "federated", None).await?;
+        let raw_spec = row
+            .config
+            .pointer("/source/raw")
+            .cloned()
+            .unwrap_or_else(|| {
+                row.config
+                    .get("source")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}))
+            });
+        let snapshot = source_repository::record_import_snapshot(
+            pool,
+            &source,
+            &row,
+            raw_spec,
+            &source_hash,
+            revision,
+            &auth.user_id,
+        )
+        .await?;
+        audit::record(
+            pool,
+            &auth.user_id,
+            if unchanged {
+                "agent.source.checked"
+            } else {
+                "agent.source.imported"
+            },
+            "agent",
+            &row.id,
+            json!({
+                "provider": provider.id(),
+                "endpoint": endpoint,
+                "external_agent_id": external_agent_id,
+                "source_version": governance.source_version,
+                "revision": revision,
+                "source_id": source.id,
+                "snapshot_id": snapshot.id,
+                "changed": !unchanged,
+            }),
+        )
+        .await?;
+        results.push(ImportItemResult {
+            external_id: external_agent_id,
+            agent_id: Some(row.id.clone()),
+            status: if unchanged { "unchanged" } else { "imported" },
+            snapshot_id: Some(snapshot.id),
+            issues: snapshot.normalization_issues,
+        });
         rows.push(row);
     }
 
     Ok((
         StatusCode::CREATED,
-        Json(ImportAgentsResponse { agents: rows }),
+        Json(ImportAgentsResponse {
+            agents: rows,
+            results,
+        }),
     ))
 }
 
-fn update_from_import(input: CreateManagedAgent) -> UpdateManagedAgent {
+pub async fn preview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(input): Json<ImportAgentsRequest>,
+) -> Result<Json<ImportPreviewResponse>, GatewayError> {
+    authenticate(&headers, &state).await?;
+    let provider = resolve_provider(&state, &provider_id).await?;
+    let endpoint = normalize_endpoint(&input.endpoint)?;
+    super::source_management::validate_connector_endpoint(&endpoint).await?;
+    let items = input
+        .agents
+        .into_iter()
+        .map(|agent| preview_item(provider, &endpoint, agent))
+        .collect();
+    Ok(Json(ImportPreviewResponse { items }))
+}
+
+fn preview_item(
+    provider: &dyn ImportAgentsProvider,
+    endpoint: &str,
+    agent: ImportAgent,
+) -> ImportPreviewItem {
+    let mut issues = Vec::new();
+    if agent.external_id.trim().is_empty() {
+        issues.push(json!({
+            "severity": "blocking",
+            "code": "identity_missing",
+            "field": "identity.external_agent_id",
+            "message": "来源智能体缺少稳定身份。"
+        }));
+    }
+    if let Some(raw) = agent.raw.as_ref().and_then(Value::as_object) {
+        for field in [
+            "credentials",
+            "secrets",
+            "permissions",
+            "network",
+            "filesystem",
+            "side_effects",
+            "data_egress",
+            "subagents",
+        ] {
+            if raw.contains_key(field) {
+                issues.push(json!({
+                    "severity": "approval_required",
+                    "code": "unmapped_high_risk_field",
+                    "field": format!("source.raw.{field}"),
+                    "message": "高风险来源字段需要人工映射与审批。"
+                }));
+            }
+        }
+    }
+    let can_import = !issues
+        .iter()
+        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("blocking"));
+    ImportPreviewItem {
+        external_id: agent.external_id.clone(),
+        canonical_spec: json!({
+            "spec_version": crate::sdk::agents::canonical::CANONICAL_SPEC_VERSION,
+            "identity": {
+                "external_agent_id": agent.external_id,
+                "source_provider": provider.id(),
+                "name": agent.name,
+                "description": agent.description,
+            },
+            "execution": {
+                "runtime_contract": provider.api_spec(),
+                "model": provider.default_model(agent.model.as_deref()),
+            },
+            "source": { "endpoint": endpoint },
+        }),
+        issues: Value::Array(issues),
+        can_import,
+    }
+}
+
+pub(crate) fn update_from_import(input: CreateManagedAgent) -> UpdateManagedAgent {
     UpdateManagedAgent {
         name: Some(input.name),
         model: input.model,
+        tools: input.tools,
         runtime: input.runtime,
         system: input.system,
         prompt: input.prompt,
@@ -181,7 +317,7 @@ fn update_from_import(input: CreateManagedAgent) -> UpdateManagedAgent {
     }
 }
 
-fn source_hash(agent: &ImportAgent) -> Result<String, GatewayError> {
+pub(crate) fn source_hash(agent: &ImportAgent) -> Result<String, GatewayError> {
     let value = json!({
         "external_id": agent.external_id,
         "name": agent.name,
@@ -201,15 +337,26 @@ pub(crate) fn import_runtime_providers() -> Vec<ImportProviderResponse> {
             id: provider.id(),
             name: provider.name(),
             api_spec: provider.api_spec(),
+            capabilities: provider.capabilities(),
         })
         .collect()
+}
+
+pub async fn list_providers(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ImportProviderResponse>>, GatewayError> {
+    require_any_gateway_key(&headers, &state).await?;
+    Ok(Json(import_runtime_providers()))
 }
 
 fn provider_registry() -> Vec<&'static dyn ImportAgentsProvider> {
     vec![&ELASTIC_IMPORT_AGENTS, &OPENCODE_IMPORT_AGENTS]
 }
 
-fn provider_for_id(provider_id: &str) -> Result<&'static dyn ImportAgentsProvider, GatewayError> {
+pub(crate) fn provider_for_id(
+    provider_id: &str,
+) -> Result<&'static dyn ImportAgentsProvider, GatewayError> {
     provider_registry()
         .into_iter()
         .find(|provider| provider.id() == provider_id || provider.api_spec() == provider_id)
@@ -433,7 +580,7 @@ fn credential_info(provider: &dyn ImportAgentsProvider) -> Value {
     })
 }
 
-fn normalize_endpoint(endpoint: &str) -> Result<String, GatewayError> {
+pub(crate) fn normalize_endpoint(endpoint: &str) -> Result<String, GatewayError> {
     let trimmed = endpoint.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err(GatewayError::InvalidJsonMessage(

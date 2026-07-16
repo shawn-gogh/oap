@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin};
 
+use serde::Serialize;
 use serde_json::Value;
 
 pub type ImportAgentsFuture<'a, T> =
@@ -34,10 +35,41 @@ pub struct ImportedAgent {
     pub raw: Value,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ImportProviderCapabilities {
+    pub discover: bool,
+    pub remote_import: bool,
+    pub file_import: bool,
+    pub bundle_import: bool,
+    pub continuous_sync: bool,
+    pub incremental_sync: bool,
+    pub native_health: bool,
+    pub remote_suspend: bool,
+    pub remote_delete: bool,
+    pub signed_webhooks: bool,
+    pub runtime_contract: &'static str,
+}
+
 pub trait ImportAgentsProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn api_spec(&self) -> &'static str;
+
+    fn capabilities(&self) -> ImportProviderCapabilities {
+        ImportProviderCapabilities {
+            discover: true,
+            remote_import: true,
+            file_import: false,
+            bundle_import: false,
+            continuous_sync: true,
+            incremental_sync: false,
+            native_health: false,
+            remote_suspend: false,
+            remote_delete: false,
+            signed_webhooks: false,
+            runtime_contract: self.api_spec(),
+        }
+    }
 
     fn discover<'a>(
         &'a self,

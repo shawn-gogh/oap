@@ -546,6 +546,86 @@ export interface ExternalAgent {
   raw: Record<string, unknown>;
 }
 
+export interface ImportProviderCapabilities {
+  discover: boolean;
+  remote_import: boolean;
+  file_import: boolean;
+  bundle_import: boolean;
+  continuous_sync: boolean;
+  incremental_sync: boolean;
+  native_health: boolean;
+  remote_suspend: boolean;
+  remote_delete: boolean;
+  signed_webhooks: boolean;
+  runtime_contract: string;
+}
+
+export interface ImportProvider {
+  id: string;
+  name: string;
+  api_spec: string;
+  capabilities: ImportProviderCapabilities;
+}
+
+export async function listImportProviders(): Promise<ImportProvider[]> {
+  return jsonOrThrow<ImportProvider[]>(await req("/api/agents/import/providers"));
+}
+
+export interface AgentSourceConnector {
+  id: string;
+  owner_id: string;
+  name: string;
+  provider: string;
+  endpoint: string;
+  credential_name?: string | null;
+  status: "unknown" | "healthy" | "degraded" | "unreachable" | "disabled";
+  capabilities: ImportProviderCapabilities;
+  last_test_detail?: string | null;
+  last_test_at?: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function listAgentSourceConnectors(): Promise<AgentSourceConnector[]> {
+  return jsonOrThrow<AgentSourceConnector[]>(await req("/api/agent-source-connectors"));
+}
+
+export async function createAgentSourceConnector(input: {
+  name: string;
+  provider: string;
+  endpoint: string;
+  credentialName?: string;
+  apiKey?: string;
+  webhookSecret?: string;
+}): Promise<AgentSourceConnector> {
+  return jsonOrThrow<AgentSourceConnector>(
+    await req("/api/agent-source-connectors", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: input.name,
+        provider: input.provider,
+        endpoint: input.endpoint,
+        credential_name: input.credentialName || null,
+        api_key: input.apiKey || null,
+        webhook_secret: input.webhookSecret || null,
+      }),
+    }),
+  );
+}
+
+export async function testAgentSourceConnector(id: string): Promise<AgentSourceConnector> {
+  return jsonOrThrow<AgentSourceConnector>(
+    await req(`/api/agent-source-connectors/${encodeURIComponent(id)}`, { method: "POST" }),
+  );
+}
+
+export async function deleteAgentSourceConnector(id: string): Promise<void> {
+  await jsonOrThrow(
+    await req(`/api/agent-source-connectors/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  );
+}
+
 export async function discoverProviderAgents(input: {
   providerId: string;
   endpoint: string;
@@ -561,6 +641,51 @@ export async function discoverProviderAgents(input: {
   });
   const data = await jsonOrThrow<{ agents: ExternalAgent[] }>(res);
   return data.agents;
+}
+
+export interface ImportPreviewIssue {
+  severity: "info" | "warning" | "approval_required" | "blocking";
+  code: string;
+  field: string;
+  message: string;
+}
+
+export interface ImportPreviewItem {
+  external_id: string;
+  canonical_spec: Record<string, unknown>;
+  issues: ImportPreviewIssue[];
+  can_import: boolean;
+}
+
+export async function previewProviderAgents(input: {
+  providerId: string;
+  endpoint: string;
+  credentialMode: "shared" | "byo";
+  agents: Array<{
+    externalId: string;
+    name?: string;
+    description?: string | null;
+    model?: string | null;
+    raw?: Record<string, unknown>;
+  }>;
+}): Promise<ImportPreviewItem[]> {
+  const res = await req(`/api/agents/import/${encodeURIComponent(input.providerId)}/preview`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      endpoint: input.endpoint,
+      credential_mode: input.credentialMode,
+      agents: input.agents.map((agent) => ({
+        external_id: agent.externalId,
+        name: agent.name,
+        description: agent.description,
+        model: agent.model,
+        raw: agent.raw,
+      })),
+    }),
+  });
+  const data = await jsonOrThrow<{ items: ImportPreviewItem[] }>(res);
+  return data.items;
 }
 
 export async function importProviderAgents(input: {
@@ -857,15 +982,21 @@ export async function sendMessageWithRuntimeModel(opts: {
 }
 
 export async function abortSession(id: string): Promise<void> {
-  await reqHarness(`/session/${encodeURIComponent(id)}/abort`, {
+  const res = await reqHarness(`/session/${encodeURIComponent(id)}/abort`, {
     method: "POST",
   });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text().catch(() => ""));
+  }
 }
 
 export async function interruptSession(id: string): Promise<void> {
-  await reqHarness(`/session/${encodeURIComponent(id)}/interrupt`, {
+  const res = await reqHarness(`/session/${encodeURIComponent(id)}/interrupt`, {
     method: "POST",
   });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text().catch(() => ""));
+  }
 }
 
 export async function listModels(runtime?: string): Promise<string[]> {
@@ -2252,8 +2383,8 @@ export interface AgentGovernance {
   source_endpoint: string;
   external_agent_id: string;
   source_version: number;
-  lifecycle_status: "imported" | "tested" | "pending_approval" | "published" | "unhealthy" | "rolled_back";
-  runtime_health: "unknown" | "healthy" | "unhealthy";
+  lifecycle_status: "imported" | "tested" | "pending_approval" | "published" | "unhealthy" | "rolled_back" | "mapping_failed" | "suspended" | "retired";
+  runtime_health: "unknown" | "healthy" | "degraded" | "unhealthy" | "unreachable";
   health_detail?: string | null;
   credential_scope: "personal" | "byo";
   credential_name?: string | null;
@@ -2297,6 +2428,119 @@ export async function rollbackAgent(id: string, version?: number): Promise<{ age
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ version }),
     }),
+  );
+}
+
+export interface AgentSourceSnapshot {
+  id: string;
+  source_id: string;
+  version: number;
+  digest: string;
+  raw_spec: Record<string, unknown>;
+  canonical_spec: Record<string, unknown>;
+  normalization_issues: Array<{
+    severity: "info" | "warning" | "approval_required" | "blocking";
+    code: string;
+    field: string;
+    message: string;
+  }>;
+  agent_revision?: number | null;
+  created_at: number;
+}
+
+export interface AgentSourceOverview {
+  source: {
+    id: string;
+    agent_id: string;
+    connector_id?: string | null;
+    management_mode: "federated" | "mirrored" | "managed";
+    sync_state: "unknown" | "in_sync" | "drifted" | "missing" | "sync_error" | "detached";
+    missing_count: number;
+    current_snapshot_id?: string | null;
+    candidate_snapshot_id?: string | null;
+    last_synced_at?: number | null;
+    next_sync_at?: number | null;
+  };
+  current_snapshot?: AgentSourceSnapshot | null;
+  candidate_snapshot?: AgentSourceSnapshot | null;
+  drift_findings: Array<{
+    id: string;
+    field_path: string;
+    risk: "low" | "medium" | "high" | "critical";
+    resolution: "open" | "accepted" | "rejected" | "superseded";
+    previous_value?: unknown;
+    candidate_value?: unknown;
+  }>;
+  recent_sync_runs: Array<{
+    id: string;
+    status: string;
+    trigger_kind: string;
+    changed_count: number;
+    error_detail?: string | null;
+    started_at: number;
+  }>;
+  recent_health_checks: Array<{
+    id: string;
+    check_kind: string;
+    status: string;
+    detail?: string | null;
+    checked_at: number;
+  }>;
+  conformance?: {
+    status: "unknown" | "conformant" | "partial" | "non_conformant";
+    contract_version: string;
+    checks: Array<{ id: string; required: boolean; passed: boolean; detail: string }>;
+    checked_at: number;
+  } | null;
+}
+
+export async function getAgentSource(id: string): Promise<AgentSourceOverview> {
+  return jsonOrThrow<AgentSourceOverview>(
+    await req(`/api/agents/${encodeURIComponent(id)}/source`),
+  );
+}
+
+export async function syncAgentSource(id: string): Promise<AgentSourceOverview> {
+  return jsonOrThrow<AgentSourceOverview>(
+    await req(`/api/agents/${encodeURIComponent(id)}/source/sync`, { method: "POST" }),
+  );
+}
+
+export async function resolveAgentDrift(
+  id: string,
+  resolution: "accept" | "reject",
+  reason?: string,
+): Promise<AgentSourceOverview> {
+  return jsonOrThrow<AgentSourceOverview>(
+    await req(`/api/agents/${encodeURIComponent(id)}/source/drift/${resolution}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    }),
+  );
+}
+
+export async function checkAgentConformance(id: string): Promise<{ status: string }> {
+  return jsonOrThrow<{ status: string }>(
+    await req(`/api/agents/${encodeURIComponent(id)}/governance/conformance`, { method: "POST" }),
+  );
+}
+
+export async function checkAgentHealth(id: string): Promise<{ preflight: AgentPreflightReport }> {
+  return jsonOrThrow<{ preflight: AgentPreflightReport }>(
+    await req(`/api/agents/${encodeURIComponent(id)}/governance/health`, { method: "POST" }),
+  );
+}
+
+export async function emergencyStopAgent(id: string): Promise<{ cancelled_work_items: number }> {
+  return jsonOrThrow<{ cancelled_work_items: number }>(
+    await req(`/api/agents/${encodeURIComponent(id)}/emergency-stop`, { method: "POST" }),
+  );
+}
+
+export async function retireAgent(id: string): Promise<{ cancelled_work_items: number }> {
+  return jsonOrThrow<{ cancelled_work_items: number }>(
+    await req(`/api/agents/${encodeURIComponent(id)}/retire`, { method: "POST" }),
   );
 }
 

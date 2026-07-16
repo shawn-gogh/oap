@@ -30,7 +30,7 @@ function isHighSignalTool(tool: string): boolean {
 }
 
 export function defaultOpenForTool(tool: string, status: string): boolean {
-  if (status === "error" || status === "timed_out" || status === "aborted") return true;
+  if (status === "error" || status === "timed_out" || status === "aborted" || status === "rejected") return true;
   if (isContextTool(tool)) return false;
   return isHighSignalTool(tool);
 }

@@ -175,6 +175,19 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     // Session over — release its exposed app ports so the slots can be
     // reallocated; best-effort, the TTL sweeper covers any miss.
     if TERMINAL_STATUSES.contains(&status) {
+        if let Err(error) = sqlx::query(
+            r#"
+            UPDATE "LiteLLM_AgentSessionCapabilityTokensTable"
+            SET revoked_at = $2 WHERE session_id = $1 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(session_id)
+        .bind(now_ms())
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(session_id, "failed to revoke capability token: {error}");
+        }
         if let Err(error) =
             crate::db::managed_agents::exposed_apps::repository::soft_delete_for_session(
                 pool, session_id,

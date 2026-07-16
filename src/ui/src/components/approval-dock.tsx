@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { CircleAlert, Layers3 } from "lucide-react";
 import { ToolApprovalPanel } from "@/components/tool-approval-panel";
 import type { PendingApproval } from "@/lib/api";
 
@@ -18,12 +19,6 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
-/**
- * Docks the pending approval above the composer instead of inline in the
- * message stream, so it stays visible without scrolling. Shows one approval
- * at a time; a badge surfaces the rest of the queue. Y approves / N rejects
- * the current approval when focus is outside an input.
- */
 export function ApprovalDock({ approvals, onAccept, onReject, onAcceptAlways, busy }: ApprovalDockProps) {
   const current = approvals[0];
 
@@ -35,9 +30,6 @@ export function ApprovalDock({ approvals, onAccept, onReject, onAcceptAlways, bu
       if (event.key === "y" || event.key === "Y") {
         event.preventDefault();
         onAccept(current.id, current.arguments ?? {});
-      } else if (event.key === "n" || event.key === "N") {
-        event.preventDefault();
-        onReject(current.id, "");
       }
     };
     window.addEventListener("keydown", handler);
@@ -45,17 +37,23 @@ export function ApprovalDock({ approvals, onAccept, onReject, onAcceptAlways, bu
   }, [current, busy, onAccept, onReject]);
 
   if (approvals.length === 0) return null;
-  const rest = approvals.slice(1);
 
   return (
-    <div className="border-t border-border bg-background/95 px-6 py-3 backdrop-blur">
-      <div className="mx-auto flex max-h-[45vh] w-full max-w-5xl flex-col overflow-y-auto">
-        {rest.length > 0 && (
-          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-            <span className="size-1.5 rounded-full bg-amber-500" />
-            还有 {rest.length} 条待审批
-          </div>
-        )}
+    <div
+      className="flex h-[min(52dvh,36rem)] min-h-72 shrink-0 flex-col border-t border-border bg-background/95 px-4 py-3 backdrop-blur sm:px-6"
+      aria-live="polite"
+    >
+      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col">
+        <div className="mb-2 shrink-0 flex items-center gap-2 px-1 text-xs text-muted-foreground">
+          <CircleAlert className="size-3.5 text-amber-600 dark:text-amber-400" />
+          <span className="font-medium text-foreground">智能体已暂停，等待审批</span>
+          {approvals.length > 1 && (
+            <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5 font-medium">
+              <Layers3 className="size-3" />
+              1 / {approvals.length}
+            </span>
+          )}
+        </div>
         <ToolApprovalPanel
           key={current.id}
           approval={current}
