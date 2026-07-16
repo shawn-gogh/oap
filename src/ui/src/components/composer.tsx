@@ -47,7 +47,9 @@ function ApprovalModeSelect({
         className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
           mode === "full"
             ? "font-medium text-orange-600 dark:text-orange-400"
-            : "text-muted-foreground"
+            : mode === "auto"
+              ? "font-medium text-blue-600 dark:text-blue-400"
+              : "text-muted-foreground"
         }`}
         aria-label="审批模式"
       >
@@ -66,7 +68,11 @@ function ApprovalModeSelect({
               onClick={() => onChange(item.value)}
               className="items-start gap-3 px-2.5 py-2"
             >
-              <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <Icon
+                className={`mt-0.5 size-4 shrink-0 ${
+                  item.value === "auto" ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"
+                }`}
+              />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">{item.label}</div>
                 <div className="text-xs text-muted-foreground">{item.description}</div>
@@ -102,6 +108,7 @@ export function Composer({
   onDraftChange,
   focusVersion,
   mentionFiles,
+  queuedCount = 0,
   approvalMode,
   onApprovalModeChange,
 }: {
@@ -119,6 +126,7 @@ export function Composer({
   focusVersion?: number;
   /** Workspace file paths offered when the user types "@". */
   mentionFiles?: string[];
+  queuedCount?: number;
   approvalMode?: ApprovalMode;
   onApprovalModeChange?: (mode: ApprovalMode) => void;
 }) {
@@ -128,6 +136,7 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useAutosizeTextarea(draft);
+  const composingRef = useRef(false);
 
   // ↑/↓ recall of previously sent prompts (only when the draft is empty or
   // already navigating history, so normal multi-line editing is unaffected).
@@ -232,8 +241,14 @@ export function Composer({
         }
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !composingRef.current &&
+        !e.nativeEvent.isComposing
+      ) {
         e.preventDefault();
+        e.stopPropagation();
         void handleSend();
       }
     },
@@ -246,13 +261,19 @@ export function Composer({
     : disabled
       ? (disabledHint ?? "等待运行时就绪…")
       : busy
-        ? "发送将打断当前运行并转向新指令"
+        ? "发送新消息将结束当前任务"
     : "输入消息…";
 
   return (
-    <div className="border-t border-border bg-background/95 backdrop-blur">
+    <div className="shrink-0 border-t border-border bg-background/95 backdrop-blur">
       <div className="mx-auto max-w-5xl px-6 py-4">
-        <div className="relative">
+        <form
+          className="relative"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleSend();
+          }}
+        >
           {mention && mentionMatches.length > 0 && (
             <div className="absolute bottom-full left-0 z-20 mb-1 w-full max-w-md overflow-hidden rounded-lg border border-border bg-popover shadow-md">
               {mentionMatches.map((path, index) => (
@@ -273,7 +294,7 @@ export function Composer({
               ))}
             </div>
           )}
-          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition-all focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
             <textarea
               id="chat-composer"
               ref={textareaRef}
@@ -283,7 +304,13 @@ export function Composer({
                 if (historyIndex !== null) setHistoryIndex(null);
                 refreshMention(e.target.value);
               }}
-              onKeyDown={handleKeyDown}
+              onKeyDownCapture={handleKeyDown}
+              onCompositionStart={() => {
+                composingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                composingRef.current = false;
+              }}
               onBlur={() => setMention(null)}
               placeholder={placeholder}
               disabled={disabled}
@@ -298,6 +325,8 @@ export function Composer({
                 <span className="mono min-w-0 truncate">
                   {error ? (
                     <span className="text-red-600 dark:text-red-400">{error}</span>
+                  ) : queuedCount > 0 ? (
+                    `已排队 ${queuedCount} 条消息，当前审批或运行结束后自动发送`
                   ) : (
                     model || "回车发送 · Shift+回车换行"
                   )}
@@ -316,8 +345,7 @@ export function Composer({
                   </button>
                 ) : (
                   <button
-                    type="button"
-                    onClick={() => void handleSend()}
+                    type="submit"
                     disabled={!canSend}
                     className="rounded-full bg-foreground p-1.5 text-background transition-colors hover:bg-foreground/90 disabled:opacity-30 disabled:hover:bg-foreground"
                     aria-label="发送"
@@ -329,7 +357,7 @@ export function Composer({
               </div>
             </div>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );
