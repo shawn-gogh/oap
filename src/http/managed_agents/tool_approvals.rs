@@ -145,7 +145,9 @@ pub async fn asked(
                 .await?
                 .unwrap_or_default();
 
-        if match_whitelist(&domain, &whitelist) {
+        if crate::db::managed_agents::settings::repository::match_domain_whitelist(
+            &domain, &whitelist,
+        ) {
             let item = auto_approve_and_reply(
                 &state,
                 pool,
@@ -422,14 +424,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_match_whitelist() {
-        assert!(match_whitelist("api.github.com", "api.github.com"));
-        assert!(match_whitelist("api.github.com", "*.github.com"));
-        assert!(match_whitelist("github.com", "*.github.com"));
-        assert!(!match_whitelist("google.com", "*.github.com"));
-        assert!(match_whitelist("google.com", "*"));
-    }
 }
 
 fn is_outbound_request(permission: &str, patterns: &[String]) -> Option<String> {
@@ -468,26 +462,4 @@ fn extract_host(pattern: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn match_whitelist(domain: &str, whitelist: &str) -> bool {
-    let domain = domain.to_lowercase();
-    for entry in whitelist.split(&[',', ' ', ';'][..]) {
-        let entry = entry.trim().to_lowercase();
-        if entry.is_empty() {
-            continue;
-        }
-        if entry == "*" {
-            return true;
-        }
-        if entry.starts_with("*.") {
-            let suffix = &entry[2..];
-            if domain == suffix || domain.ends_with(&format!(".{}", suffix)) {
-                return true;
-            }
-        } else if domain == entry {
-            return true;
-        }
-    }
-    false
 }

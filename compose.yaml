@@ -112,6 +112,11 @@ services:
       LITELLM_BASE_URL: http://lap:4000/v1
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
       LITELLM_MODELS: ${OPENCODE_MODELS:-}
+      # lap's outbound CONNECT proxy — per-session opencode processes route all
+      # HTTPS traffic through it so network access is enforced (approval_mode +
+      # domain whitelist) at the network layer, not just when a tool self-reports
+      # a permission ask. Unset (empty) to disable and restore unrestricted egress.
+      LAP_EGRESS_PROXY_URL: ${LAP_EGRESS_PROXY_URL:-http://lap:3128}
       # s3fs mounts each session's workspace bucket from here (internal endpoint).
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}

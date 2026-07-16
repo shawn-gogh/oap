@@ -2,6 +2,7 @@ pub mod agents;
 pub mod callbacks;
 pub mod channels;
 pub mod db;
+pub mod egress_proxy;
 pub mod errors;
 pub mod http;
 pub mod i18n;

@@ -42,6 +42,47 @@ pub async fn set_outbound_domain_whitelist(
     Ok(Some(value.to_owned()))
 }
 
+/// Shared by every outbound-domain enforcement point (the self-reported
+/// `data_egress` approval path in tool_approvals.rs and the egress network
+/// proxy) so they can never drift into inconsistent verdicts for the same
+/// domain. Case-insensitive; entries are comma/space/semicolon separated;
+/// `*.suffix` matches the suffix itself and any subdomain; bare `*` matches
+/// everything.
+pub fn match_domain_whitelist(domain: &str, whitelist: &str) -> bool {
+    let domain = domain.to_lowercase();
+    for entry in whitelist.split([',', ' ', ';']) {
+        let entry = entry.trim().to_lowercase();
+        if entry.is_empty() {
+            continue;
+        }
+        if entry == "*" {
+            return true;
+        }
+        if let Some(suffix) = entry.strip_prefix("*.") {
+            if domain == suffix || domain.ends_with(&format!(".{suffix}")) {
+                return true;
+            }
+        } else if domain == entry {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod whitelist_tests {
+    use super::match_domain_whitelist;
+
+    #[test]
+    fn matches_exact_wildcard_and_global() {
+        assert!(match_domain_whitelist("api.github.com", "api.github.com"));
+        assert!(match_domain_whitelist("api.github.com", "*.github.com"));
+        assert!(match_domain_whitelist("github.com", "*.github.com"));
+        assert!(!match_domain_whitelist("google.com", "*.github.com"));
+        assert!(match_domain_whitelist("google.com", "*"));
+    }
+}
+
 
 async fn get_value(pool: &PgPool, key: &str) -> Result<Option<String>, GatewayError> {
     sqlx::query_scalar::<_, String>(

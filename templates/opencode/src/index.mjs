@@ -48,6 +48,11 @@ const LITELLM_MODELS = (process.env.LITELLM_MODELS || "")
 // Optional: override the model opencode uses for internal calls (title generation,
 // summarization, etc.). Defaults to the first entry in LITELLM_MODELS.
 const LITELLM_DEFAULT_MODEL = process.env.LITELLM_DEFAULT_MODEL || null;
+// Base URL of lap's egress proxy (e.g. http://lap:3128). Only per-session
+// (workspace) opencode processes get routed through it — see session-pool.mjs.
+// Unset by default: the feature is fully opt-in, so a deployment that hasn't
+// configured this env var sees no behavior change.
+const LAP_EGRESS_PROXY_URL = process.env.LAP_EGRESS_PROXY_URL || null;
 // Workspace (MinIO) config — presence of MINIO_ENDPOINT gates whether
 // sessions with a workspace bucket get their own dedicated opencode process.
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || null;
@@ -201,6 +206,7 @@ const app = createApp({
   checkOpencode,
   litellmBaseURL: LITELLM_BASE_URL,
   litellmApiKey: LITELLM_API_KEY,
+  egressProxyURL: LAP_EGRESS_PROXY_URL,
   minioEndpoint: MINIO_ENDPOINT,
   minioAccessKey: MINIO_ACCESS_KEY,
   minioSecretKey: MINIO_SECRET_KEY,

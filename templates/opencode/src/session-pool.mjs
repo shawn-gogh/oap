@@ -65,6 +65,17 @@ async function mountBucket({ sessionId, bucket, mountDir, minioEndpoint, accessK
   ]);
 }
 
+// Builds an authenticated CONNECT-proxy URL for this session: username is
+// the session id (how lap's egress_proxy looks up the session's
+// approval_mode), password is the same gateway key already used for every
+// other call this wrapper makes to lap — no new secret to manage.
+function proxyURLFor(sessionId, litellmApiKey, egressProxyURL) {
+  const url = new URL(egressProxyURL);
+  url.username = encodeURIComponent(sessionId);
+  url.password = encodeURIComponent(litellmApiKey || "");
+  return url.toString();
+}
+
 async function unmountBucket(mountDir) {
   try {
     await execFileP("fusermount", ["-u", mountDir]);
@@ -116,6 +127,8 @@ export async function ensureSessionProcess(sessionId, opts) {
     defaultModelProviderID,
     litellmProviderID,
     litellmModel,
+    egressProxyURL,
+    litellmApiKey,
   } = opts;
 
   const sessionDir = path.join(SESSIONS_ROOT, sessionId);
@@ -143,10 +156,24 @@ export async function ensureSessionProcess(sessionId, opts) {
     }
 
     const port = await getFreePort();
+    // Force this session's outbound HTTP(S) through lap's egress proxy so
+    // network access is enforced (approval_mode + domain whitelist) even for
+    // tools like bash-invoked curl that never self-report a permission ask.
+    // NO_PROXY must cover every internal service name/loopback this process
+    // itself talks to — lap (LLM calls, platform MCP, tool-approvals bridge)
+    // and minio — or those calls get routed into the proxy too and the
+    // session breaks outright.
+    const proxyEnv = egressProxyURL
+      ? {
+          HTTP_PROXY: proxyURLFor(sessionId, litellmApiKey, egressProxyURL),
+          HTTPS_PROXY: proxyURLFor(sessionId, litellmApiKey, egressProxyURL),
+          NO_PROXY: "localhost,127.0.0.1,lap,minio,postgres",
+        }
+      : {};
     const { baseUrl, proc, stop } = await startOpencode({
       port,
       cwd: mountDir,
-      env: { HOME: homeDir },
+      env: { HOME: homeDir, ...proxyEnv },
     });
 
     const entry = {

@@ -35,6 +35,9 @@ import { ensureSessionProcess, hasSessionProcess } from "./session-pool.mjs";
  * @param {Map} [deps.environments]            in-memory environments registry
  * @param {string|null} [deps.litellmBaseURL]  passed through to per-session provider config
  * @param {string|null} [deps.litellmApiKey]
+ * @param {string|null} [deps.egressProxyURL]  when set, forces each session's opencode
+ *   process to route outbound HTTP(S) through this CONNECT proxy (lap's
+ *   egress_proxy), tagged with that session's id for policy enforcement.
  * @param {string|null} [deps.minioEndpoint]   presence gates workspace-backed sessions
  * @param {string|null} [deps.minioAccessKey]
  * @param {string|null} [deps.minioSecretKey]
@@ -55,6 +58,7 @@ export function createApp({
   environments = new Map(),
   litellmBaseURL = null,
   litellmApiKey = null,
+  egressProxyURL = null,
   minioEndpoint = null,
   minioAccessKey = null,
   minioSecretKey = null,
@@ -430,6 +434,8 @@ export function createApp({
       defaultModelProviderID,
       litellmProviderID,
       litellmModel: { baseURL: litellmBaseURL, apiKey: litellmApiKey, providerID: litellmProviderID },
+      egressProxyURL,
+      litellmApiKey,
     });
     return entry.baseUrl;
   }
@@ -604,6 +610,8 @@ export function createApp({
           defaultModelProviderID,
           litellmProviderID,
           litellmModel: { baseURL: litellmBaseURL, apiKey: litellmApiKey, providerID: litellmProviderID },
+          egressProxyURL,
+          litellmApiKey,
         });
         base = entry.baseUrl;
       } catch (err) {
