@@ -70,7 +70,9 @@ function ApprovalModeSelect({
             >
               <Icon
                 className={`mt-0.5 size-4 shrink-0 ${
-                  item.value === "auto" ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"
+                  selected && item.value === "auto"
+                    ? "text-blue-600 dark:text-blue-400"
+                    : "text-muted-foreground"
                 }`}
               />
               <div className="min-w-0 flex-1">
