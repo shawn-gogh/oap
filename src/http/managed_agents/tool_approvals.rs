@@ -19,8 +19,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use crate::{
-    db::managed_agents::{inbox, registry, sessions},
+    db::managed_agents::{inbox, registry, runtime_events, sessions},
     errors::GatewayError,
+    guardian::{self, GuardianContext},
     http::{managed_agents::inbox::types::ApprovalScope, runtime_resolution::resolve_runtime},
     proxy::{auth::master_key::authenticate, state::AppState},
 };
@@ -53,12 +54,11 @@ pub async fn asked(
     let session = sessions::repository::get_by_provider_session_id(pool, &input.session_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound(format!("session {}", input.session_id)))?;
-    let agent_name = match session.agent_id.as_deref() {
-        Some(agent_id) => registry::repository::get(pool, agent_id)
-            .await?
-            .map(|agent| agent.name),
+    let agent = match session.agent_id.as_deref() {
+        Some(agent_id) => registry::repository::get(pool, agent_id).await?,
         None => None,
     };
+    let agent_name = agent.as_ref().map(|agent| agent.name.clone());
 
     let (Some(runtime), Some(provider_session_id)) = (
         session.runtime.as_deref(),
@@ -120,23 +120,122 @@ pub async fn asked(
     }
 
     if approval_mode == "auto" && outbound_domain.is_none() {
-        let item = auto_approve_and_reply(
-            &state,
-            pool,
-            AutoApprove {
-                kind: "runtime_permission",
-                title,
-                session_id: &session.id,
+        let context = GuardianContext {
+            action_description: format!(
+                "Runtime tool permission request: {}{}",
+                input.permission,
+                if input.patterns.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (patterns: {})", input.patterns.join(", "))
+                }
+            ),
+            target: None,
+            agent_name: agent_name.clone(),
+            recent_user_message: recent_user_message(pool, &session.id).await,
+            fallback_model: agent
+                .as_ref()
+                .map(|agent| agent.model.clone())
+                .unwrap_or_default(),
+        };
+        let verdict = guardian::review(&state, pool, &context).await;
+
+        if verdict.allow {
+            state.guardian_circuit_breaker.record_non_denial(&session.id);
+            let mut args = args;
+            merge_guardian_verdict(&mut args, &verdict);
+            let item = auto_approve_and_reply(
+                &state,
+                pool,
+                AutoApprove {
+                    kind: "runtime_permission",
+                    title,
+                    session_id: &session.id,
+                    agent_name,
+                    body: Some(format!("Guardian 已放行：{}", verdict.reason)),
+                    args,
+                    reason: "guardian:allow",
+                    provider_session_id,
+                    runtime,
+                },
+            )
+            .await?;
+            return Ok(Json(serde_json::json!({ "id": item })));
+        }
+
+        // Denied (or the review call itself failed — fail-closed, same
+        // treatment). A single denial doesn't reject the tool call outright:
+        // it routes back to a human, same as the "ask" default. Only a
+        // tripped circuit breaker (repeated denials this turn) escalates to
+        // aborting the run outright.
+        let breaker_action = state.guardian_circuit_breaker.record_denial(&session.id);
+        let mut args = args;
+        merge_guardian_verdict(&mut args, &verdict);
+
+        if let guardian::CircuitBreakerAction::InterruptTurn {
+            consecutive_denials,
+            recent_denials,
+        } = breaker_action
+        {
+            let item = inbox::repository::create_approval(
+                pool,
+                "runtime_permission",
+                format!("Guardian 已中断本轮运行：{title}"),
+                Some(session.id.clone()),
                 agent_name,
-                body: Some("会话处于替我审批模式，非风险操作自动放行".to_owned()),
-                args,
-                reason: "policy:session-auto-approve",
-                provider_session_id,
-                runtime,
-            },
+                Some(format!(
+                    "连续 {consecutive_denials} 次（近期 {recent_denials} 次）被 Guardian 拒绝，已自动中断当前运行。最后一次理由：{}",
+                    verdict.reason
+                )),
+                Some(args),
+            )
+            .await?;
+            inbox::repository::decide_approval(
+                pool,
+                &item.id,
+                "reject",
+                None,
+                None,
+                "guardian:circuit-breaker",
+                "once",
+            )
+            .await?;
+            let _ = crate::http::sessions::abort_session_internal(
+                &state,
+                pool,
+                &session,
+                "guardian: too many denied actions this turn",
+            )
+            .await;
+            return Ok(Json(serde_json::json!({ "id": item.id })));
+        }
+
+        let item = inbox::repository::create_approval(
+            pool,
+            "runtime_permission",
+            title,
+            Some(session.id.clone()),
+            agent_name,
+            Some(format!("Guardian 建议拒绝：{}", verdict.reason)),
+            Some(args),
         )
         .await?;
-        return Ok(Json(serde_json::json!({ "id": item })));
+
+        state.local_session_events.publish(
+            &session.id,
+            serde_json::json!({
+                "type": "approval.asked",
+                "approval": {
+                    "id": item.id,
+                    "kind": item.kind,
+                    "title": item.title,
+                    "session_id": item.session_id,
+                    "args_json": item.args_json,
+                    "created_at": item.created_at,
+                }
+            }),
+        );
+        return Ok(Json(serde_json::json!({ "id": item.id })));
     }
 
     if let Some(domain) = outbound_domain {
@@ -228,6 +327,45 @@ pub async fn asked(
     );
 
     Ok(Json(serde_json::json!({ "id": item.id })))
+}
+
+/// Best-effort "what did the user actually ask for" context for the
+/// Guardian prompt — the last `user.message` event in this session's
+/// history, mirroring the evidence Codex's own guardian prompt includes.
+async fn recent_user_message(pool: &PgPool, session_id: &str) -> Option<String> {
+    let events = runtime_events::repository::list(pool, session_id).await.ok()?;
+    events.iter().rev().find_map(|event| {
+        if event.get("type").and_then(Value::as_str) != Some("user.message") {
+            return None;
+        }
+        let content = event.get("content")?.as_array()?;
+        let text: String = content
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    })
+}
+
+fn merge_guardian_verdict(args: &mut Value, verdict: &guardian::GuardianVerdict) {
+    let Some(object) = args.as_object_mut() else {
+        return;
+    };
+    let guardian_value = match &verdict.assessment {
+        Some(assessment) => serde_json::json!({
+            "risk_level": format!("{:?}", assessment.risk_level).to_lowercase(),
+            "user_authorization": format!("{:?}", assessment.user_authorization).to_lowercase(),
+            "outcome": if verdict.allow { "allow" } else { "deny" },
+            "rationale": assessment.rationale,
+        }),
+        None => serde_json::json!({
+            "outcome": "deny",
+            "rationale": verdict.reason,
+            "call_failed": true,
+        }),
+    };
+    object.insert("guardian".to_owned(), guardian_value);
 }
 
 fn approval_mode(environment: &Value) -> &str {

@@ -33,6 +33,7 @@ pub struct AppState {
     pub object_storage: Option<ObjectStorageClient>,
     pub local_session_events: LocalSessionEvents,
     pub provider_consumers: ProviderConsumers,
+    pub guardian_circuit_breaker: crate::guardian::CircuitBreaker,
     mcp_proxy_base_url: RwLock<Option<String>>,
 }
 
@@ -161,6 +162,7 @@ impl AppState {
             object_storage,
             local_session_events: LocalSessionEvents::default(),
             provider_consumers: ProviderConsumers::default(),
+            guardian_circuit_breaker: crate::guardian::CircuitBreaker::default(),
             mcp_proxy_base_url: RwLock::new(None),
         })
     }

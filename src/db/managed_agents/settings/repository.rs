@@ -42,6 +42,29 @@ pub async fn set_outbound_domain_whitelist(
     Ok(Some(value.to_owned()))
 }
 
+pub const GUARDIAN_MODEL_KEY: &str = "guardian_model";
+
+/// Model used for the Guardian reviewer's LLM calls. Falls back to the
+/// acting session's own agent model when unset (see src/guardian/mod.rs) —
+/// this override exists for deployments that want a cheaper/faster dedicated
+/// judge model instead of reusing whatever model the agent itself runs.
+pub async fn get_guardian_model(pool: &PgPool) -> Result<Option<String>, GatewayError> {
+    get_value(pool, GUARDIAN_MODEL_KEY).await
+}
+
+pub async fn set_guardian_model(
+    pool: &PgPool,
+    value: Option<&str>,
+    actor: &str,
+) -> Result<Option<String>, GatewayError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        delete_value(pool, GUARDIAN_MODEL_KEY).await?;
+        return Ok(None);
+    };
+    upsert_value(pool, GUARDIAN_MODEL_KEY, value, actor).await?;
+    Ok(Some(value.to_owned()))
+}
+
 /// Shared by every outbound-domain enforcement point (the self-reported
 /// `data_egress` approval path in tool_approvals.rs and the egress network
 /// proxy) so they can never drift into inconsistent verdicts for the same

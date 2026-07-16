@@ -4,6 +4,7 @@ pub mod channels;
 pub mod db;
 pub mod egress_proxy;
 pub mod errors;
+pub mod guardian;
 pub mod http;
 pub mod i18n;
 pub mod managed_agents;

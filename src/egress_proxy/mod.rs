@@ -26,7 +26,8 @@ use tokio::{
 };
 
 use crate::{
-    db::managed_agents::{inbox, sessions, settings},
+    db::managed_agents::{inbox, registry, runtime_events, sessions, settings},
+    guardian::{self, GuardianContext},
     proxy::{auth::master_key::authenticate_explicit_key, state::AppState},
 };
 
@@ -97,7 +98,7 @@ async fn handle_connection(state: Arc<AppState>, mut stream: TcpStream) -> std::
         return Ok(());
     };
 
-    let decision = decide(pool, &session, &request.host).await;
+    let decision = decide(&state, pool, &session, &request.host, request.port).await;
     audit(pool, &session, &request.host, &decision).await;
 
     match decision {
@@ -105,27 +106,37 @@ async fn handle_connection(state: Arc<AppState>, mut stream: TcpStream) -> std::
             respond(&mut stream, 200, "Connection Established").await?;
             tunnel(&mut stream, &request.host, request.port).await?;
         }
-        Decision::Deny => {
+        Decision::Deny(_) => {
             respond(&mut stream, 403, "Forbidden").await?;
         }
     }
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum Decision {
-    Allow(&'static str),
-    Deny,
+    Allow(String),
+    Deny(String),
 }
 
+/// `ask`/`auto` non-whitelisted-domain denials are always final here — unlike
+/// the tool-permission choke point in tool_approvals.rs, there's no "route to
+/// a human" fallback for a live TCP CONNECT: a raw socket can't sit open
+/// waiting on an async approval decision the way a paused opencode tool call
+/// can. So a Guardian denial (or a failed Guardian call — fail-closed) simply
+/// closes the connection; the agent sees a normal connection failure and can
+/// retry through other means (e.g. asking a human via `request_human_approval`)
+/// if it still needs that host.
 async fn decide(
+    state: &Arc<AppState>,
     pool: &sqlx::PgPool,
     session: &sessions::schema::SessionRow,
     host: &str,
+    port: u16,
 ) -> Decision {
     let mode = approval_mode(&session.environment_json);
     if mode == "full" {
-        return Decision::Allow("policy:session-full-access");
+        return Decision::Allow("policy:session-full-access".to_owned());
     }
     let whitelist = settings::repository::get_outbound_domain_whitelist(pool)
         .await
@@ -133,10 +144,68 @@ async fn decide(
         .flatten()
         .unwrap_or_default();
     if settings::repository::match_domain_whitelist(host, &whitelist) {
-        Decision::Allow("policy:egress-proxy-whitelist")
-    } else {
-        Decision::Deny
+        return Decision::Allow("policy:egress-proxy-whitelist".to_owned());
     }
+    if mode != "auto" {
+        return Decision::Deny("policy:egress-proxy-denied".to_owned());
+    }
+
+    let agent = match session.agent_id.as_deref() {
+        Some(agent_id) => registry::repository::get(pool, agent_id).await.ok().flatten(),
+        None => None,
+    };
+    let context = GuardianContext {
+        action_description: format!("Outbound network connection to {host}:{port}"),
+        target: Some(format!("{host}:{port}")),
+        agent_name: agent.as_ref().map(|agent| agent.name.clone()),
+        recent_user_message: recent_user_message(pool, &session.id).await,
+        fallback_model: agent.map(|agent| agent.model).unwrap_or_default(),
+    };
+    let verdict = guardian::review(state, pool, &context).await;
+
+    if verdict.allow {
+        state.guardian_circuit_breaker.record_non_denial(&session.id);
+        return Decision::Allow(format!("guardian:allow — {}", verdict.reason));
+    }
+
+    let breaker_action = state.guardian_circuit_breaker.record_denial(&session.id);
+    if let guardian::CircuitBreakerAction::InterruptTurn {
+        consecutive_denials,
+        recent_denials,
+    } = breaker_action
+    {
+        let _ = crate::http::sessions::abort_session_internal(
+            state,
+            pool,
+            session,
+            "guardian: too many denied actions this turn",
+        )
+        .await;
+        return Decision::Deny(format!(
+            "guardian:circuit-breaker — {consecutive_denials} consecutive / {recent_denials} recent denials, turn aborted"
+        ));
+    }
+
+    Decision::Deny(format!("guardian:deny — {}", verdict.reason))
+}
+
+/// Same evidence-gathering helper as tool_approvals.rs — kept local since
+/// wiring a shared helper across the two modules isn't worth the coupling
+/// for a single small function.
+async fn recent_user_message(pool: &sqlx::PgPool, session_id: &str) -> Option<String> {
+    let events = runtime_events::repository::list(pool, session_id).await.ok()?;
+    events.iter().rev().find_map(|event| {
+        if event.get("type").and_then(serde_json::Value::as_str) != Some("user.message") {
+            return None;
+        }
+        let content = event.get("content")?.as_array()?;
+        let text: String = content
+            .iter()
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    })
 }
 
 fn approval_mode(environment: &serde_json::Value) -> &str {
@@ -153,11 +222,8 @@ async fn audit(
     decision: &Decision,
 ) {
     let (title, reason) = match decision {
-        Decision::Allow(reason) => (format!("自动授权数据外发：{host}"), *reason),
-        Decision::Deny => (
-            format!("已拒绝的数据外发：{host}"),
-            "policy:egress-proxy-denied",
-        ),
+        Decision::Allow(reason) => (format!("自动授权数据外发：{host}"), reason.clone()),
+        Decision::Deny(reason) => (format!("已拒绝的数据外发：{host}"), reason.clone()),
     };
     let args = serde_json::json!({ "host": host, "via": "egress_proxy" });
     let Ok(item) = inbox::repository::create_approval(
@@ -178,9 +244,16 @@ async fn audit(
     } else {
         "reject"
     };
-    let _ =
-        inbox::repository::decide_approval(pool, &item.id, decision_str, None, None, reason, "once")
-            .await;
+    let _ = inbox::repository::decide_approval(
+        pool,
+        &item.id,
+        decision_str,
+        None,
+        None,
+        &reason,
+        "once",
+    )
+    .await;
 }
 
 async fn tunnel(client: &mut TcpStream, host: &str, port: u16) -> std::io::Result<()> {

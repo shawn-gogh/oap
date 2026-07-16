@@ -430,22 +430,34 @@ pub async fn abort(
 ) -> Result<StatusCode, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     let row = owned_session(pool, &auth, &session_id).await?;
-    let _ = interrupt_runtime_session(&state, pool, &row).await;
-    sessions::repository::set_status(pool, &session_id, "cancelled").await?;
-    state
-        .agent_runs
-        .set_error(&session_id, "aborted".to_owned());
+    abort_session_internal(&state, pool, &row, "aborted").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared by the user-facing abort endpoint and internal callers that don't
+/// have (or need) an HTTP-authenticated principal — e.g. the Guardian
+/// reviewer's circuit breaker interrupting a turn after repeated denials.
+pub(crate) async fn abort_session_internal(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    row: &sessions::schema::SessionRow,
+    reason: &str,
+) -> Result<(), GatewayError> {
+    let session_id = &row.id;
+    let _ = interrupt_runtime_session(state, pool, row).await;
+    sessions::repository::set_status(pool, session_id, "cancelled").await?;
+    state.agent_runs.set_error(session_id, reason.to_owned());
     state.agent_runs.push_event(
-        &session_id,
+        session_id,
         events::SESSION_ERROR,
-        json!({ "error": { "name": "MessageAbortedError", "message": "aborted" } }),
+        json!({ "error": { "name": "MessageAbortedError", "message": reason } }),
     );
     state
         .agent_runs
-        .push_event(&session_id, events::SESSION_IDLE, json!({}));
-    let _ =
-        crate::db::managed_agents::tasks::repository::cancel_for_session(pool, &session_id).await;
-    Ok(StatusCode::NO_CONTENT)
+        .push_event(session_id, events::SESSION_IDLE, json!({}));
+    let _ = crate::db::managed_agents::tasks::repository::cancel_for_session(pool, session_id)
+        .await;
+    Ok(())
 }
 
 pub(crate) async fn interrupt_runtime_session(
