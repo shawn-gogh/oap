@@ -82,8 +82,63 @@ pub async fn asked(
         "metadata": input.metadata,
     });
 
+    // Session-level approval mode (composer selector):
+    //   "ask"  — every non-whitelisted op needs a human (default)
+    //   "auto" — auto-approve everything except non-whitelisted egress
+    //   "full" — auto-approve everything, egress included
+    let approval_mode = approval_mode(&session.environment_json);
+
     // Check if this is an outbound HTTP/network request (Data Egress)
     let outbound_domain = is_outbound_request(&input.permission, &input.patterns);
+
+    if approval_mode == "full" {
+        let (kind, title, body) = match outbound_domain.as_deref() {
+            Some(domain) => (
+                "data_egress",
+                format!("自动授权数据外发：{}", domain),
+                Some("会话处于完全访问模式".to_owned()),
+            ),
+            None => ("runtime_permission", title, Some("会话处于完全访问模式".to_owned())),
+        };
+        let item = auto_approve_and_reply(
+            &state,
+            pool,
+            AutoApprove {
+                kind,
+                title,
+                session_id: &session.id,
+                agent_name,
+                body,
+                args,
+                reason: "policy:session-full-access",
+                provider_session_id,
+                runtime,
+            },
+        )
+        .await?;
+        return Ok(Json(serde_json::json!({ "id": item })));
+    }
+
+    if approval_mode == "auto" && outbound_domain.is_none() {
+        let item = auto_approve_and_reply(
+            &state,
+            pool,
+            AutoApprove {
+                kind: "runtime_permission",
+                title,
+                session_id: &session.id,
+                agent_name,
+                body: Some("会话处于替我审批模式，非风险操作自动放行".to_owned()),
+                args,
+                reason: "policy:session-auto-approve",
+                provider_session_id,
+                runtime,
+            },
+        )
+        .await?;
+        return Ok(Json(serde_json::json!({ "id": item })));
+    }
+
     if let Some(domain) = outbound_domain {
         let whitelist =
             crate::db::managed_agents::settings::repository::get_outbound_domain_whitelist(pool)
@@ -91,46 +146,23 @@ pub async fn asked(
                 .unwrap_or_default();
 
         if match_whitelist(&domain, &whitelist) {
-            let item = inbox::repository::create_approval(
-                pool,
-                "data_egress",
-                format!("自动授权数据外发：{}", domain),
-                Some(session.id.clone()),
-                agent_name,
-                Some(format!("匹配出站白名单：{}", domain)),
-                Some(args),
-            )
-            .await?;
-            inbox::repository::decide_approval(
-                pool,
-                &item.id,
-                "accept",
-                None,
-                None,
-                "policy:egress-whitelist",
-                "once",
-            )
-            .await?;
-            let decided = inbox::repository::get(pool, &item.id)
-                .await?
-                .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
-            match reply_direct(
+            let item = auto_approve_and_reply(
                 &state,
                 pool,
-                &decided,
-                ApprovalScope::Once,
-                provider_session_id,
-                runtime,
+                AutoApprove {
+                    kind: "data_egress",
+                    title: format!("自动授权数据外发：{}", domain),
+                    session_id: &session.id,
+                    agent_name,
+                    body: Some(format!("匹配出站白名单：{}", domain)),
+                    args,
+                    reason: "policy:egress-whitelist",
+                    provider_session_id,
+                    runtime,
+                },
             )
-            .await
-            {
-                Ok(()) => inbox::repository::mark_delivery_applied(pool, &item.id).await?,
-                Err(error) => {
-                    inbox::repository::mark_delivery_failed(pool, &item.id, &error.to_string())
-                        .await?
-                }
-            }
-            return Ok(Json(serde_json::json!({ "id": item.id })));
+            .await?;
+            return Ok(Json(serde_json::json!({ "id": item })));
         } else {
             let title = format!("数据外发审批请求：{}", domain);
             let body = Some(format!(
@@ -194,6 +226,65 @@ pub async fn asked(
     );
 
     Ok(Json(serde_json::json!({ "id": item.id })))
+}
+
+fn approval_mode(environment: &Value) -> &str {
+    match environment.get("approval_mode").and_then(Value::as_str) {
+        Some(mode @ ("auto" | "full")) => mode,
+        _ => "ask",
+    }
+}
+
+struct AutoApprove<'a> {
+    kind: &'a str,
+    title: String,
+    session_id: &'a str,
+    agent_name: Option<String>,
+    body: Option<String>,
+    args: Value,
+    reason: &'a str,
+    provider_session_id: &'a str,
+    runtime: &'a str,
+}
+
+/// Policy-driven fast path: file the inbox item for the audit trail, decide
+/// it immediately, and unblock the paused tool call in the same request.
+async fn auto_approve_and_reply(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    input: AutoApprove<'_>,
+) -> Result<String, GatewayError> {
+    let item = inbox::repository::create_approval(
+        pool,
+        input.kind,
+        input.title,
+        Some(input.session_id.to_owned()),
+        input.agent_name,
+        input.body,
+        Some(input.args),
+    )
+    .await?;
+    inbox::repository::decide_approval(pool, &item.id, "accept", None, None, input.reason, "once")
+        .await?;
+    let decided = inbox::repository::get(pool, &item.id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
+    match reply_direct(
+        state,
+        pool,
+        &decided,
+        ApprovalScope::Once,
+        input.provider_session_id,
+        input.runtime,
+    )
+    .await
+    {
+        Ok(()) => inbox::repository::mark_delivery_applied(pool, &item.id).await?,
+        Err(error) => {
+            inbox::repository::mark_delivery_failed(pool, &item.id, &error.to_string()).await?
+        }
+    }
+    Ok(item.id)
 }
 
 /// Replies to opencode's own permission request so the paused tool call
@@ -300,6 +391,15 @@ mod tests {
             permission_reply_value("rejected", ApprovalScope::Session),
             "reject"
         );
+    }
+
+    #[test]
+    fn approval_mode_defaults_to_ask() {
+        assert_eq!(approval_mode(&serde_json::json!({})), "ask");
+        assert_eq!(approval_mode(&serde_json::json!({"approval_mode": "auto"})), "auto");
+        assert_eq!(approval_mode(&serde_json::json!({"approval_mode": "full"})), "full");
+        assert_eq!(approval_mode(&serde_json::json!({"approval_mode": "bogus"})), "ask");
+        assert_eq!(approval_mode(&serde_json::Value::Null), "ask");
     }
 
     #[test]

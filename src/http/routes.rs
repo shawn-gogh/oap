@@ -223,6 +223,10 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(sessions::prompt_async),
         )
         .route(
+            "/session/{session_id}/approval-mode",
+            put(sessions::set_approval_mode),
+        )
+        .route(
             "/session/{session_id}/runtime_events",
             get(sessions::runtime_events),
         )

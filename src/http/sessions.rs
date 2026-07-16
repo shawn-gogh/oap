@@ -214,6 +214,34 @@ pub struct RenameSessionRequest {
     pub title: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct SetApprovalModeRequest {
+    pub mode: String,
+}
+
+/// PUT /session/{id}/approval-mode — per-session tool-approval policy for
+/// the composer selector: "ask" | "auto" | "full".
+pub async fn set_approval_mode(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(input): Json<SetApprovalModeRequest>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    let (pool, auth) = auth_db(&state, &headers).await?;
+    owned_session(pool, &auth, &session_id).await?;
+    let mode = input.mode.trim();
+    if !matches!(mode, "ask" | "auto" | "full") {
+        return Err(GatewayError::BadRequest(
+            "mode must be one of: ask, auto, full".to_owned(),
+        ));
+    }
+    let updated = sessions::repository::set_approval_mode(pool, &session_id, mode).await?;
+    if !updated {
+        return Err(GatewayError::NotFound("session not found".to_owned()));
+    }
+    Ok(Json(serde_json::json!({ "approval_mode": mode })))
+}
+
 pub async fn rename(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

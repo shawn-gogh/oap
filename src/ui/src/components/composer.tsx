@@ -1,9 +1,84 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, FileText, Square } from "lucide-react";
-import { sendMessage } from "@/lib/api";
+import { AlertTriangle, ArrowUp, Check, ChevronDown, FileText, Hand, ShieldCheck, Square } from "lucide-react";
+import { sendMessage, type ApprovalMode } from "@/lib/api";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useAutosizeTextarea } from "@/lib/hooks/use-autosize-textarea";
+
+const APPROVAL_MODES: { value: ApprovalMode; label: string; description: string; icon: typeof Hand }[] = [
+  {
+    value: "ask",
+    label: "请求批准",
+    description: "编辑外部文件和使用互联网时始终询问",
+    icon: Hand,
+  },
+  {
+    value: "auto",
+    label: "替我审批",
+    description: "仅对检测到的风险操作请求批准",
+    icon: ShieldCheck,
+  },
+  {
+    value: "full",
+    label: "完全访问权限",
+    description: "可不受限地访问互联网和您电脑上的任何文件",
+    icon: AlertTriangle,
+  },
+];
+
+function ApprovalModeSelect({
+  mode,
+  onChange,
+}: {
+  mode: ApprovalMode;
+  onChange: (mode: ApprovalMode) => void;
+}) {
+  const current = APPROVAL_MODES.find((item) => item.value === mode) ?? APPROVAL_MODES[0];
+  const CurrentIcon = current.icon;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
+          mode === "full"
+            ? "font-medium text-orange-600 dark:text-orange-400"
+            : "text-muted-foreground"
+        }`}
+        aria-label="审批模式"
+      >
+        <CurrentIcon className="size-3.5" />
+        {mode === "full" ? "完全访问" : current.label}
+        <ChevronDown className="size-3" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-80 p-1.5">
+        <div className="px-2 pb-1.5 pt-1 text-xs text-muted-foreground">应如何批准智能体操作？</div>
+        {APPROVAL_MODES.map((item) => {
+          const Icon = item.icon;
+          const selected = item.value === mode;
+          return (
+            <DropdownMenuItem
+              key={item.value}
+              onClick={() => onChange(item.value)}
+              className="items-start gap-3 px-2.5 py-2"
+            >
+              <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{item.label}</div>
+                <div className="text-xs text-muted-foreground">{item.description}</div>
+              </div>
+              {selected && <Check className="mt-1 size-4 shrink-0" />}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 // Extracts an "@token" being typed at the caret, e.g. "看下 @src/ma".
 function mentionQueryAt(text: string, caret: number): { query: string; start: number } | null {
@@ -27,6 +102,8 @@ export function Composer({
   onDraftChange,
   focusVersion,
   mentionFiles,
+  approvalMode,
+  onApprovalModeChange,
 }: {
   sessionId: string;
   model: string;
@@ -42,6 +119,8 @@ export function Composer({
   focusVersion?: number;
   /** Workspace file paths offered when the user types "@". */
   mentionFiles?: string[];
+  approvalMode?: ApprovalMode;
+  onApprovalModeChange?: (mode: ApprovalMode) => void;
 }) {
   const [localDraft, setLocalDraft] = useState("");
   const draft = draftValue ?? localDraft;
@@ -212,12 +291,17 @@ export function Composer({
               className="min-h-14 w-full resize-none bg-transparent px-4 pt-4 text-[15px] text-foreground outline-none focus-visible:outline-none placeholder:text-muted-foreground"
             />
             <div className="flex items-center justify-between px-4 pb-3 text-xs text-muted-foreground">
-              <span className="mono flex min-w-0 items-center gap-2 truncate">
-                {error ? (
-                  <span className="text-red-600 dark:text-red-400">{error}</span>
-                ) : (
-                  model || "Enter to send · Shift+Enter for newline"
+              <span className="flex min-w-0 items-center gap-2 truncate">
+                {approvalMode && onApprovalModeChange && (
+                  <ApprovalModeSelect mode={approvalMode} onChange={onApprovalModeChange} />
                 )}
+                <span className="mono min-w-0 truncate">
+                  {error ? (
+                    <span className="text-red-600 dark:text-red-400">{error}</span>
+                  ) : (
+                    model || "Enter to send · Shift+Enter for newline"
+                  )}
+                </span>
               </span>
               <div className="flex items-center gap-2">
                 {busy && onAbort && !draft.trim() ? (

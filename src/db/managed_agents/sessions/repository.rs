@@ -187,6 +187,35 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     Ok(())
 }
 
+/// Per-session tool-approval mode ("ask" | "auto" | "full"), stored inside
+/// environment_json; absent means "ask".
+pub async fn set_approval_mode(
+    pool: &PgPool,
+    session_id: &str,
+    mode: &str,
+) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentSessionsTable"
+        SET environment_json = jsonb_set(
+                COALESCE(environment_json, '{}'::jsonb),
+                '{approval_mode}',
+                to_jsonb($2::TEXT),
+                true
+            ),
+            updated_at = $3
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .bind(mode)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn set_title(pool: &PgPool, session_id: &str, title: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(
         r#"

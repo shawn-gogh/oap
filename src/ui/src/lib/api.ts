@@ -3133,6 +3133,21 @@ export async function deleteMemory(agentId: string, key: string): Promise<void> 
   await req(`/api/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
 }
 
+// ---- Session approval mode (composer selector) ----
+
+export type ApprovalMode = "ask" | "auto" | "full";
+
+export async function setSessionApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void> {
+  const res = await req(`/session/${encodeURIComponent(sessionId)}/approval-mode`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text().catch(() => ""));
+  }
+}
+
 // ---- Exposed apps (agent services proxied via /apps/{id}/) ----
 
 export interface ExposedApp {

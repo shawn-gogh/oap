@@ -42,7 +42,8 @@ import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
 import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage, ensureWebSession } from "@/lib/api";
-import type { PendingApproval, RuntimeAgentEvent } from "@/lib/api";
+import { setSessionApprovalMode } from "@/lib/api";
+import type { ApprovalMode, PendingApproval, RuntimeAgentEvent } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
 import { ExposedAppsMenu } from "@/components/exposed-apps-menu";
 import { toast } from "sonner";
@@ -126,6 +127,7 @@ function ChatInner() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [workspaceBucket, setWorkspaceBucket] = useState<string | undefined>();
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [composerDraft, setComposerDraft] = useState("");
   const [composerFocusVersion, setComposerFocusVersion] = useState(0);
   const [promptOpen, setPromptOpen] = useState(false);
@@ -382,6 +384,7 @@ function ChatInner() {
     setInfoOpenManual(null);
     decidedApprovalsRef.current.clear();
     setWorkspaceBucket(undefined);
+    setApprovalMode("ask");
     const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
       if (activeSessionRef.current !== sid) return;
@@ -394,6 +397,8 @@ function ChatInner() {
       setProviderSessionId(s.provider_session_id);
       setProviderUrl(s.provider_url);
       setWorkspaceBucket(s.workspace_bucket);
+      const mode = (s.environment as Record<string, unknown> | undefined)?.approval_mode;
+      if (mode === "auto" || mode === "full") setApprovalMode(mode);
       if (s.title) setSessionTitle(s.title);
     }).catch(() => {}).finally(() => {
       if (activeSessionRef.current === sid) setSessionLoaded(true);
@@ -880,6 +885,19 @@ function ChatInner() {
     }
   }, []);
 
+  const onApprovalModeChange = useCallback(
+    (mode: ApprovalMode) => {
+      if (!sid) return;
+      const previous = approvalMode;
+      setApprovalMode(mode);
+      setSessionApprovalMode(sid, mode).catch((err) => {
+        setApprovalMode(previous);
+        toast.error(apiErrorMessage(err, "切换审批模式失败"));
+      });
+    },
+    [approvalMode, sid],
+  );
+
   const commitRename = useCallback(async () => {
     if (!sid || editingTitle === null || renamingTitle) return;
     const next = editingTitle.trim();
@@ -1314,6 +1332,8 @@ function ChatInner() {
           draftValue={composerDraft}
           onDraftChange={setComposerDraft}
           focusVersion={composerFocusVersion}
+          approvalMode={approvalMode}
+          onApprovalModeChange={onApprovalModeChange}
         />
       </div>
 

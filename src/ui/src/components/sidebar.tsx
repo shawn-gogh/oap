@@ -11,6 +11,8 @@ import {
   Inbox,
   KeyRound,
   MessageCircle,
+  PanelLeft,
+  PanelLeftClose,
   Plus,
   Puzzle,
   ScrollText,
@@ -23,6 +25,7 @@ import {
   Users,
   LogOut,
 } from "lucide-react";
+import { useSidebarCollapsed } from "@/lib/use-sidebar-collapsed";
 import type { LucideIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -95,6 +98,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const embedded = useIsEmbedded();
   const router = useRouter();
   const pathname = usePathname();
+  const [collapsed, setCollapsed] = useSidebarCollapsed();
   const [sessions, setSessions] = useState<OpencodeSession[] | null>(null);
   const [sessionQuery, setSessionQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -334,26 +338,56 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
     sections[0];
   const isAgentPlatform = currentSection.label === "Agent Platform";
 
+  // When collapsed, force the icon-only rail at every breakpoint; when
+  // expanded, keep the responsive sm: behavior (narrow on mobile, full on ≥sm).
+  const labelCls = collapsed ? "hidden" : "hidden sm:inline";
+  const blockCls = collapsed ? "hidden" : "hidden sm:block";
+  const railJustify = collapsed ? "justify-center" : "justify-center sm:justify-start";
+  const asideWidth = collapsed ? "w-16" : "w-16 sm:w-64";
+
   return (
-    <aside className="flex h-screen w-16 shrink-0 flex-col border-r border-border bg-background sm:w-64">
-      <div className="flex h-12 items-center border-b border-border px-2 sm:px-3">
+    <aside className={`flex h-screen ${asideWidth} shrink-0 flex-col border-r border-border bg-background`}>
+      <div className="flex h-12 items-center gap-1 border-b border-border px-2 sm:px-3">
         <ProductSwitcher
           current={currentSection}
           sections={sections}
           onSelect={(section) => router.push(section.home)}
+          collapsed={collapsed}
         />
+        <button
+          type="button"
+          onClick={() => setCollapsed(!collapsed)}
+          title={collapsed ? "展开侧边栏" : "折叠侧边栏"}
+          aria-label={collapsed ? "展开侧边栏" : "折叠侧边栏"}
+          className={`grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground ${
+            collapsed ? "hidden" : ""
+          }`}
+        >
+          <PanelLeftClose className="size-4" />
+        </button>
       </div>
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          title="展开侧边栏"
+          aria-label="展开侧边栏"
+          className="mx-2 mt-2 grid h-8 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <PanelLeft className="size-4" />
+        </button>
+      )}
 
       <div className="space-y-3 border-b border-border px-2 py-3 sm:px-3">
         {isAgentPlatform && (
           <Button
             onClick={onNew}
-            className="relative w-full justify-center sm:justify-start"
+            className={`relative w-full ${railJustify}`}
             size="sm"
             aria-label="新建会话"
           >
             <Plus className="size-4" />
-            <span className="hidden sm:inline">新建会话</span>
+            <span className={labelCls}>新建会话</span>
           </Button>
         )}
         <div className="space-y-1">
@@ -366,14 +400,14 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
             return (
               <div key={item.href}>
               {showGroupHeader && (
-                <div className="hidden px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:block">
+                <div className={`px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground ${blockCls}`}>
                   {item.group}
                 </div>
               )}
               <Button
                 onClick={() => router.push(item.href)}
                 variant="ghost"
-                className={`relative w-full justify-center sm:justify-start ${
+                className={`relative w-full ${railJustify} ${
                   active ? "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary" : ""
                 }`}
                 size="sm"
@@ -381,7 +415,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 title={item.label}
               >
                 <Icon className="size-4" />
-                <span className="hidden sm:inline">{item.label}</span>
+                <span className={labelCls}>{item.label}</span>
                 {badge > 0 && (
                   <span className="absolute ml-7 mt-[-18px] flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-semibold text-white sm:static sm:ml-auto sm:mt-0 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-[11px]">
                     {badge}
@@ -394,7 +428,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         </div>
       </div>
 
-      <div className="hidden flex-1 overflow-y-auto py-2 sm:block">
+      <div className={`flex-1 overflow-y-auto py-2 ${blockCls}`}>
         {isAgentPlatform && (
           <>
             <div className="px-4 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -500,12 +534,12 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         <Button
           onClick={() => router.push("/settings/")}
           variant={pathname?.startsWith("/settings") ? "secondary" : "ghost"}
-          className="w-full justify-center sm:justify-start"
+          className={`w-full ${railJustify}`}
           size="sm"
           aria-label="Settings"
         >
           <Settings className="size-4" />
-          <span className="hidden sm:inline">Settings</span>
+          <span className={labelCls}>Settings</span>
         </Button>
       </div>
     </aside>
@@ -516,22 +550,27 @@ function ProductSwitcher({
   current,
   sections,
   onSelect,
+  collapsed,
 }: {
   current: NavSection;
   sections: NavSection[];
   onSelect: (section: NavSection) => void;
+  collapsed: boolean;
 }) {
   const CurrentIcon = current.icon;
+  const revealCls = collapsed ? "hidden" : "hidden sm:block";
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className="flex h-9 w-full min-w-0 items-center justify-center gap-2 rounded-lg px-2 text-left text-sm font-semibold outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 sm:justify-start"
+        className={`flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-2 text-left text-sm font-semibold outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 ${
+          collapsed ? "" : "sm:justify-start"
+        }`}
         aria-label="Switch product"
       >
         <CurrentIcon className="size-5 shrink-0" />
-        <span className="hidden min-w-0 flex-1 truncate sm:block">{current.label}</span>
-        <ChevronDown className="hidden size-4 shrink-0 text-muted-foreground sm:block" />
+        <span className={`min-w-0 flex-1 truncate ${revealCls}`}>{current.label}</span>
+        <ChevronDown className={`size-4 shrink-0 text-muted-foreground ${revealCls}`} />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="bottom" align="start" className="w-72 p-1.5">
         {sections.map((section) => {
