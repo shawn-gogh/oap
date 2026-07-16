@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowUp, Bot, Loader2, MessageSquareText, Plus } from "lucide-react";
+import { ArrowUp, Bot, Loader2, MessageSquareText, MessagesSquare } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icons";
 import { EmptyState } from "@/components/empty-state";
 import { StatusDot } from "@/components/status-dot";
@@ -19,7 +19,6 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   apiErrorMessage,
-  createAgent,
   createSession,
   listRuntimeHarnesses,
   listAgents,
@@ -33,7 +32,7 @@ import { runtimeBrandIconId } from "@/lib/runtime-branding";
 import type { Agent, AgentRuntimeId, OpencodeSession, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const NEW_AGENT_VALUE = "__new_agent__";
+const TEMPORARY_SESSION_VALUE = "__temporary_session__";
 const CLAUDE_RUNTIME: AgentRuntimeId = "claude_managed_agents";
 const RECENT_SESSION_LIMIT = 6;
 
@@ -86,7 +85,7 @@ function configuredRuntime(agent: Agent | null): AgentRuntimeId | "" {
 
 function promptTitle(prompt: string): string {
   const compact = prompt.replace(/\s+/g, " ").trim();
-  if (!compact) return "New agent session";
+  if (!compact) return "新会话";
   return compact.length > 46 ? `${compact.slice(0, 46).trimEnd()}…` : compact;
 }
 
@@ -124,12 +123,11 @@ function sessionIsBusy(session: OpencodeSession): boolean {
   return status === "busy" || status === "running" || Boolean(session.provider_run_id);
 }
 
-type StartPhase = "agent" | "session" | "redirect" | null;
+type StartPhase = "session" | "redirect" | null;
 
 function startButtonLabel(phase: StartPhase): string {
-  if (phase === "agent") return "创建智能体...";
-  if (phase === "session") return "创建会话...";
-  if (phase === "redirect") return "跳转中...";
+  if (phase === "session") return "创建会话…";
+  if (phase === "redirect") return "跳转中…";
   return "开始";
 }
 
@@ -221,7 +219,7 @@ function SessionsStart() {
     }
     setError(null);
     try {
-      const title = selectedAgent ? `${selectedAgent.name} session` : promptTitle(trimmed);
+      const title = selectedAgent ? `${selectedAgent.name} 会话` : promptTitle(trimmed);
       let shouldAutostartPrompt = Boolean(trimmed);
       let session: OpencodeSession;
       if (selectedAgent && !isDbBackedAgent(selectedAgent)) {
@@ -235,27 +233,13 @@ function SessionsStart() {
         if (!model) {
           throw new Error(`${runtimeLabel(selectedRuntime ?? runtimeForSession)} 没有配置可用模型。`);
         }
-        let agent = selectedAgent;
-        if (!agent) {
-          setStartPhase("agent");
-          agent = await createAgent({
-            name: title,
-            description: `Started from ${runtimeLabel(selectedRuntime ?? runtimeForSession)} landing prompt.`,
-            model,
-            runtime: runtimeForSession,
-            harness: "claude-code",
-            system: "You are a helpful managed agent. Use available tools when they help complete the user's request.",
-            tools: [{ type: "agent_toolset_20260401" }],
-            mcp_servers: [],
-            skills: [],
-          });
-        }
         const environment =
           selectedRuntimeSpec === "cursor" ? cursorEnvironment(repository, ref) : {};
         shouldAutostartPrompt = false;
         setStartPhase("session");
-        session = await createSession(title, agent.id, {
+        session = await createSession(title, selectedAgent?.id, {
           runtime: runtimeForSession,
+          model,
           prompt: trimmed || undefined,
           environment,
         });
@@ -309,21 +293,21 @@ function SessionsStart() {
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void startSession();
                 }
               }}
               placeholder={selectedAgent ? "可选的第一条消息" : "描述任务，或直接提问"}
-              aria-label="Session prompt"
+              aria-label="会话消息"
               className="min-h-24 resize-none border-0 bg-transparent px-4 py-4 text-[15px] shadow-none outline-none placeholder:text-muted-foreground focus-visible:ring-0 dark:text-foreground"
             />
             <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-3 py-3">
               <Select
-                value={selectedAgentId || NEW_AGENT_VALUE}
+                value={selectedAgentId || TEMPORARY_SESSION_VALUE}
                 onValueChange={(value) => {
                   const next = value ?? "";
-                  const nextAgentId = next === NEW_AGENT_VALUE ? "" : next;
+                  const nextAgentId = next === TEMPORARY_SESSION_VALUE ? "" : next;
                   setSelectedAgentId(nextAgentId);
                   const nextAgent = savedAgents.find((agent) => agent.id === nextAgentId) ?? null;
                   const nextRuntime = configuredRuntime(nextAgent);
@@ -333,23 +317,23 @@ function SessionsStart() {
                 <SelectTrigger className="h-10 w-auto min-w-[230px] max-w-[320px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Agent
+                      智能体
                     </span>
                     <span className="truncate text-sm font-medium">
-                      {selectedAgent?.name ?? "新建托管智能体"}
+                      {selectedAgent?.name ?? "临时会话"}
                     </span>
                   </span>
                 </SelectTrigger>
                 <SelectContent className="w-[380px]">
-                  <SelectItem value={NEW_AGENT_VALUE} className="py-3">
+                  <SelectItem value={TEMPORARY_SESSION_VALUE} className="py-3">
                     <span className="flex min-w-0 items-center gap-3">
                       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-                        <Plus className="size-4" />
+                        <MessagesSquare className="size-4" />
                       </span>
                       <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium">新建托管智能体</span>
+                        <span className="block truncate text-sm font-medium">临时会话</span>
                         <span className="block truncate text-xs text-muted-foreground">
-                          根据这条提示词即时创建
+                          不创建智能体，不会增加智能体列表
                         </span>
                       </span>
                     </span>
@@ -397,7 +381,7 @@ function SessionsStart() {
                 <SelectTrigger className="h-10 w-auto min-w-[260px] max-w-[340px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Runtime
+                      运行时
                     </span>
                     <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted">
                       <BrandIcon
@@ -436,7 +420,7 @@ function SessionsStart() {
                     </div>
                   )}
                   <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-                    前往 AI Gateway &gt; Agent Runtimes 配置更多运行时。
+                    前往 AI Gateway &gt; 智能体运行时配置更多运行时。
                   </div>
                 </SelectContent>
               </Select>
@@ -455,7 +439,7 @@ function SessionsStart() {
                 onClick={() => void startSession()}
                 disabled={!canStart}
                 className="rounded-full"
-                aria-label="Start session"
+                aria-label="开始会话"
               >
                 {starting ? (
                   <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />

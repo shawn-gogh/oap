@@ -257,6 +257,7 @@ function AssistantBlock({
   // An in-progress turn always renders at least a waiting line — returning
   // null here left blank gaps that read as "the session stopped responding".
   if (!failed && !queued && !inProgress && visibleParts.length === 0) return null;
+  if (inProgress && visibleParts.length === 0 && !showProgressIndicator) return null;
 
   return (
     <article className="group/turn flex flex-col gap-3 py-1">

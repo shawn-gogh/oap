@@ -143,15 +143,21 @@ async fn create_generic_chat_session(
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
         .map(str::to_owned);
+    let agent_id = input.agent_id.as_deref().or(input.agent.as_deref());
+    let mut environment = input.environment.clone().unwrap_or_else(|| json!({}));
+    if agent_id.is_none() {
+        environment["temporary_model"] = json!(agent.model);
+        environment["temporary_system"] = json!(agent.system);
+    }
     let row = sessions::repository::create_runtime(
         pool,
         sessions::repository::CreateRuntimeSession {
             runtime: &alias,
-            agent_id: &agent.id,
+            agent_id,
             title: &title,
             timezone: input.timezone.as_deref().or(input.tz.as_deref()),
             runtime_agent_ref_id: None,
-            environment: input.environment.clone().unwrap_or_else(|| json!({})),
+            environment,
             provider_session_id: None,
             provider_run_id: None,
             owner_id: Some(owner.or(agent.owner_id.as_deref()).unwrap_or("system")),
@@ -273,6 +279,7 @@ pub(crate) async fn create_runtime_session_for_agent_task_with_prompt(
             agent: Some(agent_id.clone()),
             agent_id: Some(agent_id),
             runtime: Some(runtime),
+            model: None,
             prompt: Some(prompt),
             environment: Some(environment),
             timezone: None,
@@ -308,6 +315,7 @@ async fn create_runtime_session_for_agent_input(
             agent: Some(agent_id.clone()),
             agent_id: Some(agent_id),
             runtime: Some(runtime),
+            model: None,
             prompt,
             environment: Some(environment),
             timezone: None,
@@ -345,7 +353,11 @@ async fn create_runtime_session_row(
     agent.system =
         crate::db::managed_agents::skills::compose::compose_agent_system_prompt(pool, &agent)
             .await?;
-    let stored_environment = input.environment.clone().unwrap_or_else(|| json!({}));
+    let mut stored_environment = input.environment.clone().unwrap_or_else(|| json!({}));
+    if input.agent_id.is_none() && input.agent.is_none() {
+        stored_environment["temporary_model"] = json!(agent.model);
+        stored_environment["temporary_system"] = json!(agent.system);
+    }
     let title = input.title.clone().unwrap_or_else(|| agent.name.clone());
     let initial_user_prompt = input
         .prompt
@@ -353,11 +365,12 @@ async fn create_runtime_session_row(
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
         .map(str::to_owned);
+    let agent_id = input.agent_id.as_deref().or(input.agent.as_deref());
     let row = sessions::repository::create_runtime(
         pool,
         sessions::repository::CreateRuntimeSession {
             runtime: &runtime,
-            agent_id: &agent.id,
+            agent_id,
             title: &title,
             timezone: input.timezone.as_deref().or(input.tz.as_deref()),
             runtime_agent_ref_id: None,
@@ -451,14 +464,46 @@ async fn load_agent(
     pool: &PgPool,
     input: &CreateSessionRequest,
 ) -> Result<ManagedAgentRow, GatewayError> {
-    let agent_id = input
-        .agent_id
-        .clone()
-        .or(input.agent.clone())
-        .ok_or_else(|| GatewayError::InvalidJsonMessage("agent_id is required".to_owned()))?;
+    let Some(agent_id) = input.agent_id.clone().or(input.agent.clone()) else {
+        let model = input
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .ok_or(GatewayError::MissingModel)?;
+        return Ok(ManagedAgentRow {
+            id: "temporary-session".to_owned(),
+            name: input
+                .title
+                .clone()
+                .unwrap_or_else(|| "Temporary session".to_owned()),
+            model: model.to_owned(),
+            system: "You are a helpful assistant. Use available tools when they help complete the user's request.".to_owned(),
+            tools: json!([{ "type": "agent_toolset_20260401" }]),
+            cadence: None,
+            interval_seconds: None,
+            session_id: None,
+            loop_id: None,
+            created_at: crate::db::managed_agents::now_ms(),
+            prompt: None,
+            cron: None,
+            timezone: "UTC".to_owned(),
+            vault_keys: json!([]),
+            setup_commands: json!([]),
+            max_runtime_minutes: 30,
+            on_failure: "pause_and_notify".to_owned(),
+            config: json!({ "runtime": input.runtime, "temporary": true }),
+            owner_id: None,
+            status: "active".to_owned(),
+            description: Some("Temporary session".to_owned()),
+            harness: input.runtime.clone().unwrap_or_default(),
+            skill_ids: json!([]),
+            rule_ids: json!([]),
+        });
+    };
     registry::repository::get(pool, &agent_id)
         .await?
-        .ok_or_else(|| GatewayError::UnknownAgent(agent_id.clone()))
+        .ok_or(GatewayError::UnknownAgent(agent_id))
 }
 
 fn runtime_prompt(prompt: Option<String>, agent: &ManagedAgentRow) -> String {

@@ -232,7 +232,7 @@ export function Composer({
         }
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         void handleSend();
       }
@@ -242,12 +242,12 @@ export function Composer({
 
   const canSend = draft.trim().length > 0 && !sending && !disabled;
   const placeholder = sending
-    ? "发送中..."
+    ? "发送中…"
     : disabled
-      ? (disabledHint ?? "等待运行时就绪...")
+      ? (disabledHint ?? "等待运行时就绪…")
       : busy
         ? "发送将打断当前运行并转向新指令"
-    : "输入消息...";
+    : "输入消息…";
 
   return (
     <div className="border-t border-border bg-background/95 backdrop-blur">
@@ -299,7 +299,7 @@ export function Composer({
                   {error ? (
                     <span className="text-red-600 dark:text-red-400">{error}</span>
                   ) : (
-                    model || "Enter to send · Shift+Enter for newline"
+                    model || "回车发送 · Shift+回车换行"
                   )}
                 </span>
               </span>

@@ -42,6 +42,14 @@ pub(super) fn mcp_servers(
     session_id: Option<&str>,
     inline_auth_token: Option<&str>,
 ) -> Result<Vec<Value>, GatewayError> {
+    if agent
+        .config
+        .get("temporary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(Vec::new());
+    }
     let Some(value) = agent
         .config
         .get("mcp_servers")

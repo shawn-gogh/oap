@@ -77,3 +77,34 @@ pub async fn upsert(
     .await
     .map_err(GatewayError::Database)
 }
+
+pub async fn create_for_session(
+    pool: &PgPool,
+    session_id: &str,
+    runtime: &str,
+    input: UpsertRuntimeRef,
+) -> Result<RuntimeRefRow, GatewayError> {
+    let now = now_ms();
+    sqlx::query_as::<_, RuntimeRefRow>(
+        r#"
+        INSERT INTO "LiteLLM_ManagedAgentRuntimeRefsTable" (
+          id, agent_id, session_id, runtime, runtime_agent_id, provider_session_id,
+          provider_run_id, provider_url, metadata, created_at, updated_at
+        )
+        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+        RETURNING *
+        "#,
+    )
+    .bind(id("rtref"))
+    .bind(session_id)
+    .bind(runtime)
+    .bind(input.runtime_agent_id)
+    .bind(input.provider_session_id)
+    .bind(input.provider_run_id)
+    .bind(input.provider_url)
+    .bind(input.metadata)
+    .bind(now)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}

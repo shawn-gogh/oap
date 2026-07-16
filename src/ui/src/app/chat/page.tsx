@@ -987,7 +987,7 @@ function ChatInner() {
                 onClick={() => sid && abortSession(sid).catch(() => {})}
                 className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-amber-600 dark:text-amber-400 font-mono hover:text-red-600 dark:hover:text-red-400 transition-colors group"
                 title="中止智能体"
-                aria-label="Agent busy — click to abort"
+                aria-label="智能体运行中，点击中止"
               >
                 <Loader2 className="w-3 h-3 shrink-0 animate-spin motion-reduce:animate-none group-hover:hidden" />
                 <Square className="w-3 h-3 shrink-0 hidden group-hover:block fill-current" />
@@ -1003,21 +1003,19 @@ function ChatInner() {
           </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">agent</span>
+              <span className="text-[11px] text-muted-foreground">智能体</span>
               <Select
-                value={sessionHarness}
+                value={activeAgent?.id ?? ""}
                 onValueChange={(v) => v && onHarnessChange(v)}
                 disabled={switchingAgent || sessionStatus === "busy"}
               >
                 <SelectTrigger className="h-8 text-xs w-[190px]">
-                  <SelectValue placeholder={activeAgentName} />
+                  <SelectValue placeholder={activeAgent ? activeAgentName : "临时会话"} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="claude-code" className="text-xs font-mono">claude code</SelectItem>
-                  <SelectItem value="github-copilot" className="text-xs font-mono">github copilot</SelectItem>
                   {savedAgents.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-[11px] text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Saved agents</div>
+                      <div className="mt-1 border-t px-2 py-1.5 pt-2 text-[11px] uppercase tracking-wider text-muted-foreground">已保存的智能体</div>
                       {savedAgents.map(a => (
                         <SelectItem key={a.id} value={a.id} className="text-xs font-mono">{a.name}</SelectItem>
                       ))}
@@ -1031,7 +1029,7 @@ function ChatInner() {
               {switchingAgent && <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none text-muted-foreground" />}
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">model</span>
+              <span className="text-[11px] text-muted-foreground">模型</span>
               <ModelSelect value={model} models={modelOptions} onValueChange={setModel} />
             </div>
             {providerLink && (
@@ -1114,12 +1112,12 @@ function ChatInner() {
                   {activePrompt ? (
                     <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
                       <CheckCircle2 className="size-3" />
-                      prompt 已加载
+                      提示词已加载
                     </span>
                   ) : (
                     <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                       <AlertTriangle className="size-3" />
-                      无保存的 prompt
+                      无保存的提示词
                     </span>
                   )}
                 </span>
@@ -1142,12 +1140,12 @@ function ChatInner() {
                         {activePrompt ? (
                           <span className="inline-flex h-5 items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
                             <CheckCircle2 className="size-3" />
-                            prompt 已加载
+                            提示词已加载
                           </span>
                         ) : (
                           <span className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                             <AlertTriangle className="size-3" />
-                            无保存的 prompt
+                            无保存的提示词
                           </span>
                         )}
                       </div>
@@ -1163,12 +1161,12 @@ function ChatInner() {
                       <div className="mt-3 grid gap-1.5 text-[11px] sm:grid-cols-2">
                         <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 py-1.5">
                           <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
-                          <span className="text-muted-foreground">runtime</span>
+                          <span className="text-muted-foreground">运行时</span>
                           <span className="ml-auto truncate font-mono text-foreground">{baseRuntime}</span>
                         </div>
                         <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 py-1.5">
                           <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-                          <span className="text-muted-foreground">session</span>
+                          <span className="text-muted-foreground">会话</span>
                           <span className="ml-auto truncate font-mono text-foreground">{shortSid}</span>
                         </div>
                         {providerLink && (
@@ -1179,7 +1177,7 @@ function ChatInner() {
                             className="flex min-w-0 items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 py-1.5 hover:bg-muted"
                           >
                             <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
-                            <span className="text-muted-foreground">provider</span>
+                            <span className="text-muted-foreground">提供方</span>
                             <span className="ml-auto truncate font-mono text-foreground">
                               {providerSessionId ?? "open"}
                             </span>

@@ -42,7 +42,6 @@ pub(super) fn event_items(events: &Value) -> Option<&Vec<Value>> {
 fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, Option<String>) {
     let mut terminal_status = None;
     let mut terminal_error = None;
-    let mut last_activity_was_tool = false;
     let Some(items) = event_items(events) else {
         return (None, None);
     };
@@ -51,13 +50,17 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             Some("session.status_running") => {
                 terminal_status = Some("running");
                 terminal_error = None;
-                last_activity_was_tool = false;
             }
+            // Authoritative: opencode emits this once the turn has genuinely
+            // wound down (including turns that end via a rejected/errored
+            // tool call with no trailing assistant text — the common shape
+            // right after a permission denial). Always honor it: it is by
+            // construction the platform's own terminal signal, and "last
+            // event wins" already lets any activity AFTER it (a new turn)
+            // flip status back to running on a later pass through this loop.
             Some("session.status_idle") => {
-                if !last_activity_was_tool {
-                    terminal_status = Some("idle");
-                    terminal_error = None;
-                }
+                terminal_status = Some("idle");
+                terminal_error = None;
             }
             Some("session.error") => {
                 terminal_status = Some("error");
@@ -68,9 +71,8 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
                 Some("busy") | Some("running") => {
                     terminal_status = Some("running");
                     terminal_error = None;
-                    last_activity_was_tool = false;
                 }
-                Some("idle") if !last_activity_was_tool => {
+                Some("idle") => {
                     terminal_status = Some("idle");
                     terminal_error = None;
                 }
@@ -79,7 +81,6 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             Some("assistant_response" | "agent.message") => {
                 terminal_status = Some("idle");
                 terminal_error = None;
-                last_activity_was_tool = false;
             }
             // Conversation activity after the last status marker means a new
             // turn is underway: the replayed history ends with the PREVIOUS
@@ -90,7 +91,6 @@ fn terminal_status_from_event_values(events: &Value) -> (Option<&'static str>, O
             {
                 terminal_status = Some("running");
                 terminal_error = None;
-                last_activity_was_tool = event_type.starts_with("agent.tool");
             }
             _ => {}
         }
@@ -186,6 +186,24 @@ mod tests {
         let (status, _) = terminal_status_from_event_values(&json!([
             { "type": "user.message" },
             { "type": "agent.message" },
+            { "type": "session.status_idle" }
+        ]));
+        assert_eq!(status, Some("idle"));
+    }
+
+    #[test]
+    fn idle_after_a_rejected_tool_call_is_still_terminal() {
+        // Real shape observed after a user rejects a permission request:
+        // tool_use -> heartbeat -> tool_result(error) -> tool_result -> idle,
+        // with no trailing assistant text. The idle marker must win even
+        // though the immediately preceding events were tool activity.
+        let (status, _) = terminal_status_from_event_values(&json!([
+            { "type": "session.status_running" },
+            { "type": "user.message" },
+            { "type": "agent.tool_use", "id": "tool_1" },
+            { "type": "session.heartbeat" },
+            { "type": "agent.tool_result", "tool_use_id": "tool_1", "status": "error" },
+            { "type": "agent.tool_result", "tool_use_id": "tool_2" },
             { "type": "session.status_idle" }
         ]));
         assert_eq!(status, Some("idle"));

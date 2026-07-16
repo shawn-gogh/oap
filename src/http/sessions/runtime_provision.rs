@@ -240,19 +240,19 @@ async fn persist_runtime_refs(
     created: &CreatedRuntimeSession,
     provision: RuntimeProvision,
 ) -> Result<SessionRow, GatewayError> {
-    let runtime_ref = runtime_refs::repository::upsert(
-        pool,
-        &created.agent.id,
-        &created.runtime,
-        UpsertRuntimeRef {
-            runtime_agent_id: provision.runtime_agent_id,
-            provider_session_id: provision.provider_session_id.clone(),
-            provider_run_id: provision.provider_run_id.clone(),
-            provider_url: provision.provider_url,
-            metadata: provision.metadata,
-        },
-    )
-    .await?;
+    let input = UpsertRuntimeRef {
+        runtime_agent_id: provision.runtime_agent_id,
+        provider_session_id: provision.provider_session_id.clone(),
+        provider_run_id: provision.provider_run_id.clone(),
+        provider_url: provision.provider_url,
+        metadata: provision.metadata,
+    };
+    let runtime_ref = if created.row.agent_id.is_some() {
+        runtime_refs::repository::upsert(pool, &created.agent.id, &created.runtime, input).await?
+    } else {
+        runtime_refs::repository::create_for_session(pool, &created.row.id, &created.runtime, input)
+            .await?
+    };
     sessions::repository::set_runtime_refs(
         pool,
         &created.row.id,

@@ -1422,7 +1422,7 @@ async fn persisted_runtime_permission_flow_against_postgres() {
         &fixture.pool,
         litellm_rust::db::managed_agents::sessions::repository::CreateRuntimeSession {
             runtime: "opencode",
-            agent_id,
+            agent_id: Some(agent_id),
             title: "runtime permission test",
             timezone: None,
             runtime_agent_ref_id: None,
@@ -1530,7 +1530,7 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
         &fixture.pool,
         litellm_rust::db::managed_agents::sessions::repository::CreateRuntimeSession {
             runtime: "opencode",
-            agent_id,
+            agent_id: Some(agent_id),
             title: "egress approval test",
             timezone: None,
             runtime_agent_ref_id: None,
@@ -1670,7 +1670,7 @@ async fn approval_timeout_persists_denial_delivery_and_escalation_against_postgr
         &fixture.pool,
         litellm_rust::db::managed_agents::sessions::repository::CreateRuntimeSession {
             runtime: "opencode",
-            agent_id,
+            agent_id: Some(agent_id),
             title: "approval timeout test",
             timezone: None,
             runtime_agent_ref_id: None,

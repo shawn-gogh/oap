@@ -196,6 +196,15 @@ pub(crate) async fn agent_model_for_session(
     session_id: &str,
 ) -> Option<String> {
     let session = sessions::repository::get(pool, session_id).await.ok()??;
+    if session.agent_id.is_none() {
+        return session
+            .environment_json
+            .get("temporary_model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned);
+    }
     let agent_id = session.agent_id.as_deref().or(
         // Legacy rows store the agent reference in `harness`.
         session

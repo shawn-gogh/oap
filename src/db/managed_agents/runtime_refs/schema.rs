@@ -5,7 +5,8 @@ use sqlx::FromRow;
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct RuntimeRefRow {
     pub id: String,
-    pub agent_id: String,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
     pub runtime: String,
     pub runtime_agent_id: String,
     pub provider_session_id: Option<String>,

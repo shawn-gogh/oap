@@ -11,7 +11,7 @@ use super::schema::SessionRow;
 #[derive(Debug)]
 pub struct CreateRuntimeSession<'a> {
     pub runtime: &'a str,
-    pub agent_id: &'a str,
+    pub agent_id: Option<&'a str>,
     pub title: &'a str,
     pub timezone: Option<&'a str>,
     pub runtime_agent_ref_id: Option<&'a str>,

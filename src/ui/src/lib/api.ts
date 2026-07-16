@@ -393,6 +393,7 @@ export async function createSession(
   agent?: string,
   options?: {
     runtime?: AgentRuntimeId;
+    model?: string;
     prompt?: string;
     environment?: Record<string, unknown>;
     taskId?: string;
@@ -405,6 +406,7 @@ export async function createSession(
       title,
       ...(agent ? { agent, agent_id: agent, harness: agent } : {}),
       ...(options?.runtime ? { runtime: options.runtime } : {}),
+      ...(options?.model ? { model: options.model } : {}),
       ...(options?.prompt ? { prompt: options.prompt } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
       ...(options?.taskId ? { task_id: options.taskId } : {}),
@@ -418,6 +420,7 @@ export async function createGatewaySession(
   agent?: string,
   options?: {
     runtime?: AgentRuntimeId;
+    model?: string;
     prompt?: string;
     environment?: Record<string, unknown>;
     taskId?: string;
@@ -430,6 +433,7 @@ export async function createGatewaySession(
       title,
       ...(agent ? { agent, agent_id: agent, harness: agent } : {}),
       ...(options?.runtime ? { runtime: options.runtime } : {}),
+      ...(options?.model ? { model: options.model } : {}),
       ...(options?.prompt ? { prompt: options.prompt } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
       ...(options?.taskId ? { task_id: options.taskId } : {}),

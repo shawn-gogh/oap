@@ -126,7 +126,18 @@ async fn chat_round_trip(
             .await?
             .map(|agent| (agent.system, agent.model))
             .unwrap_or_default(),
-        None => Default::default(),
+        None => (
+            row.environment_json
+                .get("temporary_system")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            row.environment_json
+                .get("temporary_model")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        ),
     };
 
     let mut chat_messages = Vec::new();

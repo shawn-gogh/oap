@@ -13,6 +13,7 @@ pub struct CreateSessionRequest {
     pub(super) agent: Option<String>,
     pub(super) agent_id: Option<String>,
     pub(super) runtime: Option<String>,
+    pub(super) model: Option<String>,
     pub(super) prompt: Option<String>,
     pub(super) environment: Option<Value>,
     pub(super) timezone: Option<String>,
