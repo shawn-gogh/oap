@@ -92,20 +92,6 @@ pub fn match_domain_whitelist(domain: &str, whitelist: &str) -> bool {
     false
 }
 
-#[cfg(test)]
-mod whitelist_tests {
-    use super::match_domain_whitelist;
-
-    #[test]
-    fn matches_exact_wildcard_and_global() {
-        assert!(match_domain_whitelist("api.github.com", "api.github.com"));
-        assert!(match_domain_whitelist("api.github.com", "*.github.com"));
-        assert!(match_domain_whitelist("github.com", "*.github.com"));
-        assert!(!match_domain_whitelist("google.com", "*.github.com"));
-        assert!(match_domain_whitelist("google.com", "*"));
-    }
-}
-
 async fn get_value(pool: &PgPool, key: &str) -> Result<Option<String>, GatewayError> {
     sqlx::query_scalar::<_, String>(
         r#"
@@ -160,4 +146,18 @@ async fn delete_value(pool: &PgPool, key: &str) -> Result<(), GatewayError> {
     .await
     .map_err(GatewayError::Database)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod whitelist_tests {
+    use super::match_domain_whitelist;
+
+    #[test]
+    fn matches_exact_wildcard_and_global() {
+        assert!(match_domain_whitelist("api.github.com", "api.github.com"));
+        assert!(match_domain_whitelist("api.github.com", "*.github.com"));
+        assert!(match_domain_whitelist("github.com", "*.github.com"));
+        assert!(!match_domain_whitelist("google.com", "*.github.com"));
+        assert!(match_domain_whitelist("google.com", "*"));
+    }
 }

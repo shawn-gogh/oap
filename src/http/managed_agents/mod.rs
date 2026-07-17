@@ -121,9 +121,7 @@ pub(crate) async fn assert_agent_interactive(
             agent.id
         )));
     }
-    if let Some(governance) =
-        crate::db::managed_agents::governance::get(pool, &agent.id).await?
-    {
+    if let Some(governance) = crate::db::managed_agents::governance::get(pool, &agent.id).await? {
         match governance.lifecycle_status.as_str() {
             "retired" => {
                 return Err(GatewayError::BadRequest(format!(

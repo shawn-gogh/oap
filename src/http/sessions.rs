@@ -512,6 +512,7 @@ pub(crate) async fn enqueue_prompt_text(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn enqueue_prompt_text_with_runtime_model(
     state: Arc<AppState>,
     pool: sqlx::PgPool,

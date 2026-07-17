@@ -50,7 +50,15 @@ pub(super) async fn vault_ids(
     let store_name = store_name(created);
     let mut stored = load_stored_vault(pool, &store_name).await?;
     let mut changed = false;
-    if stored_credential_changed(&stored, &required) {
+    // Only stable credentials decide whether the vault must be rebuilt:
+    // session-scoped ones differ on every session and would otherwise force a
+    // fresh vault (and discard the reuse guarantee) each time.
+    let stable: Vec<VaultCredential> = required
+        .iter()
+        .filter(|credential| !credential.is_session_scoped())
+        .cloned()
+        .collect();
+    if stored_credential_changed(&stored, &stable) {
         stored = StoredVault::default();
         changed = true;
     }
@@ -65,6 +73,10 @@ pub(super) async fn vault_ids(
     };
 
     for credential in required {
+        if credential.is_session_scoped() {
+            create_credential(state, created, &vault_id, &credential).await?;
+            continue;
+        }
         let credential_key = credential.storage_key();
         let credential_fingerprint = credential.fingerprint();
         let unchanged = stored

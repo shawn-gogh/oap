@@ -9,6 +9,7 @@ use super::super::{request_json, AppFixture};
 pub async fn exercise_claude_gateway_mcp_vault(fixture: &AppFixture) {
     let anthropic = mock_anthropic_runtime().await;
     save_anthropic_credentials(fixture, &anthropic).await;
+    register_gmail_mcp_server(fixture).await;
     let agent_id = create_gmail_agent(fixture).await;
     save_agent_vault_key(fixture).await;
 
@@ -29,6 +30,22 @@ async fn save_anthropic_credentials(fixture: &AppFixture, anthropic: &MockServer
         "POST",
         "/api/providers/anthropic",
         Some(json!({ "api_key": "anthropic-test", "api_base": anthropic.uri() })),
+    )
+    .await;
+}
+
+/// Session provisioning refuses managed-runtime MCP entries whose name is not
+/// in the MCP server registry, so the agent's `mcp_gmail` must exist there.
+async fn register_gmail_mcp_server(fixture: &AppFixture) {
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        "/v1/mcp/server",
+        Some(json!({
+            "server_name": "mcp_gmail",
+            "url": "https://backend.composio.dev/v3/mcp/${COMPOSIO_MCP_SERVER_ID}/mcp?user_id=${COMPOSIO_USER_ID}",
+            "transport": "http"
+        })),
     )
     .await;
 }
@@ -94,16 +111,23 @@ async fn create_idle_runtime_session(fixture: &AppFixture, agent_id: &str, title
 }
 
 fn assert_agent_mcp_body(body: &Value) {
-    assert_eq!(
-        body["mcp_servers"],
-        json!([{
-            "authorization_token": "sk-local",
-            "name": "mcp_gmail",
-            "type": "url",
-            "url": "http://localhost/mcp_gmail/mcp"
-        }])
+    // The gateway rewrites the templated registered server to its own MCP
+    // proxy, scoped to the session and authorized by a per-invocation
+    // capability token rather than a raw gateway key.
+    let server = &body["mcp_servers"][0];
+    assert_eq!(body["mcp_servers"].as_array().unwrap().len(), 1);
+    assert_eq!(server["name"], "mcp_gmail");
+    assert_eq!(server["type"], "url");
+    let url = server["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("http://localhost/mcp_gmail/mcp?session_id="),
+        "unexpected proxied MCP url: {url}"
     );
-    assert_eq!(body["mcp_servers"][0]["authorization_token"], "sk-local");
+    let token = server["authorization_token"].as_str().unwrap();
+    assert!(
+        token.starts_with("cap_"),
+        "expected capability token, got: {token}"
+    );
     let gmail_toolset = body["tools"]
         .as_array()
         .unwrap()
@@ -121,23 +145,40 @@ fn assert_vault_credentials(requests: &[wiremock::Request]) {
         requests,
         "/v1/vaults/vault_111111111111111111111111/credentials",
     );
-    assert_eq!(credential_bodies.len(), 2);
-    assert!(credential_bodies.iter().any(|body| {
-        body["auth"]
-            == json!({
-                "type": "static_bearer",
-                "mcp_server_url": "http://localhost/mcp_gmail/mcp",
-                "token": "sk-local"
+    // Each of the two sessions seeds its own session-scoped MCP capability
+    // credential; the stable vault env var is seeded once and reused.
+    assert_eq!(credential_bodies.len(), 3);
+    let bearers: Vec<&Value> = credential_bodies
+        .iter()
+        .filter(|body| body["auth"]["type"] == json!("static_bearer"))
+        .collect();
+    assert_eq!(bearers.len(), 2);
+    for bearer in bearers {
+        let url = bearer["auth"]["mcp_server_url"].as_str().unwrap();
+        assert!(
+            url.starts_with("http://localhost/mcp_gmail/mcp?session_id="),
+            "unexpected proxied MCP url: {url}"
+        );
+        let token = bearer["auth"]["token"].as_str().unwrap();
+        assert!(
+            token.starts_with("cap_"),
+            "expected capability token, got: {token}"
+        );
+    }
+    assert_eq!(
+        credential_bodies
+            .iter()
+            .filter(|body| {
+                body["auth"]
+                    == json!({
+                        "type": "environment_variable",
+                        "secret_name": "BROWSER_USE_API_KEY",
+                        "secret_value": "browser-use-secret"
+                    })
             })
-    }));
-    assert!(credential_bodies.iter().any(|body| {
-        body["auth"]
-            == json!({
-                "type": "environment_variable",
-                "secret_name": "BROWSER_USE_API_KEY",
-                "secret_value": "browser-use-secret"
-            })
-    }));
+            .count(),
+        1
+    );
 }
 
 fn assert_sessions_reuse_vault(requests: &[wiremock::Request]) {

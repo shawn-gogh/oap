@@ -4,7 +4,7 @@
 //! what was proven:
 //! - `verified`    — the dependency was resolved/connected right now
 //! - `exists_only` — the record exists but correctness was not proven
-//!                   (e.g. a vault key has a value, but the value may be wrong)
+//!   (e.g. a vault key has a value, but the value may be wrong)
 //! - `unverified`  — the check is not implemented for this configuration
 //! - `failed`      — the dependency is missing or unusable
 //!
@@ -335,21 +335,20 @@ async fn check_execution_smoke(
             });
         }
     };
-    let rpc_url = match crate::http::managed_agents::source_management::validate_connector_endpoint(
-        &rpc_url,
-    )
-    .await
-    {
-        Ok(url) => url,
-        Err(error) => {
-            return Some(PreflightCheck {
-                id: "execution_smoke",
-                label: "执行冒烟".to_owned(),
-                verdict: FAILED,
-                detail: format!("执行端点校验失败：{error}"),
-            });
-        }
-    };
+    let rpc_url =
+        match crate::http::managed_agents::source_management::validate_connector_endpoint(&rpc_url)
+            .await
+        {
+            Ok(url) => url,
+            Err(error) => {
+                return Some(PreflightCheck {
+                    id: "execution_smoke",
+                    label: "执行冒烟".to_owned(),
+                    verdict: FAILED,
+                    detail: format!("执行端点校验失败：{error}"),
+                });
+            }
+        };
     let started = std::time::Instant::now();
     let response = tokio::time::timeout(
         PROBE_TIMEOUT,

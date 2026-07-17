@@ -25,6 +25,17 @@ pub(super) enum VaultCredential {
 }
 
 impl VaultCredential {
+    /// Session-scoped credentials (proxy URL pinned to one session with a
+    /// fresh capability token) are new for every session by construction:
+    /// they are always created and never recorded in the vault store, so
+    /// they must not participate in "stored credential changed" detection.
+    pub(super) fn is_session_scoped(&self) -> bool {
+        match self {
+            Self::McpStaticBearer(credential) => credential.url.contains("session_id="),
+            Self::EnvironmentVariable(_) => false,
+        }
+    }
+
     pub(super) fn storage_key(&self) -> String {
         match self {
             Self::McpStaticBearer(credential) => format!("mcp:{}", credential.url),
