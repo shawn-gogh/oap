@@ -588,15 +588,12 @@ async fn check_federated_source(
             detail: format!("来源端点校验失败：{error}"),
         });
     }
-    let credential_name = source
-        .get("credential_name")
-        .and_then(serde_json::Value::as_str);
-    let owner_id = agent.owner_id.as_deref().unwrap_or_default();
-    let api_key = crate::http::managed_agents::source_management::credential_api_key(
-        state,
-        pool,
-        credential_name,
-        owner_id,
+    // Resolve the discovery credential the same way sync does (connector
+    // credential first, then the source's own reference) — otherwise a
+    // BYO-mode agent behind an authenticated source probes unauthenticated
+    // here, fails, and can never activate while sync reports it reachable.
+    let api_key = crate::http::managed_agents::source_management::discovery_api_key_for_agent(
+        state, pool, agent,
     )
     .await
     .unwrap_or_default();

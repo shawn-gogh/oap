@@ -898,6 +898,34 @@ async fn connector_api_key(
     .await
 }
 
+/// Discovery credential for an agent's federated source, resolved exactly the
+/// way `reconcile_source` resolves it: the linked connector's credential when
+/// one exists, otherwise the source's own credential reference (`""` for BYO
+/// imports without a connector). Used by the preflight reachability probe so
+/// preflight and sync can never disagree about whether the source is
+/// reachable just because they authenticated differently.
+pub(crate) async fn discovery_api_key_for_agent(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    agent: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
+) -> Result<String, GatewayError> {
+    if let Some(source) = sources::get_source_by_agent(pool, &agent.id).await? {
+        if let Some(connector_id) = source.connector_id.as_deref() {
+            if let Some(connector) = sources::get_connector(pool, connector_id).await? {
+                if connector.credential_name.is_some() {
+                    return connector_api_key(state, pool, &connector).await;
+                }
+            }
+        }
+    }
+    let credential_name = agent
+        .config
+        .pointer("/source/credential_name")
+        .and_then(Value::as_str);
+    let owner_id = agent.owner_id.clone().unwrap_or_default();
+    credential_api_key(state, pool, credential_name, &owner_id).await
+}
+
 /// Decrypts a named personal credential's `api_key`, or `""` if the source
 /// has no credential reference (e.g. BYO-mode imports never persist one).
 /// Shared by connector "test connection" and the federated-source reachability
