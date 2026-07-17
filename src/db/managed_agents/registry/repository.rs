@@ -294,6 +294,9 @@ pub async fn set_status(
 
 /// Restores versioned configuration exactly. Unlike PATCH, nullable values
 /// from an old snapshot must overwrite newer values instead of using COALESCE.
+/// Restores a revision snapshot's configuration. Deliberately leaves `status`
+/// untouched: a rollback must not re-activate a paused/suspended agent by
+/// itself — activation goes through `activate` (preflight + governance gates).
 pub async fn restore_snapshot(
     pool: &PgPool,
     agent_id: &str,
@@ -306,7 +309,7 @@ pub async fn restore_snapshot(
             cadence = $6, interval_seconds = $7, prompt = $8, cron = $9,
             timezone = $10, vault_keys = $11, setup_commands = $12,
             max_runtime_minutes = $13, on_failure = $14, config = $15,
-            status = 'active', description = $16, harness = $17,
+            description = $16, harness = $17,
             skill_ids = $18, rule_ids = $19
         WHERE id = $1
         RETURNING *

@@ -108,6 +108,8 @@ pub(crate) fn assert_agent_runnable(agent: &ManagedAgentRow) -> Result<(), Gatew
 /// and on every prompt send. Stricter than `assert_agent_runnable`'s draft
 /// rule (drafts stay chattable for testing) but blocks:
 /// - retired / soft-deleted agents (`archived_pending_delete`);
+/// - paused agents — pause/emergency stop must hold for new interaction too,
+///   not only for the sessions interrupted at the moment of stopping;
 /// - imported agents whose governance is suspended or retired (emergency
 ///   stop / repeated failed health checks) — "暂停新工作" must include chat,
 ///   otherwise the emergency stop is a no-op for sessions.
@@ -137,6 +139,12 @@ pub(crate) async fn assert_agent_interactive(
             }
             _ => {}
         }
+    }
+    if agent.status == "paused" {
+        return Err(GatewayError::BadRequest(format!(
+            "智能体 {} 已暂停，恢复运行后才能继续会话（POST /api/agents/{}/resume）。",
+            agent.id, agent.id
+        )));
     }
     Ok(())
 }
