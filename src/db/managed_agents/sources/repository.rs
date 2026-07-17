@@ -16,6 +16,28 @@ use super::schema::{
     SourceConnectorRow, UpdateSourceConnector,
 };
 
+pub async fn find_connector(
+    pool: &PgPool,
+    owner_id: &str,
+    provider: &str,
+    endpoint: &str,
+) -> Result<Option<SourceConnectorRow>, GatewayError> {
+    sqlx::query_as::<_, SourceConnectorRow>(
+        r#"
+        SELECT * FROM "LiteLLM_AgentSourceConnectorsTable"
+        WHERE owner_id = $1 AND provider = $2 AND endpoint = $3
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(owner_id)
+    .bind(provider)
+    .bind(endpoint)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn create_connector(
     pool: &PgPool,
     owner_id: &str,

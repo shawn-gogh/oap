@@ -85,6 +85,15 @@ pub async fn import(
     let credential_mode = input.credential_mode;
     validate_credential_mode(&credential_mode, &auth)?;
     let runtime = runtime_for_import(&state, provider, &provider_id, &endpoint).await;
+    // Materialize a connector for this platform as a by-product of the import
+    // (reused if one already exists), so directly imported agents get the
+    // connector-backed capabilities — webhook push, credential reuse — without
+    // the user ever configuring a "connector". ensure_source links sources to
+    // it automatically by owner/provider/endpoint.
+    super::source_management::ensure_connector_for_import(
+        &state, pool, &owner_id, provider, &endpoint, api_key,
+    )
+    .await?;
 
     let mut rows = Vec::with_capacity(input.agents.len());
     let mut results = Vec::with_capacity(input.agents.len());
