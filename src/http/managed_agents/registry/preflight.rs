@@ -29,6 +29,10 @@ use crate::{
     errors::GatewayError,
     http::{agent_runtime_tools::runtime_tools, runtime_resolution::resolve_runtime_for_agent},
     proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
+    sdk::agents::{
+        canonical::{normalize_agent, NormalizationSeverity},
+        conformance::inspect_runtime_contract,
+    },
 };
 
 /// Upper bound for each outbound connectivity probe so one hung server
@@ -61,6 +65,19 @@ pub async fn run_preflight(
     pool: &PgPool,
     agent: &ManagedAgentRow,
 ) -> Result<PreflightReport, GatewayError> {
+    run_preflight_with_smoke(state, pool, agent, None).await
+}
+
+/// Like `run_preflight`, but when `smoke_user` is set, additionally exercises
+/// the real execution path (an A2A `message/send` round trip) for federated
+/// agents. Only the explicit governance "运行检查" passes a user: scheduled
+/// health checks must never send messages to remote agents on their own.
+pub async fn run_preflight_with_smoke(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+    smoke_user: Option<&str>,
+) -> Result<PreflightReport, GatewayError> {
     let mut checks = Vec::new();
 
     checks.push(check_runtime(state, pool, agent).await);
@@ -68,6 +85,13 @@ pub async fn run_preflight(
     checks.push(check_tools(agent));
     checks.extend(check_vault_keys(pool, agent).await?);
     checks.extend(check_mcp_servers(state, pool, agent).await?);
+    checks.extend(check_source_contract(pool, agent).await?);
+    checks.extend(check_source_credential(pool, agent).await?);
+    if let Some(user_id) = smoke_user {
+        if let Some(check) = check_execution_smoke(state, pool, agent, user_id).await {
+            checks.push(check);
+        }
+    }
 
     let can_activate = checks.iter().all(|check| check.verdict != FAILED);
     Ok(PreflightReport {
@@ -75,6 +99,368 @@ pub async fn run_preflight(
         status: agent.status.clone(),
         can_activate,
         checks,
+    })
+}
+
+async fn check_source_contract(
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+) -> Result<Vec<PreflightCheck>, GatewayError> {
+    if !crate::db::managed_agents::governance::requires_governance(agent) {
+        return Ok(Vec::new());
+    }
+    let mut checks = Vec::new();
+    let normalization = normalize_agent(agent);
+    let blocking = normalization
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == NormalizationSeverity::Blocking)
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>();
+    checks.push(if blocking.is_empty() {
+        PreflightCheck {
+            id: "canonical_spec",
+            label: "统一规范".to_owned(),
+            verdict: if normalization.requires_approval {
+                EXISTS_ONLY
+            } else {
+                VERIFIED
+            },
+            detail: if normalization.requires_approval {
+                "规范化完成，但包含发布时必须人工确认的高风险来源字段。".to_owned()
+            } else {
+                "来源已成功归一化为平台统一规范。".to_owned()
+            },
+        }
+    } else {
+        PreflightCheck {
+            id: "canonical_spec",
+            label: "统一规范".to_owned(),
+            verdict: FAILED,
+            detail: blocking.join("；"),
+        }
+    });
+    let conformance = inspect_runtime_contract(agent);
+    checks.push(PreflightCheck {
+        id: "runtime_contract",
+        label: "运行时契约".to_owned(),
+        verdict: if conformance.status == "conformant" {
+            VERIFIED
+        } else {
+            FAILED
+        },
+        detail: format!(
+            "契约 {} 检查结果：{}。",
+            conformance.contract_version, conformance.status
+        ),
+    });
+    checks.push(
+        match crate::db::managed_agents::sources::repository::get_source_by_agent(pool, &agent.id)
+            .await?
+        {
+            Some(source)
+                if source.sync_state == "in_sync" && source.candidate_snapshot_id.is_none() =>
+            {
+                PreflightCheck {
+                    id: "source_sync",
+                    label: "来源同步".to_owned(),
+                    verdict: VERIFIED,
+                    detail: "来源处于同步状态且没有待处理漂移。".to_owned(),
+                }
+            }
+            Some(source) => PreflightCheck {
+                id: "source_sync",
+                label: "来源同步".to_owned(),
+                verdict: FAILED,
+                detail: format!(
+                    "来源状态为 {}，必须先处理同步错误、缺失或候选漂移。",
+                    source.sync_state
+                ),
+            },
+            None => PreflightCheck {
+                id: "source_sync",
+                label: "来源同步".to_owned(),
+                verdict: FAILED,
+                detail: "缺少统一来源记录。".to_owned(),
+            },
+        },
+    );
+    Ok(checks)
+}
+
+/// Verifies the imported agent's execution credential is resolvable *as
+/// sessions will resolve it* (per credential_mode), instead of assuming the
+/// discovery probe's credential story carries over to execution.
+async fn check_source_credential(
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+) -> Result<Vec<PreflightCheck>, GatewayError> {
+    let Some(source) = agent.config.get("source") else {
+        return Ok(Vec::new());
+    };
+    if source.get("kind").and_then(serde_json::Value::as_str) != Some("external_agent") {
+        return Ok(Vec::new());
+    }
+    let credential_mode = source
+        .get("credential_mode")
+        .and_then(serde_json::Value::as_str);
+    let check = match credential_mode {
+        Some("shared") => {
+            let credential_name = source
+                .get("credential_name")
+                .and_then(serde_json::Value::as_str);
+            let owner_id = agent.owner_id.as_deref().unwrap_or_default();
+            let resolved = match credential_name {
+                Some(name) if !owner_id.is_empty() => {
+                    crate::db::credentials::get_personal_by_name(pool, name, owner_id)
+                        .await?
+                        .is_some()
+                }
+                _ => false,
+            };
+            PreflightCheck {
+                id: "source_credential",
+                label: "执行凭据".to_owned(),
+                verdict: if resolved { VERIFIED } else { FAILED },
+                detail: if resolved {
+                    "共享凭据存在且属主匹配，会话可以解析。".to_owned()
+                } else {
+                    "共享凭据缺失或属主不匹配，会话执行将失败。".to_owned()
+                },
+            }
+        }
+        Some("byo") => {
+            let configured_users = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT COUNT(*) FROM "LiteLLM_CredentialsTable"
+                WHERE credential_name = $1 AND scope = 'personal'
+                "#,
+            )
+            .bind(crate::http::runtime_resolution::byo_credential_name(
+                &agent.id,
+            ))
+            .fetch_one(pool)
+            .await
+            .map_err(GatewayError::Database)?;
+            PreflightCheck {
+                id: "source_credential",
+                label: "执行凭据".to_owned(),
+                verdict: EXISTS_ONLY,
+                detail: format!(
+                    "BYO 模式：每个使用者需自行配置密钥，当前已有 {configured_users} 个用户配置。未配置的用户会话将失败。"
+                ),
+            }
+        }
+        other => PreflightCheck {
+            id: "source_credential",
+            label: "执行凭据".to_owned(),
+            verdict: FAILED,
+            detail: format!("凭据模式无效：{}。", other.unwrap_or("<missing>")),
+        },
+    };
+    Ok(vec![check])
+}
+
+/// Real execution smoke: one A2A `message/send` round trip using the same
+/// URL/credential resolution as `sessions::external_bridge`. Discovery-only
+/// probes green-light agents whose sessions then fail 100% of the time (e.g.
+/// unresolvable execution credential) — this closes that gap for the
+/// explicit governance test. Returns None for specs without a safe smoke.
+async fn check_execution_smoke(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+    user_id: &str,
+) -> Option<PreflightCheck> {
+    let source = agent.config.get("source")?;
+    if source.get("kind").and_then(serde_json::Value::as_str) != Some("external_agent") {
+        return None;
+    }
+    if source.get("api_spec").and_then(serde_json::Value::as_str) != Some("a2a_v1") {
+        return None;
+    }
+    let endpoint = source
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let rpc_url = source
+        .pointer("/raw/url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| endpoint.to_owned());
+    let credential_mode = source
+        .get("credential_mode")
+        .and_then(serde_json::Value::as_str);
+    let (credential_name, credential_owner) = match credential_mode {
+        Some("shared") => (
+            source
+                .get("credential_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            agent.owner_id.clone().unwrap_or_default(),
+        ),
+        Some("byo") => (
+            Some(crate::http::runtime_resolution::byo_credential_name(
+                &agent.id,
+            )),
+            user_id.to_owned(),
+        ),
+        _ => return None, // credential check already reports the failure
+    };
+    let api_key = match crate::http::managed_agents::source_management::credential_api_key(
+        state,
+        pool,
+        credential_name.as_deref(),
+        &credential_owner,
+    )
+    .await
+    {
+        Ok(key) => key,
+        Err(_) if credential_mode == Some("byo") => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: EXISTS_ONLY,
+                detail: "当前用户未配置该智能体的 BYO 密钥，跳过执行冒烟。".to_owned(),
+            });
+        }
+        Err(error) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("执行凭据解析失败：{error}"),
+            });
+        }
+    };
+    let rpc_url = match crate::http::managed_agents::source_management::validate_connector_endpoint(
+        &rpc_url,
+    )
+    .await
+    {
+        Ok(url) => url,
+        Err(error) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("执行端点校验失败：{error}"),
+            });
+        }
+    };
+    let started = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        state
+            .http
+            .post(&rpc_url)
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": crate::db::managed_agents::id("rpc"),
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "kind": "message",
+                        "role": "user",
+                        "messageId": crate::db::managed_agents::id("msg"),
+                        "parts": [{"kind": "text", "text": "ping：这是平台运行检查的执行冒烟，请直接简短回复。"}]
+                    }
+                }
+            }))
+            .send(),
+    )
+    .await;
+    let latency = started.elapsed().as_millis();
+    let payload = match response {
+        Ok(Ok(response)) if response.status().is_success() => {
+            match response.json::<serde_json::Value>().await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    return Some(PreflightCheck {
+                        id: "execution_smoke",
+                        label: "执行冒烟".to_owned(),
+                        verdict: FAILED,
+                        detail: format!("message/send 返回了无效 JSON：{error}"),
+                    });
+                }
+            }
+        }
+        Ok(Ok(response)) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("message/send 返回 HTTP {}。", response.status().as_u16()),
+            });
+        }
+        Ok(Err(error)) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("message/send 请求失败：{error}"),
+            });
+        }
+        Err(_) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: "message/send 冒烟超时。".to_owned(),
+            });
+        }
+    };
+    if payload.get("error").is_some() {
+        return Some(PreflightCheck {
+            id: "execution_smoke",
+            label: "执行冒烟".to_owned(),
+            verdict: FAILED,
+            detail: format!(
+                "message/send 返回 JSON-RPC 错误：{}",
+                payload
+                    .pointer("/error/message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+            ),
+        });
+    }
+    // Either an immediate text reply or an accepted async task proves the
+    // execution path (URL + auth + protocol). If a task was created, cancel
+    // it best-effort so the smoke doesn't leave remote work running.
+    let result = payload.get("result").cloned().unwrap_or_default();
+    let task_id = result
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(task_id) = task_id.as_deref() {
+        let _ = state
+            .http
+            .post(&rpc_url)
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": crate::db::managed_agents::id("rpc"),
+                "method": "tasks/cancel",
+                "params": {"id": task_id}
+            }))
+            .send()
+            .await;
+    }
+    Some(PreflightCheck {
+        id: "execution_smoke",
+        label: "执行冒烟".to_owned(),
+        verdict: VERIFIED,
+        detail: format!(
+            "message/send 执行链路验证通过（{}，{latency}ms）。",
+            if task_id.is_some() {
+                "远端以异步任务受理，已即时取消"
+            } else {
+                "远端同步回复"
+            }
+        ),
     })
 }
 
@@ -93,6 +479,9 @@ async fn check_runtime(
     pool: &PgPool,
     agent: &ManagedAgentRow,
 ) -> PreflightCheck {
+    if let Some(check) = check_federated_source(state, pool, agent).await {
+        return check;
+    }
     let Some(alias) = agent_runtime_alias(agent) else {
         return PreflightCheck {
             id: "runtime",
@@ -151,6 +540,102 @@ async fn check_runtime(
             detail: format!("Runtime「{alias}」无法连接（{base}）：{error}"),
         },
     }
+}
+
+/// Federated sources (A2A/ACP/Dify/OpenAPI today — any provider whose
+/// `expose_runtime_harness()` is false) execute through
+/// `sessions::external_bridge`'s direct `source.raw.url` bridge, never
+/// through a registered runtime harness. `resolve_runtime_for_agent` doesn't
+/// know their api_spec (e.g. `a2a_v1`) and always fails to resolve it, so the
+/// harness-oriented check below would never apply to them. Probe reachability
+/// instead, the same way a source connector's "test connection" does:
+/// `provider.discover()` against the source endpoint. This proves the
+/// endpoint is up and speaks the expected discovery protocol — it does not
+/// prove `message/send` (the actual execution call) works.
+async fn check_federated_source(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+) -> Option<PreflightCheck> {
+    if crate::db::managed_agents::governance::external_source_kind(agent) != Some("external_agent")
+    {
+        return None;
+    }
+    let source = agent.config.get("source")?;
+    let provider_id = source.get("provider").and_then(serde_json::Value::as_str)?;
+    let provider = crate::http::managed_agents::import::provider_for_id(provider_id).ok()?;
+    if provider.expose_runtime_harness() {
+        return None;
+    }
+    let endpoint = source
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if endpoint.is_empty() {
+        return Some(PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: FAILED,
+            detail: "来源缺少可执行的端点。".to_owned(),
+        });
+    }
+    if let Err(error) =
+        crate::http::managed_agents::source_management::validate_connector_endpoint(endpoint).await
+    {
+        return Some(PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: FAILED,
+            detail: format!("来源端点校验失败：{error}"),
+        });
+    }
+    let credential_name = source
+        .get("credential_name")
+        .and_then(serde_json::Value::as_str);
+    let owner_id = agent.owner_id.as_deref().unwrap_or_default();
+    let api_key = crate::http::managed_agents::source_management::credential_api_key(
+        state,
+        pool,
+        credential_name,
+        owner_id,
+    )
+    .await
+    .unwrap_or_default();
+    let started = std::time::Instant::now();
+    let probe = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        provider.discover(&state.http, endpoint, &api_key),
+    )
+    .await;
+    Some(match probe {
+        Ok(Ok(agents)) => PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: VERIFIED,
+            detail: format!(
+                "联邦来源「{}」已连通（{endpoint}），发现 {} 个智能体，耗时 {}ms。",
+                provider.name(),
+                agents.len(),
+                started.elapsed().as_millis()
+            ),
+        },
+        Ok(Err(error)) => PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: FAILED,
+            detail: format!(
+                "联邦来源「{}」不可达（{endpoint}）：{}",
+                provider.name(),
+                crate::http::managed_agents::import_types::provider_error(error)
+            ),
+        },
+        Err(_) => PreflightCheck {
+            id: "runtime",
+            label: "Runtime".to_owned(),
+            verdict: FAILED,
+            detail: format!("联邦来源「{}」连接超时（{endpoint}）。", provider.name()),
+        },
+    })
 }
 
 fn check_model(state: &Arc<AppState>, agent: &ManagedAgentRow) -> PreflightCheck {
@@ -418,7 +903,13 @@ pub async fn activate(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_edit(&auth, &agent, pool).await?;
-    if let Some(governance) = crate::db::managed_agents::governance::get(pool, &agent_id).await? {
+    let governance = crate::db::managed_agents::governance::get(pool, &agent_id).await?;
+    if crate::db::managed_agents::governance::requires_governance(&agent) && governance.is_none() {
+        return Err(GatewayError::BadRequest(
+            "外部智能体缺少纳管记录，必须重新导入或完成治理迁移后才能激活。".to_owned(),
+        ));
+    }
+    if let Some(governance) = governance {
         if !matches!(
             governance.lifecycle_status.as_str(),
             "published" | "rolled_back"

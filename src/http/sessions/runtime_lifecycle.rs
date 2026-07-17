@@ -3,7 +3,7 @@ use sqlx::PgPool;
 
 use crate::{
     agents::runs::AgentRunStatus,
-    db::managed_agents::{id, runtime_events, sessions},
+    db::managed_agents::{id, runtime_events, session_control, sessions},
     errors::GatewayError,
     proxy::state::AppState,
     sdk::agents::AgentEvent,
@@ -43,6 +43,27 @@ pub(super) async fn mark_session_status(
     error: Option<String>,
 ) -> Result<(), GatewayError> {
     sessions::repository::set_status(pool, session_id, status).await?;
+    if let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? {
+        match status {
+            "idle" => {
+                session_control::repository::transition(pool, &snapshot.turn.id, "completed", None)
+                    .await?;
+            }
+            "error" => {
+                session_control::repository::transition(
+                    pool,
+                    &snapshot.turn.id,
+                    "failed",
+                    Some(serde_json::json!({
+                        "code": "runtime_error",
+                        "message": error.as_deref().unwrap_or("managed agent interaction failed")
+                    })),
+                )
+                .await?;
+            }
+            _ => {}
+        }
+    }
     match status {
         "starting" | "running" | "busy" => {
             crate::db::managed_agents::tasks::repository::mark_running_for_session(

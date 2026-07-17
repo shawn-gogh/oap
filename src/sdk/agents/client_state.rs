@@ -13,6 +13,7 @@ pub(super) struct ClientState {
     cursor_run_ids: Mutex<HashMap<String, String>>,
     pending_turns: Mutex<HashMap<String, String>>,
     agent_meta: Mutex<HashMap<String, Value>>,
+    trace_headers: Mutex<HashMap<String, (String, Option<String>)>>,
 }
 
 impl ClientState {
@@ -122,5 +123,30 @@ impl ClientState {
             .map_err(|_| AgentSdkError::StateLock)?
             .insert(session_id.to_owned(), context);
         Ok(())
+    }
+
+    pub(super) fn remember_trace_headers(
+        &self,
+        session_id: &str,
+        traceparent: String,
+        tracestate: Option<String>,
+    ) -> Result<(), AgentSdkError> {
+        self.trace_headers
+            .lock()
+            .map_err(|_| AgentSdkError::StateLock)?
+            .insert(session_id.to_owned(), (traceparent, tracestate));
+        Ok(())
+    }
+
+    pub(super) fn trace_headers(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, Option<String>)>, AgentSdkError> {
+        Ok(self
+            .trace_headers
+            .lock()
+            .map_err(|_| AgentSdkError::StateLock)?
+            .get(session_id)
+            .cloned())
     }
 }

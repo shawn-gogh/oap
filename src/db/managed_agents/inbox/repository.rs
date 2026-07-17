@@ -31,6 +31,19 @@ fn approval_policy(kind: &str) -> ApprovalPolicy {
             ttl_ms: 15 * 60 * 1000,
             escalation_role: None,
         },
+        // A2A task paused in `input-required`/`auth-required`: the runtime
+        // contract's approval-terminal-result guarantee for federated bridges
+        // (see sessions::external_bridge::resolve_continuation) — accept
+        // resumes the task with the user's reply, reject cancels it via
+        // tasks/cancel. Short TTL: an interactive continuation stale for
+        // longer than this is unlikely to still make sense to resume.
+        "a2a_continuation" => ApprovalPolicy {
+            enforcement_owner: "runtime",
+            effect_handler: "a2a_continuation",
+            required_role: "owner",
+            ttl_ms: 15 * 60 * 1000,
+            escalation_role: None,
+        },
         "agent_publish" => ApprovalPolicy {
             enforcement_owner: "platform",
             effect_handler: "agent_publish",
@@ -111,7 +124,7 @@ pub async fn pending_approvals(
         r#"
         SELECT i.*
         FROM "LiteLLM_ManagedAgentInboxItemsTable" i
-        WHERE i.kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action') AND i.status = 'pending'
+        WHERE i.kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action', 'a2a_continuation') AND i.status = 'pending'
           AND ($1::TEXT IS NULL OR i.session_id = $1)
           AND (i.session_id IS NULL OR EXISTS (
                 SELECT 1 FROM "LiteLLM_ManagedAgentSessionsTable" s
@@ -147,7 +160,7 @@ pub async fn expire_pending_for_session(
         r#"
         UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
         SET status = 'expired', resolved_at = $2, delivery_status = 'applied', applied_at = $2
-        WHERE kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action') AND status = 'pending' AND session_id = $1
+        WHERE kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action', 'a2a_continuation') AND status = 'pending' AND session_id = $1
         "#,
     )
     .bind(session_id)
@@ -211,7 +224,7 @@ pub async fn create_approval(
     let policy = approval_policy(kind);
     let created_at = now_ms();
     let args_json = arguments.map(|value| value.to_string());
-    sqlx::query_as::<_, InboxItemRow>(
+    let item = sqlx::query_as::<_, InboxItemRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentInboxItemsTable"
           (id, kind, title, session_id, agent, body, args_json, status, created_at,
@@ -224,7 +237,7 @@ pub async fn create_approval(
     .bind(id("appr"))
     .bind(kind)
     .bind(title)
-    .bind(session_id)
+    .bind(session_id.as_deref())
     .bind(agent)
     .bind(body)
     .bind(args_json)
@@ -241,7 +254,53 @@ pub async fn create_approval(
     )
     .fetch_one(pool)
     .await
-    .map_err(GatewayError::Database)
+    .map_err(GatewayError::Database)?;
+
+    let Some(session_id) = session_id.as_deref() else {
+        return Ok(item);
+    };
+    let bound = sqlx::query_as::<_, InboxItemRow>(
+        r#"
+        WITH active AS (
+          SELECT turn.id AS turn_id, turn.request_id,
+                 invocation.id AS invocation_id
+          FROM "LiteLLM_SessionTurnsTable" turn
+          LEFT JOIN LATERAL (
+            SELECT id FROM "LiteLLM_SessionInvocationsTable"
+            WHERE turn_id = turn.id AND role = 'primary'
+            ORDER BY created_at LIMIT 1
+          ) invocation ON TRUE
+          WHERE turn.session_id = $2
+            AND turn.status IN ('queued', 'running', 'waiting_input', 'waiting_approval', 'cancelling')
+          ORDER BY turn.created_at DESC LIMIT 1
+        )
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable" item
+        SET turn_id = active.turn_id,
+            invocation_id = active.invocation_id,
+            request_id = active.request_id
+        FROM active
+        WHERE item.id = $1
+        RETURNING item.*
+        "#,
+    )
+    .bind(&item.id)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    let Some(bound) = bound else {
+        return Ok(item);
+    };
+    if let Some(turn_id) = bound.turn_id.as_deref() {
+        crate::db::managed_agents::session_control::repository::transition(
+            pool,
+            turn_id,
+            "waiting_approval",
+            None,
+        )
+        .await?;
+    }
+    Ok(bound)
 }
 
 pub async fn resolve_issue(
@@ -299,7 +358,7 @@ pub async fn decide_approval(
             decision_scope = $7,
             delivery_status = 'delivering',
             last_delivery_error = NULL
-        WHERE id = $1 AND kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action') AND status = 'pending'
+        WHERE id = $1 AND kind IN ('approval', 'business_decision', 'tool_permission', 'runtime_permission', 'unlisted_data_egress', 'data_egress', 'agent_publish', 'agent_change', 'platform_action', 'a2a_continuation') AND status = 'pending'
         "#,
     )
     .bind(item_id)

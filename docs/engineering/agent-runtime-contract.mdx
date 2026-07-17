@@ -1,0 +1,122 @@
+---
+title: "Agent runtime contract"
+description: "Minimum contract and bridge procedure for connecting third-party agent runtimes."
+---
+
+# Agent runtime contract
+
+## Purpose
+
+The control plane can inventory an unknown agent without trusting or executing
+it. Production execution requires a runtime to implement this contract directly
+or to be fronted by a platform-owned bridge. A successful HTTP response alone
+is not sufficient: the platform must be able to correlate, observe, approve,
+interrupt, and terminate every operation.
+
+The current contract identifier is `lap-runtime-v1`.
+
+## Required identity and discovery
+
+Each agent exposes or is mapped to:
+
+- a stable provider and external agent identifier;
+- a human-readable name and optional description;
+- a version or deterministic configuration digest;
+- its runtime contract, model requirements, tools, MCP servers, credentials,
+  network and filesystem requirements, declared side effects, and limits;
+- a health probe and an immutable source snapshot.
+
+Unknown fields are preserved as source evidence. Credentials are never copied
+into snapshots. High-risk fields that cannot be mapped become
+`approval_required`; missing identity or execution requirements become
+`blocking`.
+
+## Execution envelope
+
+Every invocation must carry:
+
+| Field | Requirement |
+|---|---|
+| `request_id` | Globally unique and stable across retries |
+| `session_id` | Stable conversation or job boundary |
+| `agent_id` | Platform-managed identity |
+| `agent_revision` | Exact published revision |
+| `input` | Typed user or workflow input |
+| `capability_token` | Short-lived, single-session authorization |
+| `deadline` | Absolute execution deadline |
+| `metadata` | Non-secret audit and trace context |
+
+The capability token is scoped to the exact agent and session and declares the
+allowed tools, MCP servers, network, and filesystem capabilities. A runtime must
+reject expired, revoked, mismatched, or over-scoped tokens.
+
+## Event and terminal-state contract
+
+Events are ordered within a request and include `request_id`, `sequence`,
+`timestamp`, and a typed payload. A bridge must map provider-native events into:
+
+```text
+accepted -> running -> waiting_approval -> running -> completed
+                  |                   |       |
+                  |                   |       +-> failed
+                  |                   +-> rejected
+                  +-> cancelled | timed_out
+```
+
+Exactly one terminal event is required: `completed`, `failed`, `rejected`,
+`cancelled`, or `timed_out`. Approval rejection is terminal for the blocked
+operation and may not leave the session in a perpetual responding state.
+Duplicate events are tolerated by request and sequence identity. A reconnecting
+consumer must be able to resume from its last acknowledged sequence or obtain a
+terminal snapshot.
+
+## Control operations
+
+A conforming runtime or bridge implements:
+
+- health and readiness checks;
+- idempotent invocation by `request_id`;
+- approval-result submission with approve and reject outcomes;
+- cooperative interrupt;
+- enforceable abort when cooperative interrupt does not converge;
+- deadline and timeout enforcement;
+- status lookup and terminal-state recovery after restart;
+- secret-free structured audit events.
+
+Emergency stop first blocks new platform work and revokes capability tokens. It
+then cancels active sessions and invokes remote suspend or abort only when the
+connector advertises that capability.
+
+## Bridge procedure for a non-conforming provider
+
+1. Register a source connector and preserve the provider's raw discovery result.
+2. Implement an adapter that normalizes identity and capabilities into the
+   canonical specification.
+3. Implement a bridge that translates the execution envelope and provider
+   events, including approval rejection and cancellation.
+4. Keep provider credentials in the owner-scoped credential store; expose only
+   references to the canonical specification.
+5. Run conformance checks with synthetic inputs and no production credentials.
+6. Import as inventory or sandbox until blocking findings are resolved.
+7. Publish a tested immutable revision through the normal approval workflow.
+
+If the provider cannot supply stable identity, terminal state, enforceable stop,
+or a safe credential boundary, it remains L0 inventory or L1 discoverable and
+cannot be activated for production.
+
+## Conformance checklist
+
+The control plane records each check against an exact agent revision:
+
+- stable identity and deterministic request correlation;
+- one recoverable terminal event;
+- approval rejection convergence;
+- interrupt and enforceable abort;
+- timeout enforcement;
+- restart and event-stream recovery;
+- capability-token scope and revocation;
+- health and audit behavior without plaintext secrets.
+
+`conformant` allows the revision to proceed to testing and approval. `partial`
+or `non_conformant` blocks production activation but does not delete inventory
+or source evidence.

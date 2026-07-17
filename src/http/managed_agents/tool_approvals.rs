@@ -98,7 +98,11 @@ pub async fn asked(
                 format!("自动授权数据外发：{}", domain),
                 Some("会话处于完全访问模式".to_owned()),
             ),
-            None => ("runtime_permission", title, Some("会话处于完全访问模式".to_owned())),
+            None => (
+                "runtime_permission",
+                title,
+                Some("会话处于完全访问模式".to_owned()),
+            ),
         };
         let item = auto_approve_and_reply(
             &state,
@@ -141,7 +145,9 @@ pub async fn asked(
         let verdict = guardian::review(&state, pool, &context).await;
 
         if verdict.allow {
-            state.guardian_circuit_breaker.record_non_denial(&session.id);
+            state
+                .guardian_circuit_breaker
+                .record_non_denial(&session.id);
             let mut args = args;
             merge_guardian_verdict(&mut args, &verdict);
             let item = auto_approve_and_reply(
@@ -333,7 +339,9 @@ pub async fn asked(
 /// Guardian prompt — the last `user.message` event in this session's
 /// history, mirroring the evidence Codex's own guardian prompt includes.
 async fn recent_user_message(pool: &PgPool, session_id: &str) -> Option<String> {
-    let events = runtime_events::repository::list(pool, session_id).await.ok()?;
+    let events = runtime_events::repository::list(pool, session_id)
+        .await
+        .ok()?;
     events.iter().rev().find_map(|event| {
         if event.get("type").and_then(Value::as_str) != Some("user.message") {
             return None;
@@ -536,9 +544,18 @@ mod tests {
     #[test]
     fn approval_mode_defaults_to_ask() {
         assert_eq!(approval_mode(&serde_json::json!({})), "ask");
-        assert_eq!(approval_mode(&serde_json::json!({"approval_mode": "auto"})), "auto");
-        assert_eq!(approval_mode(&serde_json::json!({"approval_mode": "full"})), "full");
-        assert_eq!(approval_mode(&serde_json::json!({"approval_mode": "bogus"})), "ask");
+        assert_eq!(
+            approval_mode(&serde_json::json!({"approval_mode": "auto"})),
+            "auto"
+        );
+        assert_eq!(
+            approval_mode(&serde_json::json!({"approval_mode": "full"})),
+            "full"
+        );
+        assert_eq!(
+            approval_mode(&serde_json::json!({"approval_mode": "bogus"})),
+            "ask"
+        );
         assert_eq!(approval_mode(&serde_json::Value::Null), "ask");
     }
 
@@ -561,7 +578,6 @@ mod tests {
             None
         );
     }
-
 }
 
 fn is_outbound_request(permission: &str, patterns: &[String]) -> Option<String> {

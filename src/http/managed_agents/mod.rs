@@ -1,7 +1,9 @@
+pub mod byo_credentials;
 pub mod eval_runs;
 pub mod evolution;
 pub mod governance;
 pub mod grants;
+pub mod identity_mappings;
 pub mod import;
 pub mod import_files;
 mod import_types;
@@ -15,6 +17,8 @@ pub mod routines;
 pub mod rules;
 pub mod runs;
 pub mod skills;
+pub mod source_management;
+pub mod source_scheduler;
 pub mod tasks;
 pub mod tool_approvals;
 pub mod workspace;
@@ -96,6 +100,45 @@ pub(crate) fn assert_agent_runnable(agent: &ManagedAgentRow) -> Result<(), Gatew
             "agent {} 已被软删除并处于归档挂起状态",
             agent.id
         )));
+    }
+    Ok(())
+}
+
+/// Session-interaction gate, checked when creating a session for an agent
+/// and on every prompt send. Stricter than `assert_agent_runnable`'s draft
+/// rule (drafts stay chattable for testing) but blocks:
+/// - retired / soft-deleted agents (`archived_pending_delete`);
+/// - imported agents whose governance is suspended or retired (emergency
+///   stop / repeated failed health checks) — "暂停新工作" must include chat,
+///   otherwise the emergency stop is a no-op for sessions.
+pub(crate) async fn assert_agent_interactive(
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+) -> Result<(), GatewayError> {
+    if agent.status == "archived_pending_delete" {
+        return Err(GatewayError::BadRequest(format!(
+            "智能体 {} 已退役或被删除，不能再进行会话交互。",
+            agent.id
+        )));
+    }
+    if let Some(governance) =
+        crate::db::managed_agents::governance::get(pool, &agent.id).await?
+    {
+        match governance.lifecycle_status.as_str() {
+            "retired" => {
+                return Err(GatewayError::BadRequest(format!(
+                    "智能体 {} 已退役，不能再进行会话交互。",
+                    agent.id
+                )));
+            }
+            "suspended" => {
+                return Err(GatewayError::BadRequest(format!(
+                    "智能体 {} 处于暂停状态（紧急停止或健康检查失败）：请先通过治理面板的\"运行检查\"确认健康后再继续会话。",
+                    agent.id
+                )));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

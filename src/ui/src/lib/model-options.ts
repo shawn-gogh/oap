@@ -5,12 +5,32 @@ export function modelOptions(models: string[], currentModel: string): string[] {
   return current ? [current] : [];
 }
 
+// Federated bridge runtimes (see src/http/sessions/external_bridge.rs) never
+// register a model list — they execute through a direct provider-specific
+// bridge, not a managed runtime harness, so GET /api/models?runtime=... 400s
+// with "unsupported runtime" for them. Skip discovery and use each
+// provider's fixed default model instead, mirroring the server-side
+// `ImportAgentsProvider::default_model()` for that provider.
+const FEDERATED_BRIDGE_RUNTIMES: Record<string, string> = {
+  a2a_v1: "a2a-remote",
+  acp_legacy: "acp-remote",
+  dify_app: "dify-managed",
+  openapi_rest: "openapi-mapped",
+};
+
+export function isFederatedBridgeRuntime(runtime?: string | null): boolean {
+  return Boolean(runtime && runtime in FEDERATED_BRIDGE_RUNTIMES);
+}
+
 export function runtimeSupportsModelDiscovery(runtime?: string | null): boolean {
-  return runtime !== "elastic_agent_builder";
+  if (!runtime) return true;
+  return runtime !== "elastic_agent_builder" && !isFederatedBridgeRuntime(runtime);
 }
 
 export function defaultModelForRuntime(runtime?: string | null): string {
-  return runtime === "elastic_agent_builder" ? "elastic-agent-builder" : "";
+  if (!runtime) return "";
+  if (runtime === "elastic_agent_builder") return "elastic-agent-builder";
+  return FEDERATED_BRIDGE_RUNTIMES[runtime] ?? "";
 }
 
 export function selectedRuntimeModel(models: string[], currentModel: string): string {

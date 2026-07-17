@@ -306,6 +306,25 @@ function SortableHeader({ column }: HeaderContext<AgentTableRow, unknown>) {
   );
 }
 
+const AGENT_STATUS_BADGES: Record<string, { label: string; className: string }> = {
+  active: {
+    label: "已激活",
+    className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  },
+  draft: {
+    label: "草稿",
+    className: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  },
+  paused: {
+    label: "已暂停",
+    className: "bg-sky-500/10 text-sky-700 dark:text-sky-400",
+  },
+  archived_pending_delete: {
+    label: "已退役",
+    className: "bg-destructive/10 text-destructive",
+  },
+};
+
 function AgentCell({
   row,
   onOpenDetail,
@@ -313,6 +332,11 @@ function AgentCell({
   row: AgentTableRow;
   onOpenDetail: (agent: Agent) => void;
 }) {
+  const status = row.agent.status ?? "active";
+  const statusBadge = AGENT_STATUS_BADGES[status] ?? {
+    label: status,
+    className: "bg-muted text-muted-foreground",
+  };
   return (
     <button
       type="button"
@@ -321,11 +345,9 @@ function AgentCell({
     >
       <span className="flex min-w-0 items-center gap-1.5">
         <span className="truncate text-sm font-medium text-foreground">{row.name}</span>
-        {row.agent.status === "draft" && (
-          <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-            草稿
-          </span>
-        )}
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusBadge.className}`}>
+          {statusBadge.label}
+        </span>
       </span>
       <span className="mt-0.5 block truncate text-xs text-muted-foreground">
         {row.description || row.prompt || row.agent.id}
@@ -370,9 +392,21 @@ function ActionsCell({
 }) {
   const mattermost = mattermostConfig(agent);
   const webhook = webhookConfig(agent);
+  const runBlocked =
+    agent.status === "paused"
+      ? "智能体已暂停，恢复后才能运行"
+      : agent.status === "archived_pending_delete"
+        ? "智能体已退役，不能再运行"
+        : null;
   return (
     <div className="flex justify-end gap-1">
-      <Button size="icon-sm" onClick={() => onRun(agent)} aria-label="运行" title="运行">
+      <Button
+        size="icon-sm"
+        onClick={() => onRun(agent)}
+        disabled={runBlocked != null}
+        aria-label="运行"
+        title={runBlocked ?? "运行"}
+      >
         <Play className="size-3.5" />
       </Button>
       <Button

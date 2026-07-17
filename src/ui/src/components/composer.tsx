@@ -117,7 +117,7 @@ export function Composer({
   sessionId: string;
   model: string;
   onSent?: () => void;
-  onSend?: (text: string) => Promise<void>;
+  onSend?: (text: string) => Promise<unknown>;
   onSendStart?: (text: string) => void;
   onAbort?: () => void;
   busy?: boolean;

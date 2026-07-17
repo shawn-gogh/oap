@@ -78,6 +78,12 @@ async fn serve_gateway(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>
     let _ = dotenvy::dotenv();
 
     init_tracing();
+    let telemetry =
+        litellm_rust::managed_agents::adapters::telemetry::TelemetryRuntime::initialize()?;
+    tracing::info!(
+        otlp_export_enabled = telemetry.export_enabled,
+        "OpenTelemetry initialized"
+    );
 
     let config = load_config(&args.config)?;
     let mut providers = ProviderRegistry::new();
@@ -96,8 +102,10 @@ async fn serve_gateway(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>
     )?);
     load_gateway_settings(&state).await?;
     litellm_rust::http::managed_agents::routines::scheduler::spawn(state.clone());
+    litellm_rust::http::managed_agents::source_scheduler::spawn(state.clone());
     litellm_rust::http::managed_agents::tasks::timeout::spawn(state.clone());
     litellm_rust::http::managed_agents::inbox::timeout::spawn(state.clone());
+    litellm_rust::http::sessions::recovery::spawn(state.clone());
     litellm_rust::http::managed_agents::evolution::spawn(state.clone());
     litellm_rust::http::managed_agents::registry::cleanup::spawn(state.clone());
     litellm_rust::http::exposed_apps::cleanup::spawn(state.clone());
@@ -108,9 +116,11 @@ async fn serve_gateway(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>
     let listener = TcpListener::bind(addr).await?;
 
     print_startup_banner(&config, addr);
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .await;
+    telemetry.shutdown();
+    result?;
 
     println!("\nINFO:     Shutting down LiteLLM Proxy Server");
     Ok(())

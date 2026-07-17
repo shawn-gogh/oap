@@ -175,6 +175,19 @@ pub async fn set_status(pool: &PgPool, session_id: &str, status: &str) -> Result
     // Session over — release its exposed app ports so the slots can be
     // reallocated; best-effort, the TTL sweeper covers any miss.
     if TERMINAL_STATUSES.contains(&status) {
+        if let Err(error) = sqlx::query(
+            r#"
+            UPDATE "LiteLLM_AgentSessionCapabilityTokensTable"
+            SET revoked_at = $2 WHERE session_id = $1 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(session_id)
+        .bind(now_ms())
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(session_id, "failed to revoke capability token: {error}");
+        }
         if let Err(error) =
             crate::db::managed_agents::exposed_apps::repository::soft_delete_for_session(
                 pool, session_id,
@@ -237,15 +250,47 @@ pub async fn set_title(pool: &PgPool, session_id: &str, title: &str) -> Result<b
 /// `owner`: None lists everything (admin); Some(user) restricts to that
 /// user's sessions. Legacy NULL-owner rows are only visible to admins.
 pub async fn list(pool: &PgPool, owner: Option<&str>) -> Result<Vec<SessionRow>, GatewayError> {
+    list_filtered(pool, owner, None).await
+}
+
+pub async fn list_filtered(
+    pool: &PgPool,
+    owner: Option<&str>,
+    agent_id: Option<&str>,
+) -> Result<Vec<SessionRow>, GatewayError> {
     sqlx::query_as::<_, SessionRow>(
         r#"
         SELECT *
         FROM "LiteLLM_ManagedAgentSessionsTable"
-        WHERE $1::TEXT IS NULL OR owner_id = $1
+        WHERE ($1::TEXT IS NULL OR owner_id = $1)
+          AND ($2::TEXT IS NULL OR agent_id = $2)
         ORDER BY COALESCE(updated_at, created_at) DESC
         "#,
     )
     .bind(owner)
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+/// Sessions of an agent that may still have live runtime work (anything not
+/// already terminal or idle). Used by emergency stop / retire to interrupt
+/// each one before the DB-level status sweep.
+pub async fn list_active_for_agent(
+    pool: &PgPool,
+    agent_id: &str,
+) -> Result<Vec<SessionRow>, GatewayError> {
+    sqlx::query_as::<_, SessionRow>(
+        r#"
+        SELECT *
+        FROM "LiteLLM_ManagedAgentSessionsTable"
+        WHERE agent_id = $1
+          AND COALESCE(status, 'idle')
+              NOT IN ('idle', 'cancelled', 'timed_out', 'completed', 'failed', 'error')
+        "#,
+    )
+    .bind(agent_id)
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)

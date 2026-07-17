@@ -102,6 +102,17 @@ pub(crate) fn configured_models(state: &AppState) -> Result<Vec<ConfiguredModel>
 }
 
 async fn runtime_models(state: &AppState, alias: &str) -> Result<ModelList, GatewayError> {
+    // Federated bridge runtimes (A2A/ACP/Dify/OpenAPI — see
+    // sessions::external_bridge) execute through a direct provider bridge,
+    // never a registered runtime harness, so `runtime_for_alias` would
+    // reject them as "unsupported runtime" before we even get to the
+    // "model discovery isn't supported" check below. They're never model
+    // registry entries, so route straight to that error instead.
+    if crate::http::sessions::external_bridge::supports(alias) {
+        return Err(GatewayError::InvalidJsonMessage(format!(
+            "model discovery is not supported for runtime: {alias}"
+        )));
+    }
     let runtime = runtime_for_alias(state, alias).await?;
     if providers::model_endpoint(runtime).is_none() {
         return Err(GatewayError::InvalidJsonMessage(format!(

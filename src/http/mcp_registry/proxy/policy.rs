@@ -84,14 +84,15 @@ pub(super) fn allowed_tools(value: &Value) -> HashSet<String> {
 pub(super) fn reject_disallowed_call(
     request: &McpRequest,
     allowed_tools: &HashSet<String>,
+    allow_all: bool,
 ) -> Option<Response> {
-    if request.invalid_json && !allowed_tools.is_empty() {
+    if request.invalid_json && !allow_all {
         return Some(mcp_error_response(None, "Invalid MCP request"));
     }
     let entry = request
         .entries
         .iter()
-        .find(|entry| entry_has_disallowed_tool(entry, allowed_tools))?;
+        .find(|entry| entry_has_disallowed_tool(entry, allowed_tools, allow_all))?;
     Some(if request.is_batch {
         mcp_batch_error_response(request, "Tool is not allowed for this MCP server")
     } else {
@@ -102,32 +103,37 @@ pub(super) fn reject_disallowed_call(
 pub(super) fn should_filter_tools_list(
     request: &McpRequest,
     status: StatusCode,
-    allowed_tools: &HashSet<String>,
+    allow_all: bool,
 ) -> bool {
     request
         .entries
         .iter()
         .any(|entry| entry.method.as_deref() == Some("tools/list"))
         && status.is_success()
-        && !allowed_tools.is_empty()
+        && !allow_all
 }
 
 pub(super) fn filter_tools_list_payload(
     text: &str,
     content_type: &str,
     allowed_tools: &HashSet<String>,
+    allow_all: bool,
 ) -> String {
     if content_type.contains("event-stream") || text.starts_with("data:") {
-        return filter_event_stream_tools(text, allowed_tools);
+        return filter_event_stream_tools(text, allowed_tools, allow_all);
     }
     let Ok(mut value) = serde_json::from_str::<Value>(text) else {
         return text.to_owned();
     };
-    filter_tools_in_value(&mut value, allowed_tools);
+    filter_tools_in_value(&mut value, allowed_tools, allow_all);
     value.to_string()
 }
 
-fn filter_event_stream_tools(text: &str, allowed_tools: &HashSet<String>) -> String {
+fn filter_event_stream_tools(
+    text: &str,
+    allowed_tools: &HashSet<String>,
+    allow_all: bool,
+) -> String {
     text.lines()
         .map(|line| {
             let Some(data) = line.strip_prefix("data:") else {
@@ -136,17 +142,17 @@ fn filter_event_stream_tools(text: &str, allowed_tools: &HashSet<String>) -> Str
             let Ok(mut value) = serde_json::from_str::<Value>(data.trim()) else {
                 return line.to_owned();
             };
-            filter_tools_in_value(&mut value, allowed_tools);
+            filter_tools_in_value(&mut value, allowed_tools, allow_all);
             format!("data: {value}")
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn filter_tools_in_value(value: &mut Value, allowed_tools: &HashSet<String>) {
+fn filter_tools_in_value(value: &mut Value, allowed_tools: &HashSet<String>, allow_all: bool) {
     if let Some(items) = value.as_array_mut() {
         for item in items {
-            filter_tools_in_value(item, allowed_tools);
+            filter_tools_in_value(item, allowed_tools, allow_all);
         }
         return;
     }
@@ -154,34 +160,54 @@ fn filter_tools_in_value(value: &mut Value, allowed_tools: &HashSet<String>) {
         .pointer_mut("/result/tools")
         .and_then(Value::as_array_mut)
     {
-        retain_allowed_tools(tools, allowed_tools);
+        retain_allowed_tools(tools, allowed_tools, allow_all);
     }
     if let Some(tools) = value.get_mut("tools").and_then(Value::as_array_mut) {
-        retain_allowed_tools(tools, allowed_tools);
+        retain_allowed_tools(tools, allowed_tools, allow_all);
     }
 }
 
-fn retain_allowed_tools(tools: &mut Vec<Value>, allowed_tools: &HashSet<String>) {
+fn retain_allowed_tools(tools: &mut Vec<Value>, allowed_tools: &HashSet<String>, allow_all: bool) {
     tools.retain(|tool| {
         tool.get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| tool_is_allowed(name, allowed_tools))
+            .is_some_and(|name| tool_is_allowed(name, allowed_tools, allow_all))
     });
 }
 
-fn tool_is_allowed(tool_name: &str, allowed_tools: &HashSet<String>) -> bool {
-    allowed_tools.is_empty() || allowed_tools.contains(tool_name)
+fn tool_is_allowed(tool_name: &str, allowed_tools: &HashSet<String>, allow_all: bool) -> bool {
+    allow_all || allowed_tools.contains(tool_name)
 }
 
-fn entry_has_disallowed_tool(entry: &McpRequestEntry, allowed_tools: &HashSet<String>) -> bool {
+fn entry_has_disallowed_tool(
+    entry: &McpRequestEntry,
+    allowed_tools: &HashSet<String>,
+    allow_all: bool,
+) -> bool {
     if !entry.is_tool_call {
         return false;
     }
     entry
         .tool_name
         .as_deref()
-        .map(|tool_name| !tool_is_allowed(tool_name, allowed_tools))
-        .unwrap_or(!allowed_tools.is_empty())
+        .map(|tool_name| !tool_is_allowed(tool_name, allowed_tools, allow_all))
+        .unwrap_or(!allow_all)
+}
+
+pub(super) fn has_tool_call(request: &McpRequest) -> bool {
+    request.entries.iter().any(|entry| entry.is_tool_call)
+}
+
+pub(super) fn tool_names(request: &McpRequest) -> Vec<&str> {
+    request
+        .entries
+        .iter()
+        .filter_map(|entry| entry.tool_name.as_deref())
+        .collect()
+}
+
+pub(super) fn grant_required_response() -> Response {
+    mcp_error_response(None, "Active invocation MCP grant is required")
 }
 
 fn mcp_error_value(id: Option<Value>, message: &str) -> Value {
@@ -235,7 +261,7 @@ mod tests {
         let request = parse_mcp_request(body);
         let allowed_tools = HashSet::from(["safe_tool".to_owned()]);
 
-        let response = reject_disallowed_call(&request, &allowed_tools)
+        let response = reject_disallowed_call(&request, &allowed_tools, false)
             .expect("disallowed batch call should be rejected");
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         let value = serde_json::from_slice::<Value>(&body).unwrap();
@@ -249,7 +275,7 @@ mod tests {
         let request = parse_mcp_request(body);
         let allowed_tools = HashSet::from(["safe_tool".to_owned()]);
 
-        assert!(reject_disallowed_call(&request, &allowed_tools).is_some());
+        assert!(reject_disallowed_call(&request, &allowed_tools, false).is_some());
     }
 
     #[test]
@@ -257,7 +283,7 @@ mod tests {
         let request = parse_mcp_request(b"{");
         let allowed_tools = HashSet::from(["safe_tool".to_owned()]);
 
-        assert!(reject_disallowed_call(&request, &allowed_tools).is_some());
+        assert!(reject_disallowed_call(&request, &allowed_tools, false).is_some());
     }
 
     #[test]
@@ -267,7 +293,7 @@ mod tests {
         ]"#;
         let allowed_tools = HashSet::from(["safe_tool".to_owned()]);
 
-        let filtered = filter_tools_list_payload(body, "application/json", &allowed_tools);
+        let filtered = filter_tools_list_payload(body, "application/json", &allowed_tools, false);
 
         assert!(filtered.contains("safe_tool"));
         assert!(!filtered.contains("send_email"));

@@ -79,12 +79,40 @@ impl Lap {
         response_json(response).await
     }
 
+    pub(crate) async fn post_for_session<T: Serialize>(
+        &self,
+        runtime: AgentRuntime,
+        path: &str,
+        body: &T,
+        session_id: &str,
+    ) -> Result<Value, AgentSdkError> {
+        let response = self
+            .request_for_session(runtime, Method::POST, path, session_id)?
+            .json(body)
+            .send()
+            .await?;
+        response_json(response).await
+    }
+
     pub(crate) async fn get(
         &self,
         runtime: AgentRuntime,
         path: &str,
     ) -> Result<Value, AgentSdkError> {
         let response = self.request(runtime, Method::GET, path)?.send().await?;
+        response_json(response).await
+    }
+
+    pub(crate) async fn get_for_session(
+        &self,
+        runtime: AgentRuntime,
+        path: &str,
+        session_id: &str,
+    ) -> Result<Value, AgentSdkError> {
+        let response = self
+            .request_for_session(runtime, Method::GET, path, session_id)?
+            .send()
+            .await?;
         response_json(response).await
     }
 
@@ -97,13 +125,14 @@ impl Lap {
         response_json(response).await
     }
 
-    pub(crate) async fn stream(
+    pub(crate) async fn stream_for_session(
         &self,
         runtime: AgentRuntime,
         path: &str,
+        session_id: &str,
     ) -> Result<AgentEventStream, AgentSdkError> {
         let response = self
-            .request(runtime, Method::GET, path)?
+            .request_for_session(runtime, Method::GET, path, session_id)?
             .header(header::ACCEPT, "text/event-stream")
             .send()
             .await?;
@@ -111,17 +140,15 @@ impl Lap {
         Ok(self.adapter(runtime)?.normalize_stream(stream))
     }
 
-    /// Open an SSE stream over a `POST` request. Elastic's streaming converse
-    /// path (`POST /api/agent_builder/converse/async`) requires a request body,
-    /// unlike the `GET`-based streams used by other runtimes.
-    pub(crate) async fn stream_post<T: Serialize>(
+    pub(crate) async fn stream_post_for_session<T: Serialize>(
         &self,
         runtime: AgentRuntime,
         path: &str,
         body: &T,
+        session_id: &str,
     ) -> Result<AgentEventStream, AgentSdkError> {
         let response = self
-            .request(runtime, Method::POST, path)?
+            .request_for_session(runtime, Method::POST, path, session_id)?
             .header(header::ACCEPT, "text/event-stream")
             .json(body)
             .send()
@@ -147,6 +174,23 @@ impl Lap {
             .request(method, format!("{}{}", config.base_url, path))
             .header(header::CONTENT_TYPE, "application/json");
         Ok(config.authorize(request))
+    }
+
+    fn request_for_session(
+        &self,
+        runtime: AgentRuntime,
+        method: Method,
+        path: &str,
+        session_id: &str,
+    ) -> Result<reqwest::RequestBuilder, AgentSdkError> {
+        let mut request = self.request(runtime, method, path)?;
+        if let Some((traceparent, tracestate)) = self.inner.state.trace_headers(session_id)? {
+            request = request.header("traceparent", traceparent);
+            if let Some(tracestate) = tracestate {
+                request = request.header("tracestate", tracestate);
+            }
+        }
+        Ok(request)
     }
 
     pub(super) fn adapter(
@@ -247,6 +291,17 @@ impl Lap {
             .remember_session_context(session_id, context)
     }
 
+    pub(crate) fn remember_trace_headers(
+        &self,
+        session_id: &str,
+        traceparent: String,
+        tracestate: Option<String>,
+    ) -> Result<(), AgentSdkError> {
+        self.inner
+            .state
+            .remember_trace_headers(session_id, traceparent, tracestate)
+    }
+
     pub(crate) fn remember_session(
         &self,
         session_id: &str,
@@ -261,5 +316,44 @@ impl Lap {
                 run_id: None,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reqwest::Method;
+
+    use super::Lap;
+    use crate::sdk::agents::{AgentRuntime, LapConfig};
+
+    #[test]
+    fn session_request_propagates_w3c_trace_headers() {
+        let client = Lap::new(LapConfig {
+            cursor_api_key: Some("test-key".to_owned()),
+            cursor_base_url: "https://cursor.example".to_owned(),
+            ..Default::default()
+        });
+        client
+            .remember_trace_headers(
+                "session-1",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+                Some("vendor=value".to_owned()),
+            )
+            .unwrap();
+        let request = client
+            .request_for_session(
+                AgentRuntime::Cursor,
+                Method::POST,
+                "/v1/agents/a/runs",
+                "session-1",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers()["traceparent"],
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        );
+        assert_eq!(request.headers()["tracestate"], "vendor=value");
     }
 }

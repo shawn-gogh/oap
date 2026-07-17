@@ -5,6 +5,10 @@ pub async fn reset_tables(pool: &PgPool) {
         r#"
         TRUNCATE
           "LiteLLM_AuditLogsTable",
+          "LiteLLM_CloudEventReceiptsTable",
+          "LiteLLM_ExternalIdentityMappingsTable",
+          "LiteLLM_McpInvocationGrantsTable",
+          "LiteLLM_ManagedArtifactsTable",
           "LiteLLM_WebSessionsTable",
           "LiteLLM_AgentGroupGrantsTable",
           "LiteLLM_GroupMembersTable",

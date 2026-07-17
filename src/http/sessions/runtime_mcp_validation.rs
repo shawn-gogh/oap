@@ -1,4 +1,5 @@
 use serde_json::Value;
+use sqlx::PgPool;
 
 use crate::{errors::GatewayError, proxy::state::AppState};
 
@@ -18,19 +19,19 @@ use crate::{errors::GatewayError, proxy::state::AppState};
 ///
 /// v0: on-behalf-of identity is the default owner. Per-user identity over this
 /// path is tracked separately (signed-token auth) — see issue.
-pub(super) fn rewrite_registered_mcp_servers(
+pub(super) async fn rewrite_registered_mcp_servers(
     state: &AppState,
+    pool: &PgPool,
     servers: &mut [Value],
+    session_id: Option<&str>,
+    mcp_auth_token: Option<&str>,
 ) -> Result<(), GatewayError> {
     for server in servers.iter_mut() {
         let Some(obj) = server.as_object_mut() else {
             continue;
         };
-        let needs_proxy = obj
-            .get("url")
-            .and_then(Value::as_str)
-            .is_some_and(|u| u.contains("${"));
-        if !needs_proxy {
+        let source_url = obj.get("url").and_then(Value::as_str).unwrap_or_default();
+        if source_url.contains("/mcp/platform/") {
             continue;
         }
         let name = obj
@@ -40,30 +41,41 @@ pub(super) fn rewrite_registered_mcp_servers(
             .map(str::to_owned)
             .ok_or_else(|| {
                 GatewayError::InvalidConfig(
-                    "mcp_servers entry with ${variables} requires a name (server id)".to_owned(),
+                    "managed runtime MCP entries require a registered server name".to_owned(),
                 )
             })?;
+        if crate::db::mcp_servers::repository::get_by_name(pool, &name)
+            .await?
+            .is_none()
+        {
+            return Err(GatewayError::InvalidConfig(format!(
+                "managed runtime MCP server {name} must be registered before use"
+            )));
+        }
         let base = state.resolved_mcp_proxy_base_url().ok_or_else(|| {
             GatewayError::InvalidConfig(
                 "mcp_servers.proxy_base_url is required to proxy MCP servers with variables"
                     .to_owned(),
             )
         })?;
-        obj.insert(
-            "url".to_owned(),
-            Value::String(format!("{}/{}/mcp", base.trim_end_matches('/'), name)),
-        );
-        // `authorization_token` authenticates the *inbound* call to the gateway
-        // proxy, so set it to the gateway key — OVERWRITING any token the entry
-        // already carried (that one targets the upstream server, which the proxy
-        // injects separately via static_headers). With no master_key the proxy's
-        // auth is a no-op, so drop any stale token rather than forward the wrong
-        // credential.
-        match state.config.general_settings.master_key.as_deref() {
-            Some(key) => {
+        let mut proxy_url =
+            reqwest::Url::parse(&format!("{}/{}/mcp", base.trim_end_matches('/'), name)).map_err(
+                |error| GatewayError::InvalidConfig(format!("invalid MCP proxy URL: {error}")),
+            )?;
+        if let Some(session_id) = session_id
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+        {
+            proxy_url
+                .query_pairs_mut()
+                .append_pair("session_id", session_id);
+        }
+        obj.insert("url".to_owned(), Value::String(proxy_url.to_string()));
+        match mcp_auth_token {
+            Some(token) => {
                 obj.insert(
                     "authorization_token".to_owned(),
-                    Value::String(key.to_owned()),
+                    Value::String(token.to_owned()),
                 );
             }
             None => {

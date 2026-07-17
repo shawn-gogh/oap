@@ -27,4 +27,8 @@ pub struct InboxItemRow {
     pub decided_by: Option<String>,
     pub decision_scope: String,
     pub applied_at: Option<i64>,
+    pub turn_id: Option<String>,
+    pub invocation_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub request_id: Option<String>,
 }

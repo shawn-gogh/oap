@@ -27,7 +27,7 @@ import {
   setStoredMasterKey,
   ensureWebSession,
 } from "@/lib/api";
-import { defaultModelForRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
+import { defaultModelForRuntime, isFederatedBridgeRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
 import type { Agent, AgentRuntimeId, OpencodeSession, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -65,7 +65,14 @@ function selectableRuntimeAlias(
   runtime: AgentRuntimeId | "",
   harnesses: RuntimeHarness[],
 ): AgentRuntimeId | "" {
-  if (runtime && harnesses.some((item) => item.alias === runtime)) return runtime;
+  // Federated bridge runtimes (A2A/ACP/Dify/OpenAPI) are never registered
+  // runtime harnesses — they execute through sessions::external_bridge, not
+  // the harness registry `listRuntimeHarnesses()` reads from — so they'd
+  // never appear in `harnesses` even though they're a valid, already-
+  // configured choice for this agent.
+  if (runtime && (isFederatedBridgeRuntime(runtime) || harnesses.some((item) => item.alias === runtime))) {
+    return runtime;
+  }
   return defaultRuntimeAlias(harnesses);
 }
 
@@ -194,7 +201,10 @@ function SessionsStart() {
     !selectedAgentMissing &&
     (!needsRuntime ||
       (runtime !== "" &&
-        Boolean(selectedRuntime?.connected) &&
+        // Federated bridge runtimes (A2A/ACP/Dify/OpenAPI) aren't registered
+        // runtime harnesses, so they never have a `connected` harness entry —
+        // being configured on the agent is the only readiness signal there is.
+        (isFederatedBridgeRuntime(runtime) || Boolean(selectedRuntime?.connected)) &&
         (selectedRuntimeSpec !== "cursor" || repository.trim().length > 0)));
 
   useEffect(() => {
@@ -263,7 +273,9 @@ function SessionsStart() {
     ? `${selectedAgent?.name} 就绪`
     : selectedRuntime?.connected
       ? `${selectedRuntime.display_name} 就绪`
-      : "运行时密钥缺失";
+      : isFederatedBridgeRuntime(runtime)
+        ? `${selectedAgent?.name ?? "远程智能体"} 就绪`
+        : "运行时密钥缺失";
 
   return (
     <div className="flex h-screen bg-background text-foreground">

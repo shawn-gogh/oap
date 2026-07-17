@@ -29,6 +29,37 @@ pub fn router() -> Router<Arc<AppState>> {
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
+            "/api/identity-mappings",
+            get(super::identity_mappings::list),
+        )
+        .route(
+            "/api/identity-mappings/{mapping_id}/bind",
+            post(super::identity_mappings::bind),
+        )
+        .route(
+            "/api/identity-mappings/{mapping_id}/block",
+            post(super::identity_mappings::block),
+        )
+        .route(
+            "/api/agent-source-connectors",
+            get(super::source_management::list_connectors)
+                .post(super::source_management::create_connector),
+        )
+        .route(
+            "/api/agent-source-connectors/{connector_id}",
+            post(super::source_management::test_connector)
+                .patch(super::source_management::update_connector)
+                .delete(super::source_management::delete_connector),
+        )
+        .route(
+            "/api/agent-source-connectors/{connector_id}/webhook",
+            post(super::source_management::connector_webhook),
+        )
+        .route(
+            "/api/agents/import/providers",
+            get(super::import::list_providers),
+        )
+        .route(
             "/api/agents/import/opencode-files",
             post(super::import_files::import_opencode_files)
                 .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
@@ -41,6 +72,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/import/{provider_id}/discover",
             post(super::import::discover),
+        )
+        .route(
+            "/api/agents/import/{provider_id}/preview",
+            post(super::import::preview),
         )
         .route(
             "/api/agents/import/{provider_id}",
@@ -67,6 +102,16 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/restore",
             post(super::registry::restore::restore),
+        )
+        .route(
+            "/api/agents/byo-credentials",
+            get(super::byo_credentials::list_configured),
+        )
+        .route(
+            "/api/agents/{agent_id}/byo-credential",
+            get(super::byo_credentials::status)
+                .put(super::byo_credentials::store)
+                .delete(super::byo_credentials::delete),
         )
         .route(
             "/api/agents/{agent_id}/preflight",
@@ -127,6 +172,42 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/governance/rollback",
             post(super::governance::rollback),
+        )
+        .route(
+            "/api/agents/{agent_id}/source",
+            get(super::source_management::get_source),
+        )
+        .route(
+            "/api/agents/{agent_id}/source/normalize",
+            post(super::source_management::normalize_source),
+        )
+        .route(
+            "/api/agents/{agent_id}/source/sync",
+            post(super::source_management::sync_source),
+        )
+        .route(
+            "/api/agents/{agent_id}/source/drift/accept",
+            post(super::source_management::accept_drift),
+        )
+        .route(
+            "/api/agents/{agent_id}/source/drift/reject",
+            post(super::source_management::reject_drift),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/conformance",
+            post(super::source_management::check_conformance),
+        )
+        .route(
+            "/api/agents/{agent_id}/governance/health",
+            post(super::source_management::check_health),
+        )
+        .route(
+            "/api/agents/{agent_id}/emergency-stop",
+            post(super::source_management::emergency_stop),
+        )
+        .route(
+            "/api/agents/{agent_id}/retire",
+            post(super::source_management::retire),
         )
         .route(
             "/api/agents/{agent_id}/eval-runs",

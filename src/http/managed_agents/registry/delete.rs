@@ -6,11 +6,7 @@ use axum::{
     Json,
 };
 
-use crate::{
-    db::managed_agents::registry,
-    errors::GatewayError,
-    proxy::state::AppState,
-};
+use crate::{db::managed_agents::registry, errors::GatewayError, proxy::state::AppState};
 
 use super::types::DeleteResponse;
 

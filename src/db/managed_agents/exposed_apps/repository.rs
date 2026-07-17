@@ -183,10 +183,7 @@ pub async fn soft_delete(pool: &PgPool, app_id: &str) -> Result<bool, GatewayErr
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn soft_delete_for_session(
-    pool: &PgPool,
-    session_id: &str,
-) -> Result<u64, GatewayError> {
+pub async fn soft_delete_for_session(pool: &PgPool, session_id: &str) -> Result<u64, GatewayError> {
     let result = sqlx::query(
         r#"
         UPDATE "LiteLLM_ExposedAppsTable"

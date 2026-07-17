@@ -83,6 +83,25 @@ describe("runtimeEventsToMessages", () => {
     expect(tool.state.output).toBe("files");
   });
 
+  it("renders a persisted approval rejection as a visible tool result", () => {
+    const [assistant] = runtimeEventsToMessages(SID, [
+      { id: "t1", type: "session.status_running" },
+      {
+        id: "approval_rejected_1",
+        type: "agent.tool_result",
+        tool_use_id: "approval_1",
+        name: "工具权限请求：bash",
+        status: "rejected",
+        error: { message: "用户拒绝了该操作" },
+      },
+    ], "idle");
+    const tool = assistant.parts.find((part) => part.type === "tool");
+    expect(tool?.type === "tool" ? tool.state.status : "").toBe("rejected");
+    expect(tool?.type === "tool" ? tool.state.error : undefined).toEqual({
+      message: "用户拒绝了该操作",
+    });
+  });
+
   it("keeps a late tool result on the turn that started the tool", () => {
     const events: RuntimeAgentEvent[] = [
       userMessage("first", { id: "u1" }),
@@ -196,6 +215,24 @@ describe("status derivation", () => {
         { id: "2", type: "session.status_idle" },
       ]),
     ).toBe("idle");
+  });
+
+  it("treats idle after a rejected tool call as terminal", () => {
+    expect(runtimeStatusFromEvents([
+      { type: "session.status_running" },
+      { type: "user.message" },
+      { type: "agent.tool_use", id: "tool_1" },
+      { type: "agent.tool_result", tool_use_id: "tool_1", status: "error" },
+      { type: "session.status_idle" },
+    ])).toBe("idle");
+  });
+
+  it("treats the platform rejection result as terminal without a trailing idle", () => {
+    expect(runtimeStatusFromEvents([
+      { type: "session.status_running" },
+      { type: "agent.tool_use", id: "tool_1" },
+      { type: "agent.tool_result", tool_use_id: "tool_1", status: "rejected" },
+    ])).toBe("idle");
   });
 
   it("treats a complete agent response as terminal even without a status event", () => {

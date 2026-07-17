@@ -210,6 +210,29 @@ pub async fn list(pool: &PgPool, session_id: &str) -> Result<Vec<Value>, Gateway
     Ok(rows.into_iter().map(|row| row.event_json).collect())
 }
 
+pub async fn list_rows_after(
+    pool: &PgPool,
+    session_id: &str,
+    after_sequence: i32,
+    limit: i64,
+) -> Result<Vec<RuntimeEventRow>, GatewayError> {
+    sqlx::query_as::<_, RuntimeEventRow>(
+        r#"
+        SELECT *
+        FROM "LiteLLM_ManagedAgentRuntimeEventsTable"
+        WHERE session_id = $1 AND seq > $2
+        ORDER BY seq ASC
+        LIMIT $3
+        "#,
+    )
+    .bind(session_id)
+    .bind(after_sequence.max(0))
+    .bind(limit.clamp(1, 200))
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 fn event_key(event: &Value) -> String {
     if let Some(id) = event.get("id").and_then(Value::as_str) {
         return format!("id:{id}");

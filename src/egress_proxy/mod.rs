@@ -151,7 +151,10 @@ async fn decide(
     }
 
     let agent = match session.agent_id.as_deref() {
-        Some(agent_id) => registry::repository::get(pool, agent_id).await.ok().flatten(),
+        Some(agent_id) => registry::repository::get(pool, agent_id)
+            .await
+            .ok()
+            .flatten(),
         None => None,
     };
     let context = GuardianContext {
@@ -164,7 +167,9 @@ async fn decide(
     let verdict = guardian::review(state, pool, &context).await;
 
     if verdict.allow {
-        state.guardian_circuit_breaker.record_non_denial(&session.id);
+        state
+            .guardian_circuit_breaker
+            .record_non_denial(&session.id);
         return Decision::Allow(format!("guardian:allow — {}", verdict.reason));
     }
 
@@ -193,7 +198,9 @@ async fn decide(
 /// wiring a shared helper across the two modules isn't worth the coupling
 /// for a single small function.
 async fn recent_user_message(pool: &sqlx::PgPool, session_id: &str) -> Option<String> {
-    let events = runtime_events::repository::list(pool, session_id).await.ok()?;
+    let events = runtime_events::repository::list(pool, session_id)
+        .await
+        .ok()?;
     events.iter().rev().find_map(|event| {
         if event.get("type").and_then(serde_json::Value::as_str) != Some("user.message") {
             return None;
@@ -273,9 +280,7 @@ struct ConnectRequest {
 /// plus headers up to the blank line. Returns `Ok(None)` for anything that
 /// isn't a well-formed CONNECT (the only method a forward proxy needs to
 /// support here — legitimate outbound traffic from these sessions is HTTPS).
-async fn read_connect_request(
-    stream: &mut TcpStream,
-) -> std::io::Result<Option<ConnectRequest>> {
+async fn read_connect_request(stream: &mut TcpStream) -> std::io::Result<Option<ConnectRequest>> {
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 512];
     loop {

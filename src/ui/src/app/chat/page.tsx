@@ -41,9 +41,9 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
-import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage, ensureWebSession } from "@/lib/api";
+import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage, ensureWebSession, getActiveTurn, cancelTurn } from "@/lib/api";
 import { setSessionApprovalMode } from "@/lib/api";
-import type { ApprovalMode, PendingApproval, RuntimeAgentEvent } from "@/lib/api";
+import type { ApprovalMode, PendingApproval, RuntimeAgentEvent, SessionTurnSnapshot } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
 import { ExposedAppsMenu } from "@/components/exposed-apps-menu";
 import { toast } from "sonner";
@@ -121,11 +121,11 @@ function ChatInner() {
   const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
   const [model, setModel] = useState(FALLBACK_MODELS[0]);
   const [sessionStatus, setSessionStatus] = useState<"idle" | "busy">("idle");
+  const [activeTurn, setActiveTurn] = useState<SessionTurnSnapshot | null | undefined>(undefined);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [approvalsLoaded, setApprovalsLoaded] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [contextPanel, setContextPanel] = useState<"workspace" | "inspector" | null>(null);
   const [workspaceBucket, setWorkspaceBucket] = useState<string | undefined>();
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   const [composerDraft, setComposerDraft] = useState("");
@@ -138,6 +138,8 @@ function ChatInner() {
   const [runtimeEventsLoaded, setRuntimeEventsLoaded] = useState(false);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [interruptingQueuedPromptId, setInterruptingQueuedPromptId] = useState<string | null>(null);
+  const workspacePanelOpen = contextPanel === "workspace";
+  const inspectorOpen = contextPanel === "inspector";
   const dispatchingQueuedPromptRef = useRef(false);
   const [runtimeStreamVersion, setRuntimeStreamVersion] = useState(0);
   const [sessionHarness, setSessionHarness] = useState<string>("claude-code");
@@ -156,6 +158,7 @@ function ChatInner() {
   const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
   const terminalSessionSnapshotRef = useRef(false);
+  const canonicalTurnObservedRef = useRef(false);
   const initiallyScrolledSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
   // Tombstones for approvals the user already decided: the DB write can lag
@@ -182,6 +185,10 @@ function ChatInner() {
   useEffect(() => {
     approvalsRef.current = approvals;
   }, [approvals]);
+
+  useEffect(() => {
+    if (activeTurn) canonicalTurnObservedRef.current = true;
+  }, [activeTurn]);
 
   const refetch = useCallback(async () => {
     if (!sid) return;
@@ -375,7 +382,9 @@ function ChatInner() {
     setSessionRuntime(undefined);
     setSessionLoaded(false);
     setSessionStatus("idle");
+    setActiveTurn(undefined);
     terminalSessionSnapshotRef.current = false;
+    canonicalTurnObservedRef.current = false;
     setSessionHarness("claude-code");
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
@@ -519,6 +528,9 @@ function ChatInner() {
       setError(`Error: ${runtimeErrorMessage(ev)}`);
       terminalSessionSnapshotRef.current = true;
       setSessionStatus("idle");
+    } else if (isRuntimeToolEvent(type) && ev.status === "rejected") {
+      terminalSessionSnapshotRef.current = true;
+      setSessionStatus("idle");
     } else if (
       type === "user.message" ||
       isRuntimeAssistantTextEvent(type) ||
@@ -565,27 +577,67 @@ function ChatInner() {
       return;
     }
     if (sessionStatus === "busy") {
-      // One provider turn owns the session at a time. Keep follow-up input in
-      // the visible queue; the explicit interrupt action remains available on
-      // that queued message when the user truly wants to stop the active tool.
-      queueRuntimePrompt(text);
-      return;
+      const pendingApprovals = approvalsRef.current;
+      if (pendingApprovals.length > 0) {
+        const approvalsWithoutPermission = pendingApprovals.filter((approval) => !approval.canDecide);
+        if (approvalsWithoutPermission.length > 0) {
+          // An approver other than the current user owns this decision. Preserve
+          // the prompt instead of bypassing a control the user cannot resolve.
+          queueRuntimePrompt(text);
+          setError("当前审批需要有权限的审批人处理，消息已排队。");
+          return;
+        }
+
+        // Sending a new prompt explicitly replaces the paused task. Record a
+        // rejection for every pending approval before interrupting the runtime,
+        // so the old action can never resume after the new prompt is sent.
+        setApprovalBusy(true);
+        try {
+          const rejectedIds = new Set<string>();
+          let deliveryFailed = false;
+          for (const approval of pendingApprovals) {
+            const result = await rejectApproval(
+              approval.id,
+              "用户发送了新消息，已取消当前审批和对应操作。",
+            );
+            rejectedIds.add(approval.id);
+            decidedApprovalsRef.current.set(approval.id, Date.now());
+            deliveryFailed ||= result.delivery_status === "delivery_failed";
+          }
+          setApprovals((current) => current.filter((approval) => !rejectedIds.has(approval.id)));
+          if (deliveryFailed) {
+            setError("已取消当前审批，但审批结果尚未送达运行时。正在切换到新消息。");
+          }
+        } catch (err) {
+          const message = apiErrorMessage(err, "取消当前审批失败，新消息未发送");
+          setError(message);
+          throw new Error(message);
+        } finally {
+          setApprovalBusy(false);
+        }
+      }
+      // A new message always replaces the active runtime turn. This keeps the
+      // Enter and send-button paths consistent instead of silently queueing.
+      await abortSession(sid);
+      if (activeSessionRef.current !== sid) return;
+      beginRuntimeTurn(text);
     }
     try {
-      await sendMessageWithRuntimeModel({
+      const turn = await sendMessageWithRuntimeModel({
         sessionId: sid,
         text,
         model,
         runtime: sessionRuntime,
         apiSpec: resolveApiSpec(sessionRuntime ?? "", harnesses),
       });
+      setActiveTurn(turn);
     } catch (err) {
       if (activeSessionRef.current !== sid) return;
       setError(err instanceof Error ? err.message : String(err));
       setSessionStatus("idle");
       throw err;
     }
-  }, [model, queueRuntimePrompt, sessionRuntime, sessionStatus, sid, harnesses]);
+  }, [beginRuntimeTurn, model, queueRuntimePrompt, sessionRuntime, sessionStatus, sid, harnesses]);
 
   useEffect(() => {
     if (
@@ -606,8 +658,9 @@ function ChatInner() {
       runtime: sessionRuntime,
       apiSpec: resolveApiSpec(sessionRuntime, harnesses),
     })
-      .then(() => {
+      .then((turn) => {
         if (activeSessionRef.current === sid) {
+          setActiveTurn(turn);
           setRuntimeStreamVersion((version) => version + 1);
         }
       })
@@ -645,7 +698,8 @@ function ChatInner() {
       await sendOrQueueRuntimePrompt(prompt);
       return;
     }
-    await sendMessageWithRuntimeModel({ sessionId: sid, text: prompt, model });
+    const turn = await sendMessageWithRuntimeModel({ sessionId: sid, text: prompt, model });
+    setActiveTurn(turn);
     await refetch();
   }, [beginRuntimeTurn, model, refetch, sendOrQueueRuntimePrompt, sessionRuntime, sessionStatus, sid]);
 
@@ -666,18 +720,19 @@ function ChatInner() {
     setInterruptingQueuedPromptId(id);
     try {
       if (sessionStatus === "busy") {
-        await interruptSession(sid);
+        await abortSession(sid);
       }
       if (activeSessionRef.current !== sid) return;
       setQueuedPrompts((current) => current.filter((item) => item.id !== id));
       beginRuntimeTurn(prompt.text);
-      await sendMessageWithRuntimeModel({
+      const turn = await sendMessageWithRuntimeModel({
         sessionId: sid,
         text: prompt.text,
         model,
         runtime: sessionRuntime,
         apiSpec: resolveApiSpec(sessionRuntime ?? "", harnesses),
       });
+      setActiveTurn(turn);
       if (activeSessionRef.current === sid) {
         setRuntimeStreamVersion((version) => version + 1);
       }
@@ -700,6 +755,30 @@ function ChatInner() {
     sessionStatus,
     sid,
   ]);
+
+  const stopRuntimeTurn = useCallback(async () => {
+    if (!sid || !sessionRuntime) return;
+    setError(null);
+    terminalSessionSnapshotRef.current = true;
+    setSessionStatus("idle");
+    setQueuedPrompts([]);
+    try {
+      if (activeTurn?.turn.id) {
+        const turn = await cancelTurn(sid, activeTurn.turn.id);
+        setActiveTurn(turn);
+      } else {
+        await abortSession(sid);
+        setActiveTurn(null);
+      }
+      if (activeSessionRef.current !== sid) return;
+      setRuntimeStreamVersion((version) => version + 1);
+    } catch (err) {
+      if (activeSessionRef.current !== sid) return;
+      terminalSessionSnapshotRef.current = false;
+      setSessionStatus("busy");
+      setError(apiErrorMessage(err, "中断会话失败"));
+    }
+  }, [activeTurn, sessionRuntime, sid]);
 
   useEffect(() => {
     if (!sid || !sessionLoaded) return;
@@ -750,8 +829,10 @@ function ChatInner() {
         runtime: sessionRuntime,
         apiSpec: resolveApiSpec(sessionRuntime ?? "", harnesses),
       })
-        .then(() => {
+        .then((turn) => {
           if (activeSessionRef.current !== sid) return;
+          canonicalTurnObservedRef.current = true;
+          setActiveTurn(turn);
           if (!sessionRuntime) return refetch();
         })
         .then(() => router.replace(`/chat/?id=${encodeURIComponent(sid)}`))
@@ -775,6 +856,38 @@ function ChatInner() {
       unsub?.();
     };
   }, [sid, sessionLoaded, refetch, appendRuntimeEvent, applyApprovals, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
+
+  useEffect(() => {
+    if (!sid || !sessionLoaded) return;
+    let mounted = true;
+    let timer: number | undefined;
+    const refresh = () => {
+      getActiveTurn(sid)
+        .then((turn) => {
+          if (!mounted || activeSessionRef.current !== sid) return;
+          if (turn) {
+            canonicalTurnObservedRef.current = true;
+            setActiveTurn(turn);
+            terminalSessionSnapshotRef.current = false;
+            setSessionStatus("busy");
+          } else if (canonicalTurnObservedRef.current) {
+            setActiveTurn(null);
+            terminalSessionSnapshotRef.current = true;
+            setSessionStatus("idle");
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!mounted) return;
+          timer = window.setTimeout(refresh, sessionStatus === "busy" ? 1500 : 8000);
+        });
+    };
+    refresh();
+    return () => {
+      mounted = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [sessionLoaded, sessionStatus, sid]);
 
   useEffect(() => {
     if (!sid || !sessionRuntime) return;
@@ -873,7 +986,11 @@ function ChatInner() {
       const result = await rejectApproval(id, feedback);
       decidedApprovalsRef.current.set(id, Date.now());
       setApprovals((prev) => prev.filter((a) => a.id !== id));
-      setSessionStatus("busy");
+      // A denial commonly ends immediately after a tool_result + idle pair.
+      // Treat the decision as terminal until genuinely new runtime activity
+      // arrives, so stale tool events cannot leave the composer stuck busy.
+      terminalSessionSnapshotRef.current = true;
+      setSessionStatus("idle");
       setRuntimeStreamVersion((version) => version + 1);
       if (result.delivery_status === "delivery_failed") {
         setError("拒绝决定已记录，但尚未送达运行时。请前往收件箱重试交付。");
@@ -928,7 +1045,7 @@ function ChatInner() {
     <div className="flex h-screen bg-background text-foreground">
       <Sidebar activeId={sid} />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
           <div className="flex min-w-0 items-center gap-2">
             {editingTitle !== null ? (
@@ -984,7 +1101,7 @@ function ChatInner() {
               </span>
             ) : sessionStatus === "busy" ? (
               <button
-                onClick={() => sid && abortSession(sid).catch(() => {})}
+                onClick={() => void stopRuntimeTurn()}
                 className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-amber-600 dark:text-amber-400 font-mono hover:text-red-600 dark:hover:text-red-400 transition-colors group"
                 title="中止智能体"
                 aria-label="智能体运行中，点击中止"
@@ -1051,20 +1168,22 @@ function ChatInner() {
             />
             {workspaceBucket && (
               <Button
-                variant={workspacePanelOpen ? "default" : "outline"}
+                variant="ghost"
                 size="sm"
-                onClick={() => setWorkspacePanelOpen((v) => !v)}
-                className="h-8"
+                onClick={() => setContextPanel((panel) => panel === "workspace" ? null : "workspace")}
+                className={`h-8 gap-1.5 ${workspacePanelOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
+                aria-pressed={workspacePanelOpen}
               >
                 <FolderOpen className="size-3.5" />
                 工作区
               </Button>
             )}
             <Button
-              variant={inspectorOpen ? "default" : "outline"}
+              variant="ghost"
               size="sm"
-              onClick={() => setInspectorOpen((v) => !v)}
-              className="h-8"
+              onClick={() => setContextPanel((panel) => panel === "inspector" ? null : "inspector")}
+              className={`h-8 gap-1.5 ${inspectorOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
+              aria-pressed={inspectorOpen}
             >
               <Activity className="size-3.5" />
               检查器
@@ -1076,7 +1195,7 @@ function ChatInner() {
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="relative flex-1 overflow-y-auto"
+          className="relative min-h-0 flex-1 overflow-y-auto"
         >
           {pinnedTodos && <PinnedTodoBar items={pinnedTodos} />}
           <div ref={contentRef} className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-8">
@@ -1322,11 +1441,12 @@ function ChatInner() {
           onSendStart={sessionRuntime ? (text) => {
             if (sessionStatus !== "busy") beginRuntimeTurn(text);
           } : undefined}
-          onAbort={sessionRuntime ? () => abortSession(sid).catch(() => {}) : undefined}
+          onAbort={sessionRuntime ? () => void stopRuntimeTurn() : undefined}
           busy={Boolean(sessionRuntime && sessionStatus === "busy")}
           disabled={sessionContentLoading || Boolean(sessionRuntime && !model.trim())}
           disabledHint={sessionContentLoading ? "正在加载对话..." : undefined}
           mentionFiles={mentionFiles}
+          queuedCount={queuedPrompts.length}
           draftValue={composerDraft}
           onDraftChange={setComposerDraft}
           focusVersion={composerFocusVersion}
@@ -1338,7 +1458,7 @@ function ChatInner() {
       {workspacePanelOpen && workspaceBucket && (
         <WorkspacePanel
           sessionId={sid}
-          onClose={() => setWorkspacePanelOpen(false)}
+          onClose={() => setContextPanel(null)}
           onInsertPaths={insertWorkspacePaths}
           onProcessPaths={processWorkspacePaths}
         />
@@ -1346,7 +1466,7 @@ function ChatInner() {
 
       <InspectorPanel
         open={inspectorOpen}
-        onClose={() => setInspectorOpen(false)}
+        onClose={() => setContextPanel(null)}
         sessionId={sid}
         initialFrames={eventBufferRef.current}
       />

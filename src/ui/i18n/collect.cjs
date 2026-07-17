@@ -63,6 +63,19 @@ const SKIP_JSX_ATTRS = new Set([
   "xmlns",
 ]);
 
+const KEYBOARD_EVENT_VALUES = new Set([
+  "Enter",
+  "Escape",
+  "Tab",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Backspace",
+  "Delete",
+  "Space",
+]);
+
 function getEnclosingJsxAttrName(node) {
   let cur = node.parent;
   while (cur) {
@@ -127,6 +140,18 @@ function isDeclarationName(node) {
   return false;
 }
 
+function isKeyboardEventValue(node) {
+  if (!KEYBOARD_EVENT_VALUES.has(node.text)) return false;
+  const parent = node.parent;
+  if (!parent || !ts.isBinaryExpression(parent)) return false;
+  const other = parent.left === node ? parent.right : parent.right === node ? parent.left : null;
+  return (
+    !!other &&
+    ts.isPropertyAccessExpression(other) &&
+    (other.name.text === "key" || other.name.text === "code")
+  );
+}
+
 // Collect translatable units from a single source file.
 // Returns: [{ start, end, text, kind }]
 //   kind: "jsx-text" | "string" | "template"
@@ -169,7 +194,8 @@ function collectUnits(source, fileName) {
       if (
         !isModuleSpecifier(node) &&
         !isTypePosition(node) &&
-        !isDeclarationName(node)
+        !isDeclarationName(node) &&
+        !isKeyboardEventValue(node)
       ) {
         const attr = getEnclosingJsxAttrName(node);
         if (!attr || !SKIP_JSX_ATTRS.has(attr)) {

@@ -44,6 +44,8 @@ import {
   listMemory,
   storeMemory,
   deleteMemory,
+  listByoConfiguredAgents,
+  saveAgentByoCredential,
 } from "@/lib/api";
 import { selectableAgentRuntimes } from "@/lib/agent-runtime-options";
 import { DEFAULT_TIMEZONE } from "@/lib/schedule";
@@ -151,6 +153,9 @@ export default function AgentsPage() {
     listVaultKeysForUser(DEFAULT_VAULT_USER)
       .then(setStoredKeyEntries)
       .catch(() => setStoredKeyEntries([]));
+    listByoConfiguredAgents()
+      .then((ids) => setByoConfiguredAgents(new Set(ids)))
+      .catch(() => setByoConfiguredAgents(new Set()));
   }, []);
 
   const attachVaultKey = (key: string) => {
@@ -329,12 +334,18 @@ export default function AgentsPage() {
     }
   };
 
-  const openAgent = (ag: Agent) => {
+  const openAgent = async (ag: Agent) => {
     const source = importedSource(ag);
     if (source?.credential_mode === "byo" && !byoConfiguredAgents.has(ag.id)) {
       const value = window.prompt(`${providerLabel(source.provider)} API key`);
       if (!value?.trim()) return;
-      setByoConfiguredAgents((current) => new Set(current).add(ag.id));
+      try {
+        await saveAgentByoCredential(ag.id, value.trim());
+        setByoConfiguredAgents((current) => new Set(current).add(ag.id));
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e));
+        return;
+      }
     }
     router.push(`/sessions/?agent=${encodeURIComponent(ag.id)}`);
   };

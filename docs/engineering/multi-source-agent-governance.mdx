@@ -1,0 +1,218 @@
+---
+title: "Multi-source agent governance"
+description: "Implementation plan and invariants for onboarding untrusted and non-conforming agents."
+---
+
+# Multi-source agent governance
+
+## Objective
+
+The control plane must manage agents from remote providers, registered runtimes,
+declarative files, bundles, and registration SDKs through one fail-closed
+lifecycle. Importing is ingestion into governance, not permission to execute.
+
+## Implementation status
+
+Phases 0 through 5 now have an operational baseline in the control plane:
+
+- all import paths create governance, source, revision, and immutable snapshot
+  evidence;
+- remote imports provide a normalization preview and per-item results;
+- owner-scoped source connectors support encrypted credential references,
+  connectivity tests, signed webhooks, replay protection, and polling sync;
+- drift is stored as a candidate snapshot and must be accepted or rejected;
+- runtime conformance, health, short-lived session capabilities, emergency stop,
+  and evidence-preserving retirement are enforced by management APIs;
+- connector and source state are visible from the source-management and agent
+  detail pages.
+
+The current adapters do not claim native remote suspend or delete unless a
+provider explicitly advertises it. The platform always applies its local
+execution stop and credential-revocation boundary; provider-side lifecycle
+actions remain capability-negotiated. Incremental provider cursors fall back to
+leased polling where a provider does not expose an incremental API.
+
+## Invariants
+
+1. Every agent carrying an external source descriptor has a governance record.
+2. Every import path creates an immutable agent revision before testing.
+3. An external agent cannot activate unless its exact revision is published.
+4. Re-importing an unchanged source preserves its lifecycle and health state.
+5. Re-importing a changed source returns the agent to draft and invalidates its
+   test and pending approval.
+6. Unsupported source fields are reported; high-risk omissions block release.
+7. Source discovery, runtime execution, and permission grants remain separate
+   capabilities.
+8. Credentials are referenced by name and remain owner-scoped; source payloads,
+   audit metadata, and logs never contain plaintext secrets.
+9. Approvals bind an agent revision, source revision, and policy version.
+10. Import, sync, drift, test, publish, suspend, rollback, and retirement are
+    audited.
+
+## Trust levels
+
+| Level | State | Allowed behavior |
+|---|---|---|
+| L0 | Inventory | Record identity and evidence only |
+| L1 | Discoverable | Read source configuration and health |
+| L2 | Sandbox | Run synthetic data with no production credentials |
+| L3 | Restricted | Run approved low- and medium-risk workloads |
+| L4 | Governed | Full lifecycle, drift, stop, audit, and retirement |
+
+Missing identity, terminal-state, credential-revocation, or stop boundaries
+prevent production activation. Optional contract features may downgrade a
+source but cannot bypass mandatory controls.
+
+## Management modes
+
+| Mode | Source of truth | Execution |
+|---|---|---|
+| `federated` | External provider | External runtime through the gateway |
+| `mirrored` | External provider | Published platform mirror or external runtime |
+| `managed` | Platform | Platform-controlled runtime |
+
+Markdown and bundle uploads default to `managed`; remote SaaS agents default to
+`federated`; registered self-hosted runtimes default to `mirrored`.
+
+## Contracts
+
+### Source adapter contract
+
+A source adapter declares support for discovery, configuration fetch,
+normalization, incremental sync, health, remote suspend, and delete. The source
+registry is distinct from the runtime registry: being executable does not imply
+being discoverable, and being discoverable does not imply conformance with the
+runtime protocol.
+
+### Package contract
+
+Portable files and bundles declare identity, version, entrypoint, model, tools,
+MCP servers, skills, rules, credentials, knowledge, resource limits, network
+access, and side effects. Original artifacts are archived by digest.
+
+### Runtime contract
+
+The minimum production contract includes stable identity, request correlation,
+idempotency, health, timeouts, terminal events, interrupt or enforceable abort,
+approval results, and auditable logs. Rejection and abort must converge to a
+terminal operation state and an idle or cancelled session state.
+
+The wire-level contract, event state machine, bridge procedure, and
+conformance checklist are defined in
+[Agent runtime contract](./agent-runtime-contract.mdx).
+
+## Canonical specification
+
+All adapters normalize into a versioned canonical specification containing:
+
+- source and platform identity;
+- runtime, model, instructions, and input/output schemas;
+- tools, MCP servers, skills, rules, and sub-agent references;
+- credential, filesystem, network, and data-egress requirements;
+- workspace, knowledge, memory, and schedules;
+- timeout, retry, concurrency, cost, and failure policy;
+- declared side effects and approval requirements.
+
+Normalization returns typed issues with `info`, `warning`,
+`approval_required`, or `blocking` severity. A declaration is evidence, not a
+grant. Verified and observed capabilities are tracked separately.
+
+## Lifecycle
+
+Lifecycle, source synchronization, and runtime health are independent states.
+
+```text
+Lifecycle: imported -> testing -> tested -> pending_approval -> published
+            |             |                                  |
+            +-> mapping_failed                               +-> suspended -> retired
+
+Source:    unknown | in_sync | drifted | missing | sync_error | detached
+Health:    unknown | healthy | degraded | unhealthy | unreachable
+```
+
+Any source or local configuration change invalidates testing and pending
+approval. A source update creates a candidate version and never overwrites the
+currently published revision in place.
+
+## Storage roadmap
+
+The existing governance row remains the release gate during the compatibility
+phase. Follow-up migrations introduce:
+
+- `LiteLLM_AgentSourceConnectorsTable` for provider endpoints and credential
+  references;
+- `LiteLLM_ManagedAgentSourcesTable` for source identity and sync state;
+- `LiteLLM_AgentSourceSnapshotsTable` for immutable raw and normalized source
+  versions;
+- `LiteLLM_AgentSourceSyncRunsTable` for scheduled and manual reconciliation;
+- `LiteLLM_AgentDriftFindingsTable` for field-level changes and resolution;
+- `LiteLLM_AgentHealthChecksTable` for health history.
+
+## Delivery phases
+
+### Phase 0: close governance gaps
+
+- Govern remote, Markdown, and bundle imports identically.
+- Preserve lifecycle on unchanged re-import.
+- Reject activation when an external source exists without governance.
+- Audit every import and source update.
+- Expose a source-provider catalog instead of presenting every runtime as an
+  import provider.
+- Backfill governance for existing file and bundle agents.
+
+### Phase 1: canonical ingestion
+
+- Add the canonical specification and normalization report.
+- Replace provider-specific import branching with a source-adapter registry.
+- Add preview, idempotency, per-item batch results, and blocking compatibility
+  findings.
+- Bind revisions to immutable source snapshots.
+
+### Phase 2: connectors and credentials
+
+- Add connector CRUD, connectivity tests, capability negotiation, and
+  owner-scoped credential references.
+- Protect endpoints from SSRF, DNS rebinding, metadata access, oversized
+  responses, and secret leakage.
+- Add signed webhook intake and replay protection where supported.
+
+### Phase 3: reconciliation and drift
+
+- Schedule connector reconciliation with database leases, incremental cursors,
+  jitter, backoff, and per-connector concurrency limits.
+- Classify field-level drift. High-risk changes suspend new work; lower-risk
+  changes remain candidates until accepted.
+- Treat repeated source absence as `missing`, not immediate deletion.
+
+### Phase 4: runtime conformance
+
+- Publish a bridge SDK, package runner, simulator, and conformance test kit.
+- Verify terminal events, rejection, interrupt, abort, timeouts, restart, and
+  event-stream recovery.
+- Issue short-lived capability tokens for each session.
+
+### Phase 5: health and retirement
+
+- Add continuous source, runtime, model, tool, MCP, and credential health.
+- Add emergency stop, schedule shutdown, credential revocation, external
+  suspend when supported, retention, and evidence-preserving retirement.
+
+## Compatibility rollout
+
+The rollout uses additive migrations and compatibility endpoints. Existing
+remote governance rows are backfilled into source records. Existing active file
+and bundle agents are grandfathered as published during migration, surfaced for
+review, and never silently stopped. Enforcement is enabled after shadow-mode
+reporting shows no unresolved legacy records.
+
+## Acceptance criteria
+
+- One hundred percent of externally sourced agents have governance and source
+  evidence.
+- No import path can activate an untested or unpublished revision.
+- Repeated imports are idempotent and source changes invalidate approval.
+- Unsupported high-risk fields are never silently discarded.
+- Source changes are detected within one reconciliation interval.
+- Emergency stop prevents new work and terminates platform-controlled work.
+- Every lifecycle and permission action is attributable in audit logs.
+- Adding a source requires an adapter, not changes to the core lifecycle.

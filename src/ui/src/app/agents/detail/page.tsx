@@ -77,16 +77,28 @@ import {
   cancelAgentTask,
   getAgent,
   getAgentGovernance,
+  getAgentSource,
+  getAgentByoCredentialStatus,
+  saveAgentByoCredential,
   preflightAgent,
   requestAgentPublish,
   rollbackAgent,
   testAgentGovernance,
+  syncAgentSource,
+  resolveAgentDrift,
+  checkAgentConformance,
+  checkAgentHealth,
+  emergencyStopAgent,
+  retireAgent,
+  type AgentSourceOverview,
   type AgentGovernanceResponse,
   type AgentPreflightReport,
   listAgentFiles,
   uploadAgentFile,
   listMemory,
   listRoutines,
+  updateRoutine,
+  triggerRoutine,
   listSessions,
   listVaultKeysForUser,
   storeMemory,
@@ -255,6 +267,23 @@ function taskPrompt(agent: Agent, input: Record<string, string>): string {
 }
 
 type MemoryFilter = "all" | "always" | "standard";
+type TaskStatusFilter = "all" | "active" | "failed";
+
+const MAX_VISIBLE_SESSIONS = 30;
+
+const SESSION_STATUS_BADGES: Record<string, { label: string; className: string }> = {
+  idle: { label: "空闲", className: "bg-muted text-muted-foreground" },
+  starting: { label: "启动中", className: "bg-sky-500/10 text-sky-700 dark:text-sky-400" },
+  running: { label: "运行中", className: "bg-sky-500/10 text-sky-700 dark:text-sky-400" },
+  busy: { label: "运行中", className: "bg-sky-500/10 text-sky-700 dark:text-sky-400" },
+  completed: { label: "已完成", className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  cancelled: { label: "已取消", className: "bg-muted text-muted-foreground" },
+  timed_out: { label: "超时", className: "bg-destructive/10 text-destructive" },
+  failed: { label: "失败", className: "bg-destructive/10 text-destructive" },
+  error: { label: "错误", className: "bg-destructive/10 text-destructive" },
+};
+
+const TERMINAL_TASK_STATUSES = ["succeeded", "failed", "cancelled"];
 
 const DASHBOARD_SECTIONS: Array<{ id: AgentDashboardSection; label: string }> = [
   { id: "overview", label: "总览" },
@@ -274,6 +303,16 @@ function AgentDetail() {
   const [activeSection, setActiveSection] = useState<AgentDashboardSection>("overview");
   const [sessions, setSessions] = useState<OpencodeSession[]>([]);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [taskFilter, setTaskFilter] = useState<TaskStatusFilter>("all");
+  const visibleTasks = useMemo(() => {
+    if (taskFilter === "active") {
+      return tasks.filter((task) => !TERMINAL_TASK_STATUSES.includes(task.status));
+    }
+    if (taskFilter === "failed") {
+      return tasks.filter((task) => task.status === "failed");
+    }
+    return tasks;
+  }, [tasks, taskFilter]);
   const [taskLauncherOpen, setTaskLauncherOpen] = useState(false);
   const [taskInputValues, setTaskInputValues] = useState<Record<string, string>>({});
   const [taskStarting, setTaskStarting] = useState(false);
@@ -438,7 +477,7 @@ function AgentDetail() {
         const ag = await getAgent(id);
         const owner = vaultUserFromAgent(ag);
         const [allSessions, memoryRows, fileRows, keyRows, routineRows, taskRows, report, governanceState] = await Promise.all([
-          listSessions().catch(() => []),
+          listSessions(id).catch(() => []),
           listMemory(id).catch(() => []),
           listAgentFiles(id).catch(() => []),
           listVaultKeysForUser(owner).catch(() => []),
@@ -449,7 +488,7 @@ function AgentDetail() {
         ]);
         setVaultUserId(owner);
         setAgent(ag);
-        setSessions(allSessions.filter((s) => s.agent_id === id || s.agent === id || s.harness === id));
+        setSessions(allSessions);
         setMemories(memoryRows);
         setFiles(fileRows);
         setStoredKeyEntries(keyRows);
@@ -470,6 +509,23 @@ function AgentDetail() {
       }
     })();
   }, [id]);
+
+  // Live refresh: while any task or session is still in a non-terminal state,
+  // re-fetch both every few seconds so the 运行 panel reflects reality without
+  // a manual page reload. Stops by itself once everything is terminal.
+  const hasActiveWork =
+    tasks.some((task) => !["succeeded", "failed", "cancelled"].includes(task.status)) ||
+    sessions.some(
+      (s) => s.status && !["idle", "completed", "cancelled", "failed", "error", "timed_out"].includes(s.status),
+    );
+  useEffect(() => {
+    if (!id || !hasActiveWork) return;
+    const timer = window.setInterval(() => {
+      listAgentTasks(id).then(setTasks).catch(() => {});
+      listSessions(id).then(setSessions).catch(() => {});
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [id, hasActiveWork]);
 
   useEffect(() => {
     const query = grantUserQuery.trim();
@@ -562,8 +618,49 @@ function AgentDetail() {
     }
   };
 
+  const runDisabledReason = !agent
+    ? null
+    : agent.status === "draft"
+      ? "草稿智能体需先激活才能运行"
+      : agent.status === "paused"
+        ? "智能体已暂停（紧急停止或健康检查失败），恢复后才能运行"
+        : agent.status === "archived_pending_delete"
+          ? "智能体已退役，不能再运行"
+          : null;
+
+  const [routineBusy, setRoutineBusy] = useState<string | null>(null);
+
+  const toggleRoutine = async (routine: Routine) => {
+    setRoutineBusy(routine.id);
+    try {
+      const next = await updateRoutine(routine.id, {
+        status: routine.status === "active" ? "paused" : "active",
+      });
+      setRoutines((current) => current.map((item) => (item.id === next.id ? next : item)));
+      toast.success(next.status === "active" ? "Routine 已启用" : "Routine 已暂停");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRoutineBusy(null);
+    }
+  };
+
+  const runRoutineNow = async (routine: Routine) => {
+    setRoutineBusy(routine.id);
+    try {
+      await triggerRoutine(routine.id);
+      toast.success(`已触发「${routine.name}」，任务列表稍后更新`);
+      listAgentTasks(id).then(setTasks).catch(() => {});
+      listRoutines(id).then(setRoutines).catch(() => {});
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRoutineBusy(null);
+    }
+  };
+
   const openSessionStart = () => {
-    if (!agent || agent.status === "draft") return;
+    if (!agent || runDisabledReason) return;
     const initial = Object.fromEntries(
       executionTaskInputs(agent).map((input) => [input.type, ""]),
     );
@@ -622,15 +719,18 @@ function AgentDetail() {
 
   const resumeWaitingTask = async (task: AgentTask) => {
     if (!agent || taskResuming) return;
+    // Fields left blank fall back to the task's original input — the user
+    // only has to fill in what the remote actually asked for, not retype
+    // every blueprint field.
     const normalized = Object.fromEntries(
-      executionTaskInputs(agent).map((input) => [
-        input.type,
-        resumeInputValues[input.type]?.trim() ?? "",
-      ]),
+      executionTaskInputs(agent).map((input) => {
+        const edited = resumeInputValues[input.type]?.trim() ?? "";
+        const original = task.input_json[input.type];
+        return [input.type, edited || (typeof original === "string" ? original : "")];
+      }),
     );
-    const missing = Object.entries(normalized).filter(([, value]) => !value).map(([key]) => key);
-    if (missing.length > 0) {
-      setTaskDetailError(`请补充：${missing.join("、")}`);
+    if (Object.values(normalized).every((value) => !value)) {
+      setTaskDetailError("请至少填写一项补充输入。");
       return;
     }
     setTaskResuming(true);
@@ -1031,8 +1131,8 @@ function AgentDetail() {
                   size="sm"
                   variant="default"
                   onClick={openSessionStart}
-                  disabled={agent.status === "draft"}
-                  title={agent.status === "draft" ? "激活后才能运行" : undefined}
+                  disabled={runDisabledReason != null}
+                  title={runDisabledReason ?? undefined}
                 >
                   <Play className="size-3.5" />
                   Run
@@ -1258,6 +1358,7 @@ function AgentDetail() {
                 {activeSection === "governance" && governance && (
                   <ManagedGovernancePanel
                     response={governance}
+                    grantsCount={grants.length}
                     onChange={setGovernance}
                     onAgentChange={setAgent}
                     onReport={setPreflightReport}
@@ -1985,22 +2086,46 @@ function AgentDetail() {
 
                 {activeSection === "runs" && (
                 <section>
-                  <div className="mb-2">
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      业务任务（{tasks.length}）
-                    </h2>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Task 记录业务目标与结果；Session 保留每次执行过程。
-                    </p>
+                  <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        业务任务（{visibleTasks.length}/{tasks.length}）
+                      </h2>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Task 记录业务目标与结果；Session 保留每次执行过程。
+                      </p>
+                    </div>
+                    <div className="flex gap-1">
+                      {([
+                        ["all", "全部"],
+                        ["active", "进行中"],
+                        ["failed", "失败"],
+                      ] as Array<[TaskStatusFilter, string]>).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setTaskFilter(value)}
+                          className={`rounded-md px-2 py-1 text-xs transition-colors ${
+                            taskFilter === value
+                              ? "bg-foreground text-background"
+                              : "bg-muted text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <Card className="overflow-hidden">
-                    {tasks.length === 0 ? (
+                    {visibleTasks.length === 0 ? (
                       <div className="p-5 text-sm text-muted-foreground">
-                        暂无 Task。新创建的运行会自动进入任务闭环。
+                        {tasks.length === 0
+                          ? "暂无 Task。新创建的运行会自动进入任务闭环。"
+                          : "没有符合当前过滤条件的任务。"}
                       </div>
                     ) : (
                       <div className="divide-y divide-border">
-                        {tasks.map((task) => (
+                        {visibleTasks.map((task) => (
                           <div key={task.id}>
                             <div className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                               <div className="min-w-0">
@@ -2012,10 +2137,12 @@ function AgentDetail() {
                                 </div>
                                 <p className="mt-1 font-mono text-[11px] text-muted-foreground">
                                   {task.id} · {formatMemoryDate(task.created_at)}
+                                  {task.current_attempt_number > 1 && ` · 第 ${task.current_attempt_number} 次尝试`}
                                 </p>
                                 {task.deadline_at && !["verifying", "succeeded", "failed", "cancelled"].includes(task.status) && (
-                                  <p className="mt-1 text-[11px] text-muted-foreground">
+                                  <p className={`mt-1 text-[11px] ${task.deadline_at < Date.now() ? "font-medium text-destructive" : "text-muted-foreground"}`}>
                                     截止：{formatMemoryDate(task.deadline_at)}
+                                    {task.deadline_at < Date.now() && "（已超期）"}
                                   </p>
                                 )}
                                 {task.failure_reason && (
@@ -2081,10 +2208,19 @@ function AgentDetail() {
                                         taskRetrying
                                         || task.current_attempt_number >= taskAttempts.max_attempts
                                       }
+                                      title={
+                                        task.current_attempt_number >= taskAttempts.max_attempts
+                                          ? `已达重试上限（${taskAttempts.max_attempts} 次尝试）`
+                                          : undefined
+                                      }
                                       onClick={() => void retryFailedTask(task)}
                                     >
                                       <RefreshCw className={`size-3.5 ${taskRetrying ? "animate-spin" : ""}`} />
-                                      {taskRetrying ? "重试中..." : "重试 Task"}
+                                      {taskRetrying
+                                        ? "重试中..."
+                                        : task.current_attempt_number >= taskAttempts.max_attempts
+                                          ? `已达上限（${taskAttempts.max_attempts}）`
+                                          : "重试 Task"}
                                     </Button>
                                   </div>
                                 )}
@@ -2304,7 +2440,7 @@ function AgentDetail() {
                         {routines.map((routine) => (
                           <div
                             key={routine.id}
-                            className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+                            className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center"
                           >
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium">{routine.name}</p>
@@ -2320,6 +2456,30 @@ function AgentDetail() {
                                 ? `最近运行 ${timeAgo(routine.last_run_at)}`
                                 : "尚未运行"}
                             </span>
+                            <div className="flex gap-1">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7"
+                                disabled={routineBusy === routine.id}
+                                onClick={() => void toggleRoutine(routine)}
+                              >
+                                {routine.status === "active" ? "暂停" : "启用"}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7"
+                                disabled={routineBusy === routine.id || runDisabledReason != null}
+                                title={runDisabledReason ?? "立即触发一次运行"}
+                                onClick={() => void runRoutineNow(routine)}
+                              >
+                                <Play className="size-3" />
+                                立即运行
+                              </Button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -2338,7 +2498,8 @@ function AgentDetail() {
                       size="sm"
                       variant="outline"
                       onClick={openSessionStart}
-                      disabled={agent.status === "draft"}
+                      disabled={runDisabledReason != null}
+                      title={runDisabledReason ?? undefined}
                     >
                       <Play className="size-3" />
                       Run
@@ -2348,23 +2509,42 @@ function AgentDetail() {
                     <p className="text-sm text-muted-foreground">还没有会话。</p>
                   ) : (
                     <div className="flex flex-col gap-2">
-                      {sessions.map((s) => (
-                        <Card
-                          key={s.id}
-                          className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 transition-colors hover:bg-muted/40"
-                          onClick={() => router.push(`/chat/?id=${encodeURIComponent(s.id)}`)}
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">{s.title ?? "Untitled session"}</p>
-                            <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{s.id}</p>
-                          </div>
-                          {s.time?.created && (
-                            <span className="shrink-0 text-xs text-muted-foreground">
-                              {timeAgo(s.time.created * 1000)}
-                            </span>
-                          )}
-                        </Card>
-                      ))}
+                      {sessions.slice(0, MAX_VISIBLE_SESSIONS).map((s) => {
+                        const status = SESSION_STATUS_BADGES[s.status ?? "idle"] ?? {
+                          label: s.status ?? "idle",
+                          className: "bg-muted text-muted-foreground",
+                        };
+                        return (
+                          <Card
+                            key={s.id}
+                            className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 transition-colors hover:bg-muted/40"
+                            onClick={() => router.push(`/chat/?id=${encodeURIComponent(s.id)}`)}
+                          >
+                            <div className="min-w-0">
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                <p className="truncate text-sm font-medium">{s.title ?? "Untitled session"}</p>
+                                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${status.className}`}>
+                                  {status.label}
+                                </span>
+                                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                  {s.task_id ? "任务执行" : "对话"}
+                                </span>
+                              </span>
+                              <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{s.id}</p>
+                            </div>
+                            {s.time?.created && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {timeAgo(s.time.created * 1000)}
+                              </span>
+                            )}
+                          </Card>
+                        );
+                      })}
+                      {sessions.length > MAX_VISIBLE_SESSIONS && (
+                        <p className="text-xs text-muted-foreground">
+                          仅显示最近 {MAX_VISIBLE_SESSIONS} 条，共 {sessions.length} 条。
+                        </p>
+                      )}
                     </div>
                   )}
                 </section>
@@ -2400,25 +2580,107 @@ const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
   published: "已发布",
   unhealthy: "运行检查失败",
   rolled_back: "已回滚",
+  mapping_failed: "映射失败",
+  suspended: "已暂停",
+  retired: "已退役",
 };
+
+const MANAGEMENT_MODE_LABELS: Record<string, string> = {
+  federated: "联邦接入",
+  mirrored: "镜像托管",
+  managed: "平台托管",
+};
+
+const SYNC_STATE_LABELS: Record<string, string> = {
+  unknown: "未知",
+  in_sync: "已同步",
+  drifted: "有漂移",
+  missing: "来源缺失",
+  sync_error: "同步失败",
+  detached: "已断开",
+};
+
+const CONFORMANCE_STATUS_LABELS: Record<string, string> = {
+  unknown: "未知",
+  conformant: "符合契约",
+  partial: "部分符合",
+  non_conformant: "不符合契约",
+};
+
+const DRIFT_RISK_LABELS: Record<string, string> = {
+  low: "低",
+  medium: "中",
+  high: "高",
+  critical: "严重",
+};
+
+/** Compact single-line preview of a drift value for the old→new diff row. */
+function driftValuePreview(value: unknown): string {
+  if (value === undefined || value === null) return "（空）";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > 60 ? `${text.slice(0, 57)}…` : text;
+}
+
+const HEALTH_FRESHNESS_MS = 24 * 60 * 60 * 1000;
 
 function ManagedGovernancePanel({
   response,
+  grantsCount,
   onChange,
   onAgentChange,
   onReport,
 }: {
   response: AgentGovernanceResponse;
+  grantsCount: number;
   onChange: (response: AgentGovernanceResponse) => void;
   onAgentChange: (agent: Agent) => void;
   onReport: (report: AgentPreflightReport) => void;
 }) {
-  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | null>(null);
+  const confirmAction = useConfirm();
+  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | "sync" | "conformance" | "health" | "accept" | "reject" | "stop" | "retire" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [source, setSource] = useState<AgentSourceOverview | null>(null);
+  const [byoConfigured, setByoConfigured] = useState<boolean | null>(null);
+  const [lastReport, setLastReport] = useState<{ kind: "运行检查" | "健康检查"; report: AgentPreflightReport } | null>(null);
   const governance = response.governance;
   const testedCurrentRevision =
     governance.runtime_health === "healthy" &&
     governance.tested_revision === response.current_revision;
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentSource(governance.agent_id)
+      .then((next) => {
+        if (!cancelled) setSource(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSource(null);
+      });
+    if (governance.credential_scope === "byo") {
+      void getAgentByoCredentialStatus(governance.agent_id)
+        .then((configured) => {
+          if (!cancelled) setByoConfigured(configured);
+        })
+        .catch(() => {
+          if (!cancelled) setByoConfigured(null);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [governance.agent_id, governance.credential_scope]);
+
+  const configureByoKey = async () => {
+    const value = window.prompt("输入你的 API Key（仅对你的会话生效）");
+    if (!value?.trim()) return;
+    try {
+      await saveAgentByoCredential(governance.agent_id, value.trim());
+      setByoConfigured(true);
+      toast.success("已保存你的 BYO 密钥");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "保存密钥失败"));
+    }
+  };
 
   const runTest = async () => {
     setBusy("test");
@@ -2426,7 +2688,10 @@ function ManagedGovernancePanel({
     try {
       const next = await testAgentGovernance(governance.agent_id);
       onChange(next);
-      if (next.preflight) onReport(next.preflight);
+      if (next.preflight) {
+        onReport(next.preflight);
+        setLastReport({ kind: "运行检查", report: next.preflight });
+      }
       toast.success(next.governance.runtime_health === "healthy" ? "运行检查通过" : "运行检查未通过");
     } catch (e) {
       setError(apiErrorMessage(e, "运行检查失败"));
@@ -2450,7 +2715,12 @@ function ManagedGovernancePanel({
   };
 
   const rollback = async () => {
-    if (!window.confirm("确认回滚到上一个已发布版本？回滚会生成新的版本记录。")) return;
+    const confirmed = await confirmAction({
+      title: "回滚智能体版本",
+      description: "回滚会恢复上一个已发布版本，并生成新的可审计版本记录。",
+      confirmLabel: "确认回滚",
+    });
+    if (!confirmed) return;
     setBusy("rollback");
     setError(null);
     try {
@@ -2468,12 +2738,95 @@ function ManagedGovernancePanel({
     }
   };
 
+  const refreshSource = async () => {
+    const next = await getAgentSource(governance.agent_id);
+    setSource(next);
+    return next;
+  };
+
+  const runSourceAction = async (
+    action: "sync" | "conformance" | "health" | "accept" | "reject",
+  ) => {
+    let reason: string | undefined;
+    if (action === "accept" || action === "reject") {
+      const input = window.prompt(
+        action === "accept"
+          ? "接受候选版本的原因（写入审计记录）"
+          : "拒绝候选版本的原因（写入审计记录）",
+      );
+      if (input === null) return;
+      reason = input.trim() || undefined;
+    }
+    setBusy(action);
+    setError(null);
+    try {
+      if (action === "sync") setSource(await syncAgentSource(governance.agent_id));
+      if (action === "accept") setSource(await resolveAgentDrift(governance.agent_id, "accept", reason));
+      if (action === "reject") setSource(await resolveAgentDrift(governance.agent_id, "reject", reason));
+      if (action === "conformance") {
+        await checkAgentConformance(governance.agent_id);
+        await refreshSource();
+      }
+      if (action === "health") {
+        const result = await checkAgentHealth(governance.agent_id);
+        onReport(result.preflight);
+        setLastReport({ kind: "健康检查", report: result.preflight });
+        await refreshSource();
+      }
+      toast.success({
+        sync: "来源同步完成",
+        conformance: "运行时契约检查完成",
+        health: "健康检查完成",
+        accept: "来源变更已接受，智能体已回到草稿状态",
+        reject: "来源变更已拒绝",
+      }[action]);
+    } catch (e) {
+      setError(apiErrorMessage(e, "纳管操作失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stopOrRetire = async (action: "stop" | "retire") => {
+    const confirmed = await confirmAction({
+      title: action === "stop" ? "紧急停止智能体" : "退役智能体",
+      description:
+        action === "stop"
+          ? "将暂停新工作、取消进行中的会话和运行，并撤销会话能力令牌。"
+          : "将停止全部工作、撤销能力令牌、断开来源连接并保留审计证据。",
+      confirmLabel: action === "stop" ? "紧急停止" : "确认退役",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setBusy(action);
+    setError(null);
+    try {
+      if (action === "stop") await emergencyStopAgent(governance.agent_id);
+      else await retireAgent(governance.agent_id);
+      onAgentChange(await getAgent(governance.agent_id));
+      onChange(await getAgentGovernance(governance.agent_id));
+      await refreshSource();
+      toast.success(action === "stop" ? "智能体已紧急停止" : "智能体已退役");
+    } catch (e) {
+      setError(apiErrorMessage(e, action === "stop" ? "紧急停止失败" : "退役失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const published = ["published", "rolled_back"].includes(governance.lifecycle_status);
+  const healthFresh =
+    governance.last_health_at != null &&
+    Date.now() - governance.last_health_at < HEALTH_FRESHNESS_MS;
   const stages = [
     { label: "导入", done: true },
     { label: "测试", done: testedCurrentRevision },
-    { label: "发布", done: ["published", "rolled_back"].includes(governance.lifecycle_status) },
-    { label: "授权", done: ["published", "rolled_back"].includes(governance.lifecycle_status) },
-    { label: "监控", done: governance.last_health_at != null },
+    { label: "发布", done: published },
+    // Authorized means someone actually holds a grant — publishing alone
+    // grants nobody anything.
+    { label: grantsCount > 0 ? `授权（${grantsCount}）` : "授权", done: published && grantsCount > 0 },
+    // Monitored means a recent health check, not "checked once, ever".
+    { label: "监控", done: healthFresh },
   ];
 
   return (
@@ -2499,13 +2852,40 @@ function ManagedGovernancePanel({
         <div className="grid gap-4 p-4 lg:grid-cols-[1fr_auto]">
           <dl className="grid gap-x-5 gap-y-2 text-xs sm:grid-cols-[120px_1fr]">
             <dt className="text-muted-foreground">纳管状态</dt>
-            <dd className="font-medium">{GOVERNANCE_STATUS_LABELS[governance.lifecycle_status] ?? governance.lifecycle_status}</dd>
+            <dd className="font-medium">
+              {GOVERNANCE_STATUS_LABELS[governance.lifecycle_status] ?? governance.lifecycle_status}
+              {governance.lifecycle_status === "pending_approval" && (
+                <span className="ml-2 font-normal text-muted-foreground">
+                  <a href="/inbox/" className="underline underline-offset-2 hover:text-foreground">
+                    在收件箱查看审批
+                  </a>
+                  ；重新点击"运行检查"可撤回申请并回到测试状态
+                </span>
+              )}
+            </dd>
             <dt className="text-muted-foreground">外部来源版本</dt>
             <dd>v{governance.source_version} · 本地 revision {response.current_revision}</dd>
             <dt className="text-muted-foreground">来源</dt>
             <dd className="break-all">{governance.source_provider} · {governance.external_agent_id}</dd>
             <dt className="text-muted-foreground">运行凭据</dt>
-            <dd>{governance.credential_scope === "personal" ? "属主隔离凭据" : "运行时由用户提供"}</dd>
+            <dd>
+              {governance.credential_scope === "personal" ? (
+                "属主隔离凭据（共享模式）"
+              ) : (
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  BYO：每个使用者需配置自己的密钥
+                  {byoConfigured === true && <Badge variant="outline">你已配置</Badge>}
+                  {byoConfigured === false && <Badge variant="destructive">你未配置</Badge>}
+                  <button
+                    type="button"
+                    onClick={() => void configureByoKey()}
+                    className="underline underline-offset-2 text-muted-foreground hover:text-foreground"
+                  >
+                    {byoConfigured ? "更新我的密钥" : "配置我的密钥"}
+                  </button>
+                </span>
+              )}
+            </dd>
             <dt className="text-muted-foreground">运行健康</dt>
             <dd className={governance.runtime_health === "unhealthy" ? "text-destructive" : ""}>
               {governance.runtime_health === "healthy" ? "健康" : governance.runtime_health === "unhealthy" ? "异常" : "尚未检查"}
@@ -2526,8 +2906,146 @@ function ManagedGovernancePanel({
             </Button>
           </div>
         </div>
-        {error && <p className="border-t border-border bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
       </Card>
+      {lastReport && (
+        <Card className="mt-3 p-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">
+              最近{lastReport.kind}详情
+              <span className={`ml-2 rounded px-2 py-0.5 text-xs font-medium ${lastReport.report.can_activate ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
+                {lastReport.report.can_activate ? "通过" : "存在阻断项"}
+              </span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setLastReport(null)}
+              className="text-xs text-muted-foreground hover:text-foreground"
+              aria-label="收起检查详情"
+            >
+              收起
+            </button>
+          </div>
+          <ul className="mt-3 grid gap-1.5">
+            {lastReport.report.checks.map((check, index) => {
+              const meta = PREFLIGHT_VERDICT_META[check.verdict] ?? PREFLIGHT_VERDICT_META.unverified;
+              return (
+                <li key={`${check.id}-${index}`} className="flex items-start gap-2 text-xs">
+                  <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium ${meta.className}`}>
+                    {meta.label}
+                  </span>
+                  <span>
+                    <span className="font-medium">{check.label}</span>
+                    <span className="ml-1 text-muted-foreground">{check.detail}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      )}
+      {source && (
+        <Card className="mt-3 overflow-hidden">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold">来源、漂移与运行保障</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {MANAGEMENT_MODE_LABELS[source.source.management_mode] ?? source.source.management_mode} ·{" "}
+                {SYNC_STATE_LABELS[source.source.sync_state] ?? source.source.sync_state} · 来源快照 v
+                {source.current_snapshot?.version ?? "-"}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("sync")}>
+                <RefreshCw className={`size-3.5 ${busy === "sync" ? "animate-spin" : ""}`} />同步来源
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("conformance")}>
+                <ShieldCheck className="size-3.5" />契约检查
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("health")}>
+                <Activity className="size-3.5" />健康检查
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-4 p-4 lg:grid-cols-2">
+            <div className="grid gap-2 text-xs">
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">连接器</span>
+                <span className="font-mono">{source.source.connector_id ?? "平台托管来源"}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">运行时契约</span>
+                <span>
+                  {source.conformance
+                    ? `${source.conformance.contract_version} · ${CONFORMANCE_STATUS_LABELS[source.conformance.status] ?? source.conformance.status}`
+                    : "尚未检查"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">规范化问题</span>
+                <span>{source.current_snapshot?.normalization_issues.length ?? 0} 项</span>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <span className="text-muted-foreground">最近健康记录</span>
+                <span>{source.recent_health_checks.length} 项</span>
+              </div>
+              {source.conformance && source.conformance.checks.length > 0 && (
+                <div className="rounded-md border border-border px-3 py-2">
+                  <span className="text-muted-foreground">契约检查明细</span>
+                  <ul className="mt-1.5 grid gap-1">
+                    {source.conformance.checks.map((check) => (
+                      <li key={check.id} className="flex items-start gap-2">
+                        <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium ${check.passed ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : check.required ? "bg-destructive/10 text-destructive" : "bg-amber-500/10 text-amber-700 dark:text-amber-400"}`}>
+                          {check.passed ? "通过" : check.required ? "未通过" : "可选未通过"}
+                        </span>
+                        <span className="text-muted-foreground">{check.detail}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <div>
+              <h4 className="text-xs font-semibold">漂移发现</h4>
+              {source.drift_findings.filter((finding) => finding.resolution === "open").length === 0 ? (
+                <p className="mt-2 rounded-md border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">没有待处理的来源漂移。</p>
+              ) : (
+                <div className="mt-2 grid max-h-44 gap-1.5 overflow-y-auto">
+                  {source.drift_findings.filter((finding) => finding.resolution === "open").map((finding) => (
+                    <div key={finding.id} className="rounded-md border border-border px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate font-mono">{finding.field_path}</span>
+                        <Badge variant={finding.risk === "critical" || finding.risk === "high" ? "destructive" : "outline"}>
+                          {DRIFT_RISK_LABELS[finding.risk] ?? finding.risk}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 truncate text-muted-foreground" title={`${driftValuePreview(finding.previous_value)} → ${driftValuePreview(finding.candidate_value)}`}>
+                        {driftValuePreview(finding.previous_value)} → {driftValuePreview(finding.candidate_value)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {source.candidate_snapshot && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" disabled={busy !== null} onClick={() => void runSourceAction("accept")}>接受候选版本</Button>
+                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("reject")}>拒绝候选版本</Button>
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+      {/* Safety controls stay available even when the source overview fails to
+          load — emergency stop must never depend on an unrelated fetch. */}
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <Button size="sm" variant="outline" className="text-destructive" disabled={busy !== null || governance.lifecycle_status === "retired"} onClick={() => void stopOrRetire("stop")}>
+          紧急停止
+        </Button>
+        <Button size="sm" variant="destructive" disabled={busy !== null || governance.lifecycle_status === "retired"} onClick={() => void stopOrRetire("retire")}>
+          退役智能体
+        </Button>
+      </div>
+      {error && <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
     </section>
   );
 }

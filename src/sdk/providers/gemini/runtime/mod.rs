@@ -204,10 +204,11 @@ impl RuntimeAdapter for GeminiAntigravityRuntime {
                 events: params.events,
             };
             let raw = client
-                .post(
+                .post_for_session(
                     AgentRuntime::GeminiAntigravity,
                     "/v1beta/interactions",
                     &interaction_body(&context, &request)?,
+                    session_id,
                 )
                 .await?;
             let interaction_id = id(&raw)?;
@@ -234,13 +235,15 @@ impl RuntimeAdapter for GeminiAntigravityRuntime {
                 return Ok(Box::pin(futures_stream::empty()) as AgentEventStream);
             };
             let polling_client = client.clone();
+            let session_id = session_id.to_owned();
             let stream = try_stream! {
                 let mut seen = HashSet::new();
                 loop {
                     let raw = polling_client
-                        .get(
+                        .get_for_session(
                             AgentRuntime::GeminiAntigravity,
                             &format!("/v1beta/interactions/{interaction_id}"),
+                            &session_id,
                         )
                         .await?;
                     for event in events_from_interaction(&raw) {
@@ -269,9 +272,10 @@ impl RuntimeAdapter for GeminiAntigravityRuntime {
                 return Ok(json!({ "data": [] }));
             };
             let raw = client
-                .get(
+                .get_for_session(
                     AgentRuntime::GeminiAntigravity,
                     &format!("/v1beta/interactions/{interaction_id}"),
+                    session_id,
                 )
                 .await?;
             Ok(json!({ "data": list_events_from_interaction(&raw), "raw": raw }))

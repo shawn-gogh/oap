@@ -475,7 +475,6 @@ export function runtimeEventsToMessages(
 
 export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "busy" | null {
   let next: "idle" | "busy" | null = null;
-  let lastActivityWasTool = false;
   for (const ev of events) {
     const type = normalizedRuntimeEventType(ev);
     if (isLocalRuntimeUserEvent(ev)) {
@@ -484,21 +483,22 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
     }
     if (isRuntimeTurnStartEvent(type)) {
       next = "busy";
-      lastActivityWasTool = false;
       continue;
     }
     if (isRuntimeFinalResponseEvent(type)) {
       next = "idle";
-      lastActivityWasTool = false;
+      continue;
+    }
+    if (isRuntimeToolEvent(type) && ev.status === "rejected") {
+      next = "idle";
       continue;
     }
     if (type === "user.message" || isRuntimeAssistantTextEvent(type) || isRuntimeThinkingEvent(type) || isRuntimeToolEvent(type)) {
       next = "busy";
-      lastActivityWasTool = isRuntimeToolEvent(type);
       continue;
     }
     if (type === "session.status_idle" || type === "session.thread_status_idle" || type === "session.error") {
-      if (!lastActivityWasTool || type === "session.error") next = "idle";
+      next = "idle";
       continue;
     }
     if (type === "session.status") {
@@ -513,7 +513,7 @@ export function runtimeStatusFromEvents(events: RuntimeAgentEvent[]): "idle" | "
       if (
         statusType === "error" ||
         statusType === "failed" ||
-        (statusType === "idle" && !lastActivityWasTool)
+        statusType === "idle"
       ) next = "idle";
     }
   }

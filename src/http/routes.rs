@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{any, delete, get, post, put},
     Router,
 };
@@ -236,6 +237,48 @@ fn session_routes() -> Router<Arc<AppState>> {
         )
         .route("/session/{session_id}/interrupt", post(sessions::interrupt))
         .route("/session/{session_id}/abort", post(sessions::abort))
+        .route(
+            "/api/sessions/{session_id}/turns",
+            get(sessions::list_turns).post(sessions::create_turn),
+        )
+        .route(
+            "/api/sessions/{session_id}/active-turn",
+            get(sessions::active_turn),
+        )
+        .route(
+            "/api/sessions/{session_id}/turns/{turn_id}",
+            get(sessions::get_turn),
+        )
+        .route(
+            "/api/sessions/{session_id}/turns/{turn_id}/artifacts",
+            post(sessions::create_artifact).layer(DefaultBodyLimit::max(30 * 1024 * 1024)),
+        )
+        .route(
+            "/api/sessions/{session_id}/artifacts",
+            get(sessions::list_artifacts),
+        )
+        .route(
+            "/api/sessions/{session_id}/artifacts/{artifact_id}",
+            get(sessions::get_artifact),
+        )
+        .route(
+            "/api/sessions/{session_id}/turns/{turn_id}/cancel",
+            post(sessions::cancel_turn),
+        )
+        .route(
+            "/api/sessions/{session_id}/control-events",
+            get(sessions::control_events),
+        )
+        .route(
+            "/api/sessions/{session_id}/control-events/stream",
+            get(sessions::control_event_stream),
+        )
+        .route(
+            "/api/sessions/{session_id}/cloudevents",
+            get(sessions::cloud_events)
+                .post(sessions::ingest_cloud_event)
+                .layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
         .route(
             "/session/{session_id}/workspace/files",
             get(sessions::list_files).delete(sessions::delete_file),

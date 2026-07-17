@@ -17,6 +17,10 @@ pub mod base;
 pub mod import_agents;
 // Standalone import provider (not a `providers/<name>/` directory, so build.rs
 // does not auto-wire it); opt-in via http/managed_agents/import.rs.
+pub mod a2a_import_agents;
+pub mod acp_import_agents;
+pub mod dify_import_agents;
+pub mod openapi_import_agents;
 pub mod opencode_import_agents;
 
 pub(crate) fn adapter(runtime: AgentRuntime) -> Option<Arc<dyn RuntimeAdapter>> {

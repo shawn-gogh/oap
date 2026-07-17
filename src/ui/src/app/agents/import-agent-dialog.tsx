@@ -19,8 +19,12 @@ import {
   importAgentBundle,
   importOpencodeAgentFiles,
   importProviderAgents,
+  listImportProviders,
   listRuntimeHarnesses,
+  previewProviderAgents,
   type ExternalAgent,
+  type ImportPreviewItem,
+  type ImportProvider,
 } from "@/lib/api";
 import type { Agent, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -33,9 +37,11 @@ interface ImportAgentDialogProps {
 
 export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgentDialogProps) {
   const [mode, setMode] = useState<"remote" | "files" | "bundle">("remote");
-  const [providers, setProviders] = useState<RuntimeHarness[]>([]);
+  const [providers, setProviders] = useState<ImportProvider[]>([]);
+  const [runtimes, setRuntimes] = useState<RuntimeHarness[]>([]);
   const [providersLoading, setProvidersLoading] = useState(false);
   const [providerId, setProviderId] = useState("");
+  const [runtimeId, setRuntimeId] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [credentialMode, setCredentialMode] = useState<"shared" | "byo">("shared");
@@ -47,25 +53,37 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ImportPreviewItem[]>([]);
+  const [previewConfirmed, setPreviewConfirmed] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setProvidersLoading(true);
-    listRuntimeHarnesses()
-      .then((values) => {
-        setProviders(values);
-        const first = values[0];
-        setProviderId(first?.alias ?? "");
+    Promise.all([listImportProviders(), listRuntimeHarnesses()])
+      .then(([sourceProviders, runtimeHarnesses]) => {
+        const compatibleRuntimes = runtimeHarnesses.filter(
+          (runtime) => runtime.api_spec === "claude_managed_agents",
+        );
+        setProviders(sourceProviders);
+        setRuntimes(compatibleRuntimes);
+        setProviderId(sourceProviders[0]?.id ?? "");
+        setRuntimeId(
+          compatibleRuntimes.find((runtime) => runtime.connected)?.alias ??
+            compatibleRuntimes[0]?.alias ??
+            "",
+        );
       })
       .catch(() => {
         setProviders([]);
+        setRuntimes([]);
         setProviderId("");
+        setRuntimeId("");
       })
       .finally(() => setProvidersLoading(false));
   }, [open]);
 
-  const selectedProvider = providers.find((provider) => provider.alias === providerId);
-  const providerName = selectedProvider?.display_name ?? providerId;
+  const selectedProvider = providers.find((provider) => provider.id === providerId);
+  const providerName = selectedProvider?.name ?? providerId;
   const filteredAgents = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return externalAgents;
@@ -85,6 +103,8 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     setSelectedIds([]);
     setQuery("");
     setError(null);
+    setPreview([]);
+    setPreviewConfirmed(false);
   };
 
   const close = (nextOpen: boolean) => {
@@ -99,6 +119,8 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
       const discovered = await discoverProviderAgents({ providerId, endpoint, apiKey });
       setExternalAgents(discovered);
       setSelectedIds(discovered.map((agent) => agent.id));
+      setPreview([]);
+      setPreviewConfirmed(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -118,7 +140,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
         const imported = await importAgentBundle({
           filename: bundle.filename,
           contentBase64: bundle.base64,
-          runtime: providerId || undefined,
+          runtime: runtimeId || undefined,
         });
         onImported(imported);
         close(false);
@@ -138,7 +160,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
       setError(null);
       try {
         const imported = await importOpencodeAgentFiles({
-          runtime: providerId || undefined,
+          runtime: runtimeId || undefined,
           files: agentFiles,
         });
         onImported(imported);
@@ -159,6 +181,34 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     setSaving(true);
     setError(null);
     try {
+      const previewItems = await previewProviderAgents({
+        providerId,
+        endpoint,
+        credentialMode,
+        agents: selected.map((agent) => ({
+          externalId: agent.id,
+          name: agent.name,
+          description: agent.description,
+          model: agent.model,
+          raw: agent.raw,
+        })),
+      });
+      setPreview(previewItems);
+      const blocking = previewItems.flatMap((item) => item.issues).filter(
+        (issue) => issue.severity === "blocking",
+      );
+      if (blocking.length > 0) {
+        setError(`预检发现 ${blocking.length} 个阻断问题，请修复后再导入。`);
+        return;
+      }
+      const requiresApproval = previewItems.flatMap((item) => item.issues).some(
+        (issue) => issue.severity === "approval_required",
+      );
+      if (requiresApproval && !previewConfirmed) {
+        setPreviewConfirmed(true);
+        setError("预检发现需要人工映射和审批的高风险字段。请核对下方结果后再次点击导入。");
+        return;
+      }
       const imported = await importProviderAgents({
         providerId,
         endpoint,
@@ -182,6 +232,8 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   };
 
   const toggleAgent = (id: string) => {
+    setPreview([]);
+    setPreviewConfirmed(false);
     setSelectedIds((current) =>
       current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
     );
@@ -261,40 +313,72 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
             </p>
           </div>
           <div className="grid gap-1.5">
-            <Label>{mode === "files" ? "运行时" : "平台"}</Label>
+            <Label>{mode === "remote" ? "来源平台" : "执行运行时"}</Label>
             <div className="grid gap-2">
-              {providers.map((provider) => {
-                const selected = provider.alias === providerId;
-                return (
-                  <button
-                    key={provider.alias}
-                    type="button"
-                    onClick={() => setProviderId(provider.alias)}
-                    className={cn(
-                      "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50",
-                      selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
-                    )}
-                  >
-                    <RuntimeProviderLogo alias={provider.alias} apiSpec={provider.api_spec} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-medium leading-tight">
-                        {provider.display_name}
-                      </span>
-                      <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
-                        {provider.alias}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
+              {mode === "remote"
+                ? providers.map((provider) => {
+                    const selected = provider.id === providerId;
+                    return (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        onClick={() => {
+                          setProviderId(provider.id);
+                          setExternalAgents([]);
+                          setSelectedIds([]);
+                          setPreview([]);
+                          setPreviewConfirmed(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                          selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
+                        )}
+                      >
+                        <RuntimeProviderLogo alias={provider.id} apiSpec={provider.api_spec} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium leading-tight">
+                            {provider.name}
+                          </span>
+                          <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+                            {provider.id} · {provider.capabilities.runtime_contract}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })
+                : runtimes.map((runtime) => {
+                    const selected = runtime.alias === runtimeId;
+                    return (
+                      <button
+                        key={runtime.alias}
+                        type="button"
+                        onClick={() => setRuntimeId(runtime.alias)}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                          selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
+                        )}
+                      >
+                        <RuntimeProviderLogo alias={runtime.alias} apiSpec={runtime.api_spec} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium leading-tight">
+                            {runtime.display_name}
+                          </span>
+                          <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+                            {runtime.alias} · {runtime.connected ? "已连接" : "未连接"}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
               {providersLoading && (
                 <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  正在加载运行时提供方...
+                  正在加载纳管来源…
                 </div>
               )}
-              {!providersLoading && providers.length === 0 && (
+              {!providersLoading &&
+                (mode === "remote" ? providers.length === 0 : runtimes.length === 0) && (
                 <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  暂无可用的运行时提供方。
+                  {mode === "remote" ? "暂无可用的导入来源。" : "暂无兼容的执行运行时。"}
                 </div>
               )}
             </div>
@@ -306,7 +390,13 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                 <Input
                   id="import-endpoint"
                   value={endpoint}
-                  onChange={(e) => setEndpoint(e.target.value)}
+                  onChange={(e) => {
+                    setEndpoint(e.target.value);
+                    setExternalAgents([]);
+                    setSelectedIds([]);
+                    setPreview([]);
+                    setPreviewConfirmed(false);
+                  }}
                   placeholder="https://deployment.kb.us-central1.gcp.cloud.es.io"
                 />
               </div>
@@ -315,6 +405,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                 <Input
                   id="import-key"
                   type="password"
+                  autoComplete="current-password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="API 密钥"
@@ -330,7 +421,11 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                     <button
                       key={option.value}
                       type="button"
-                      onClick={() => setCredentialMode(option.value)}
+                      onClick={() => {
+                        setCredentialMode(option.value);
+                        setPreview([]);
+                        setPreviewConfirmed(false);
+                      }}
                       className={cn(
                         "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
                         credentialMode === option.value
@@ -413,6 +508,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="搜索智能体"
+                    aria-label="搜索已发现的智能体"
                     className="pl-8"
                   />
                 </div>
@@ -458,6 +554,36 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               </div>
             </div>
           )}
+          {mode === "remote" && preview.length > 0 && (
+            <div className="rounded-lg border border-border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium">导入预检</p>
+                <span className="text-xs text-muted-foreground">
+                  {preview.length} 个规范化结果
+                </span>
+              </div>
+              <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+                {preview.map((item) => (
+                  <div key={item.external_id} className="rounded-md border border-border bg-background px-3 py-2">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate font-mono">{item.external_id}</span>
+                      <span className={item.can_import ? "text-emerald-600" : "text-destructive"}>
+                        {item.can_import ? "可导入" : "已阻断"}
+                      </span>
+                    </div>
+                    {item.issues.map((issue) => (
+                      <p key={`${issue.code}-${issue.field}`} className="mt-1 text-xs text-muted-foreground">
+                        [{issue.severity}] {issue.field}：{issue.message}
+                      </p>
+                    ))}
+                    {item.issues.length === 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">未发现兼容性问题。</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter className="m-0 rounded-b-xl px-6 py-4">
@@ -469,8 +595,8 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
             disabled={saving || (mode === "remote" ? selectedIds.length === 0 : mode === "bundle" ? !bundle : agentFiles.length === 0)}
           >
             {saving
-              ? "导入中..."
-              : `导入${mode === "remote" ? ` ${selectedIds.length}` : mode === "bundle" ? "" : ` ${agentFiles.length}`}`}
+              ? "导入中…"
+              : `${mode === "remote" && previewConfirmed ? "确认" : ""}导入${mode === "remote" ? ` ${selectedIds.length}` : mode === "bundle" ? "" : ` ${agentFiles.length}`}`}
           </Button>
         </DialogFooter>
       </DialogContent>

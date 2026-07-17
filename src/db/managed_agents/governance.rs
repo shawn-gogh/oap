@@ -1,7 +1,10 @@
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::{db::managed_agents::now_ms, errors::GatewayError};
+use crate::{
+    db::managed_agents::{now_ms, registry::schema::ManagedAgentRow},
+    errors::GatewayError,
+};
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct AgentGovernanceRow {
@@ -36,6 +39,22 @@ pub struct ImportedSource<'a> {
     pub source_hash: &'a str,
     pub credential_scope: &'a str,
     pub credential_name: Option<&'a str>,
+}
+
+pub fn external_source_kind(agent: &ManagedAgentRow) -> Option<&str> {
+    agent
+        .config
+        .pointer("/source/kind")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+}
+
+pub fn requires_governance(agent: &ManagedAgentRow) -> bool {
+    matches!(
+        external_source_kind(agent),
+        Some("external_agent" | "opencode_agent_file" | "agent_bundle")
+    )
 }
 
 pub async fn get(
@@ -79,7 +98,7 @@ pub async fn record_import(
     source: ImportedSource<'_>,
 ) -> Result<AgentGovernanceRow, GatewayError> {
     let now = now_ms();
-    sqlx::query_as::<_, AgentGovernanceRow>(
+    let governance = sqlx::query_as::<_, AgentGovernanceRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentGovernanceTable" (
           agent_id, owner_id, source_provider, source_endpoint, external_agent_id,
@@ -94,13 +113,33 @@ pub async fn record_import(
             ELSE "LiteLLM_ManagedAgentGovernanceTable".source_version + 1
           END,
           source_hash = EXCLUDED.source_hash,
-          lifecycle_status = 'imported',
-          runtime_health = 'unknown',
-          health_detail = NULL,
+          lifecycle_status = CASE
+            WHEN "LiteLLM_ManagedAgentGovernanceTable".source_hash = EXCLUDED.source_hash
+              THEN "LiteLLM_ManagedAgentGovernanceTable".lifecycle_status
+            ELSE 'imported'
+          END,
+          runtime_health = CASE
+            WHEN "LiteLLM_ManagedAgentGovernanceTable".source_hash = EXCLUDED.source_hash
+              THEN "LiteLLM_ManagedAgentGovernanceTable".runtime_health
+            ELSE 'unknown'
+          END,
+          health_detail = CASE
+            WHEN "LiteLLM_ManagedAgentGovernanceTable".source_hash = EXCLUDED.source_hash
+              THEN "LiteLLM_ManagedAgentGovernanceTable".health_detail
+            ELSE NULL
+          END,
           credential_scope = EXCLUDED.credential_scope,
           credential_name = EXCLUDED.credential_name,
-          tested_revision = NULL,
-          publish_approval_id = NULL,
+          tested_revision = CASE
+            WHEN "LiteLLM_ManagedAgentGovernanceTable".source_hash = EXCLUDED.source_hash
+              THEN "LiteLLM_ManagedAgentGovernanceTable".tested_revision
+            ELSE NULL
+          END,
+          publish_approval_id = CASE
+            WHEN "LiteLLM_ManagedAgentGovernanceTable".source_hash = EXCLUDED.source_hash
+              THEN "LiteLLM_ManagedAgentGovernanceTable".publish_approval_id
+            ELSE NULL
+          END,
           updated_at = EXCLUDED.updated_at
         RETURNING *
         "#,
@@ -116,7 +155,24 @@ pub async fn record_import(
     .bind(now)
     .fetch_one(pool)
     .await
-    .map_err(GatewayError::Database)
+    .map_err(GatewayError::Database)?;
+    let management_mode =
+        match crate::db::managed_agents::registry::repository::get(pool, &governance.agent_id)
+            .await?
+            .as_ref()
+            .and_then(external_source_kind)
+        {
+            Some("external_agent") => "federated",
+            _ => "managed",
+        };
+    crate::db::managed_agents::sources::repository::ensure_source(
+        pool,
+        &governance,
+        management_mode,
+        None,
+    )
+    .await?;
+    Ok(governance)
 }
 
 pub async fn mark_tested(
@@ -132,7 +188,8 @@ pub async fn mark_tested(
         r#"
         UPDATE "LiteLLM_ManagedAgentGovernanceTable"
         SET lifecycle_status = $2, runtime_health = $3, health_detail = $4,
-            tested_revision = $5, last_health_at = $6, updated_at = $6
+            tested_revision = $5, last_health_at = $6, updated_at = $6,
+            publish_approval_id = NULL
         WHERE agent_id = $1
         RETURNING *
         "#,
@@ -190,6 +247,49 @@ pub async fn mark_changed(
     .map_err(GatewayError::Database)
 }
 
+pub async fn suspend(
+    pool: &PgPool,
+    agent_id: &str,
+    detail: &str,
+) -> Result<AgentGovernanceRow, GatewayError> {
+    sqlx::query_as::<_, AgentGovernanceRow>(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentGovernanceTable"
+        SET lifecycle_status = 'suspended', runtime_health = 'degraded',
+            health_detail = $2, publish_approval_id = NULL, updated_at = $3
+        WHERE agent_id = $1 RETURNING *
+        "#,
+    )
+    .bind(agent_id)
+    .bind(detail)
+    .bind(now_ms())
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn retire(
+    pool: &PgPool,
+    agent_id: &str,
+    detail: &str,
+) -> Result<AgentGovernanceRow, GatewayError> {
+    sqlx::query_as::<_, AgentGovernanceRow>(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentGovernanceTable"
+        SET lifecycle_status = 'retired', runtime_health = 'unreachable',
+            health_detail = $2, tested_revision = NULL,
+            publish_approval_id = NULL, updated_at = $3
+        WHERE agent_id = $1 RETURNING *
+        "#,
+    )
+    .bind(agent_id)
+    .bind(detail)
+    .bind(now_ms())
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn reject_publish(
     pool: &PgPool,
     agent_id: &str,
@@ -228,9 +328,14 @@ pub async fn publish(
     .bind(agent_id)
     .bind(revision)
     .bind(now_ms())
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
-    .map_err(GatewayError::Database)
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| {
+        GatewayError::BadRequest(
+            "该智能体当前不处于待审批状态，发布审批可能已过期或被撤销。".to_owned(),
+        )
+    })
 }
 
 pub async fn mark_rolled_back(
@@ -241,7 +346,8 @@ pub async fn mark_rolled_back(
     sqlx::query_as::<_, AgentGovernanceRow>(
         r#"
         UPDATE "LiteLLM_ManagedAgentGovernanceTable"
-        SET lifecycle_status = 'rolled_back', runtime_health = 'healthy',
+        SET lifecycle_status = 'rolled_back', runtime_health = 'unknown',
+            health_detail = '已回滚到先前发布的版本，建议重新运行检查确认当前健康状态。',
             previous_published_revision = published_revision,
             published_revision = $2, tested_revision = $2,
             publish_approval_id = NULL, updated_at = $3

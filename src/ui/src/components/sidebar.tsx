@@ -231,6 +231,13 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           group: "基础设施",
         },
         {
+          label: "智能体来源",
+          href: "/agent-sources/",
+          icon: Server,
+          active: (path: string) => path.startsWith("/agent-sources"),
+          group: "基础设施",
+        },
+        {
           label: "MCP 服务器",
           href: "/mcp-servers/",
           icon: Server,
