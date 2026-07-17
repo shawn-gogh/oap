@@ -162,6 +162,26 @@ fn detects_removed_stored_credentials() {
 }
 
 #[test]
+fn session_scoped_mcp_credentials_are_detected() {
+    let scoped = VaultCredential::McpStaticBearer(super::credential::McpVaultCredential {
+        url: "https://gateway.example.com/mcp_gmail/mcp?session_id=ses_1".to_owned(),
+        token: "cap_1".to_owned(),
+    });
+    let stable = VaultCredential::McpStaticBearer(super::credential::McpVaultCredential {
+        url: "https://gateway.example.com/mcp_gmail/mcp".to_owned(),
+        token: "sk-scoped".to_owned(),
+    });
+    let env = VaultCredential::EnvironmentVariable(EnvironmentVaultCredential {
+        name: "BROWSER_USE_API_KEY".to_owned(),
+        value: "secret".to_owned(),
+    });
+
+    assert!(scoped.is_session_scoped());
+    assert!(!stable.is_session_scoped());
+    assert!(!env.is_session_scoped());
+}
+
+#[test]
 fn validates_environment_variable_names() {
     assert!(is_environment_variable_name("BROWSER_USE_API_KEY"));
     assert!(is_environment_variable_name("_TOKEN"));

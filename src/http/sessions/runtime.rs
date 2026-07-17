@@ -383,6 +383,7 @@ pub(crate) async fn create_runtime_session_for_agent_task(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_runtime_session_for_agent_task_with_prompt(
     state: Arc<AppState>,
     pool: &PgPool,
@@ -417,6 +418,7 @@ pub(crate) async fn create_runtime_session_for_agent_task_with_prompt(
     Ok(response.id().to_owned())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_runtime_session_for_agent_input(
     state: Arc<AppState>,
     pool: &PgPool,

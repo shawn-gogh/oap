@@ -276,7 +276,7 @@ pub async fn runtime_event_list(
     // The canonical SSE consumer continues to persist new provider events, so
     // this avoids blocking the composer on a slow full-history provider replay.
     // If no snapshot exists yet we still fall through to the provider.
-    if query.get("snapshot").is_some() && !stored.is_empty() {
+    if query.contains_key("snapshot") && !stored.is_empty() {
         let events = json!({ "data": stored });
         reconcile_terminal_status_from_events(&state, pool, &row.id, &row.status, &events).await?;
         return Ok(Json(events));

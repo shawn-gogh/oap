@@ -607,8 +607,7 @@ pub async fn emergency_stop(
     repository::set_status(&pool, &agent_id, "paused")
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
-    let interrupted =
-        interrupt_agent_sessions(&state, &pool, &agent_id, "智能体被紧急停止").await;
+    let interrupted = interrupt_agent_sessions(&state, &pool, &agent_id, "智能体被紧急停止").await;
     let cancelled = sources::cancel_agent_work(&pool, &agent_id).await?;
     if governance::get(&pool, &agent_id).await?.is_some() {
         governance::suspend(&pool, &agent_id, "执行了紧急停止。所有能力令牌已撤销。").await?;
@@ -940,7 +939,7 @@ fn verify_webhook_signature(
 }
 
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return None;
     }
     value

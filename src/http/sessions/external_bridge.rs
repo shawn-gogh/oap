@@ -49,8 +49,7 @@ pub(super) async fn execute_prompt(
                 json!({"type": "session.error", "error": {"message": error.to_string()}}),
             )
             .await?;
-            runtime_lifecycle::mark_session_error(&state, pool, &row.id, error.to_string())
-                .await?;
+            runtime_lifecycle::mark_session_error(&state, pool, &row.id, error.to_string()).await?;
             return Err(error);
         }
     };
@@ -248,6 +247,7 @@ enum A2aOutcome {
     Cancelled,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn invoke_a2a(
     state: &AppState,
     pool: &PgPool,

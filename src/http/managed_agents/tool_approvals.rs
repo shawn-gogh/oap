@@ -64,9 +64,9 @@ pub async fn asked(
         session.runtime.as_deref(),
         session.provider_session_id.as_deref(),
     ) else {
-        return Err(GatewayError::NotFound(format!(
-            "session missing runtime/provider_session_id"
-        )));
+        return Err(GatewayError::NotFound(
+            "session missing runtime/provider_session_id".to_owned(),
+        ));
     };
 
     let title = format!("工具权限请求：{}", input.permission);
@@ -517,6 +517,44 @@ fn permission_reply_value(status: &str, scope: ApprovalScope) -> &'static str {
     }
 }
 
+fn is_outbound_request(permission: &str, patterns: &[String]) -> Option<String> {
+    let is_net = permission.eq_ignore_ascii_case("outbound_request")
+        || permission.eq_ignore_ascii_case("web_request")
+        || permission.to_lowercase().contains("network")
+        || permission.to_lowercase().contains("egress");
+
+    for pattern in patterns {
+        // Bare hostnames are meaningful only for an explicitly network-related
+        // permission. For other permissions require a URL so file globs such
+        // as `*.txt` are not mistaken for data-egress destinations.
+        if is_net || pattern.contains("://") {
+            if let Some(host) = extract_host(pattern) {
+                return Some(host);
+            }
+        }
+    }
+    None
+}
+
+fn extract_host(pattern: &str) -> Option<String> {
+    if pattern.starts_with('/') || pattern.starts_with("./") || pattern.starts_with("../") {
+        return None;
+    }
+    let url_str = if pattern.contains("://") {
+        pattern.to_owned()
+    } else {
+        format!("https://{}", pattern)
+    };
+    if let Ok(url) = reqwest::Url::parse(&url_str) {
+        if let Some(host) = url.host_str() {
+            if host == "localhost" || host.contains('.') {
+                return Some(host.to_owned());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,42 +616,4 @@ mod tests {
             None
         );
     }
-}
-
-fn is_outbound_request(permission: &str, patterns: &[String]) -> Option<String> {
-    let is_net = permission.eq_ignore_ascii_case("outbound_request")
-        || permission.eq_ignore_ascii_case("web_request")
-        || permission.to_lowercase().contains("network")
-        || permission.to_lowercase().contains("egress");
-
-    for pattern in patterns {
-        // Bare hostnames are meaningful only for an explicitly network-related
-        // permission. For other permissions require a URL so file globs such
-        // as `*.txt` are not mistaken for data-egress destinations.
-        if is_net || pattern.contains("://") {
-            if let Some(host) = extract_host(pattern) {
-                return Some(host);
-            }
-        }
-    }
-    None
-}
-
-fn extract_host(pattern: &str) -> Option<String> {
-    if pattern.starts_with('/') || pattern.starts_with("./") || pattern.starts_with("../") {
-        return None;
-    }
-    let url_str = if pattern.contains("://") {
-        pattern.to_owned()
-    } else {
-        format!("https://{}", pattern)
-    };
-    if let Ok(url) = reqwest::Url::parse(&url_str) {
-        if let Some(host) = url.host_str() {
-            if host == "localhost" || host.contains('.') {
-                return Some(host.to_owned());
-            }
-        }
-    }
-    None
 }

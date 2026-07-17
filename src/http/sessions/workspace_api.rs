@@ -525,7 +525,7 @@ pub async fn list_workspace_trash(
             object_count: trashed_objects.len(),
         });
     }
-    items.sort_by(|left, right| right.deleted_at.cmp(&left.deleted_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.deleted_at));
     Ok(Json(items))
 }
 
