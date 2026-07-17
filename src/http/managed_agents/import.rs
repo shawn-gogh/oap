@@ -34,9 +34,12 @@ use crate::{
         state::AppState,
     },
     sdk::providers::{
-        a2a_import_agents::A2A_IMPORT_AGENTS, acp_import_agents::ACP_IMPORT_AGENTS,
-        dify_import_agents::DIFY_IMPORT_AGENTS, elastic::import_agents::ELASTIC_IMPORT_AGENTS,
-        import_agents::ImportAgentsProvider, openapi_import_agents::OPENAPI_IMPORT_AGENTS,
+        a2a_import_agents::A2A_IMPORT_AGENTS,
+        acp_import_agents::ACP_IMPORT_AGENTS,
+        dify_import_agents::DIFY_IMPORT_AGENTS,
+        elastic::import_agents::ELASTIC_IMPORT_AGENTS,
+        import_agents::{ImportAgentsProvider, ImportedAgent},
+        openapi_import_agents::OPENAPI_IMPORT_AGENTS,
         opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
 };
@@ -119,6 +122,59 @@ pub async fn import(
         let unchanged = existing
             .as_ref()
             .is_some_and(|governance| governance.source_hash == source_hash);
+        // Re-importing an already governed agent with a *changed* definition
+        // must not overwrite it directly — that would bypass drift review.
+        // Route the change through the same candidate-snapshot path source
+        // sync uses; the operator then accepts or rejects it explicitly.
+        if let Some(existing) = existing.as_ref().filter(|_| !unchanged) {
+            let row = repository::get(pool, &existing.agent_id)
+                .await?
+                .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?;
+            let source =
+                source_repository::ensure_source(pool, existing, "federated", None).await?;
+            let remote = ImportedAgent {
+                id: external_agent_id.clone(),
+                name: agent_name(&agent).to_owned(),
+                description: agent.description.clone(),
+                model: agent.model.clone(),
+                provider: provider.id().to_owned(),
+                raw: agent.raw.clone().unwrap_or_else(|| json!({})),
+            };
+            let snapshot = super::source_management::record_drift_candidate(
+                pool,
+                &row,
+                provider,
+                &source,
+                &remote,
+                &source_hash,
+                &auth.user_id,
+            )
+            .await?;
+            audit::record(
+                pool,
+                &auth.user_id,
+                "agent.source.drift_candidate",
+                "agent",
+                &row.id,
+                json!({
+                    "provider": provider.id(),
+                    "endpoint": endpoint,
+                    "external_agent_id": external_agent_id,
+                    "snapshot_id": snapshot.id,
+                    "via": "import",
+                }),
+            )
+            .await?;
+            results.push(ImportItemResult {
+                external_id: external_agent_id,
+                agent_id: Some(row.id.clone()),
+                status: "drift_pending",
+                snapshot_id: Some(snapshot.id),
+                issues: snapshot.normalization_issues,
+            });
+            rows.push(row);
+            continue;
+        }
         let create = create_input(
             &state,
             provider,
@@ -136,15 +192,12 @@ pub async fn import(
             .and_then(|config| config.pointer("/source/credential_name"))
             .and_then(Value::as_str)
             .map(str::to_owned);
+        // Changed existing agents were diverted to drift review above, so
+        // only "unchanged re-import" and "first import" reach this point.
         let row = match existing.as_ref() {
-            Some(existing) if unchanged => repository::get(pool, &existing.agent_id)
+            Some(existing) => repository::get(pool, &existing.agent_id)
                 .await?
                 .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?,
-            Some(existing) => {
-                repository::update(pool, &existing.agent_id, update_from_import(create))
-                    .await?
-                    .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?
-            }
             None => repository::create(pool, create).await?,
         };
         let revision = if unchanged {

@@ -729,14 +729,41 @@ pub(crate) async fn reconcile_source(
         sources::mark_sync_state(pool, &source.id, "in_sync", 0).await?;
         return Ok(false);
     }
-    let candidate = candidate_agent(agent, provider, &remote);
+    record_drift_candidate(
+        pool,
+        agent,
+        provider,
+        source,
+        &remote,
+        &digest,
+        &auth.user_id,
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Records a candidate snapshot plus field-level drift findings for a changed
+/// remote definition, pausing the agent on high-risk drift. The single entry
+/// point for "the source changed" — used by scheduled/manual sync *and* by
+/// re-import, so a changed source always lands in drift review instead of
+/// being applied directly.
+pub(crate) async fn record_drift_candidate(
+    pool: &sqlx::PgPool,
+    agent: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
+    provider: &dyn ImportAgentsProvider,
+    source: &ManagedAgentSourceRow,
+    remote: &ImportedAgent,
+    digest: &str,
+    actor: &str,
+) -> Result<AgentSourceSnapshotRow, GatewayError> {
+    let candidate = candidate_agent(agent, provider, remote);
     let snapshot = sources::record_candidate_snapshot(
         pool,
         source,
         &candidate,
-        remote.raw,
-        &digest,
-        &auth.user_id,
+        remote.raw.clone(),
+        digest,
+        actor,
     )
     .await?;
     let previous = sources::get_snapshot(pool, source.current_snapshot_id.as_deref()).await?;
@@ -752,7 +779,7 @@ pub(crate) async fn reconcile_source(
         repository::set_status(pool, &agent.id, "paused").await?;
         governance::suspend(pool, &agent.id, "检测到高风险来源漂移，已暂停新工作。").await?;
     }
-    Ok(true)
+    Ok(snapshot)
 }
 
 fn candidate_agent(
