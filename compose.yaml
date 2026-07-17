@@ -96,6 +96,12 @@ services:
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-litellm-agent-control-plane}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
     volumes:
       # Mount the gateway config so model-list edits only need a restart, not a rebuild.
       - ./deploy/render.config.yaml:/app/deploy.config.yaml:ro
@@ -228,6 +234,32 @@ services:
     depends_on:
       - lap
       - openclaw
+
+  # Test fixture for the "导入智能体" (import agent) A2A flow. Not a managed
+  # runtime harness (a2a's expose_runtime_harness() is false) — this is the
+  # remote agent that gets discovered/imported/executed via source.raw.url.
+  # Must be reached by service name, not localhost: validate_connector_endpoint()
+  # (src/http/managed_agents/source_management.rs) rejects loopback/link-local
+  # endpoints, so paste `http://a2a-agent:8080` (or a /scenarios/<name> path,
+  # see scripts/a2a_agent/main.py) as the import dialog's 服务地址.
+  a2a-agent:
+    profiles: ["a2a"]
+    build: ./scripts/a2a_agent
+    ports:
+      - "127.0.0.1:${A2A_AGENT_PORT:-8090}:8080"
+
+  a2a-opencode-test:
+    profiles: ["a2a-opencode"]
+    build: ./a2a-opencode-agent
+    ports:
+      - "9200:9200"
+    environment:
+      GATEWAY_KIND: ${GATEWAY_KIND:-anthropic}
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://lap:4000}
+      GATEWAY_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
+      OPENCODE_MODEL: ${OPENCODE_MODEL:-claude-sonnet-5}
+      A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://a2a-opencode-test:9200/}
+
 
 volumes:
   postgres-data:

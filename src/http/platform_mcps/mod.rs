@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
+    db::managed_agents::{audit, mcp_invocation_grants, session_control, sessions},
     errors::GatewayError,
     proxy::{auth::master_key::require_any_gateway_key, state::AppState},
 };
@@ -56,9 +57,6 @@ pub fn platform_mcp_servers(
         "type": "url",
         "url": platform_mcp_url(state, agent_id, session_id)?
     });
-    // Built-in Anthropic runtimes receive this bearer via a credential vault.
-    // Custom harnesses (opencode) have no vault, so embed the token inline; the
-    // runtime wrapper turns it into an Authorization header on the MCP request.
     if let Some(token) = inline_auth_token {
         server["authorization_token"] = Value::String(token.to_owned());
     }
@@ -115,15 +113,110 @@ pub async fn serve(
     Query(query): Query<PlatformMcpQuery>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<Json<Value>, GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
+    let session_id = query
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty());
+    let auth = crate::http::mcp_invocation_auth::authenticate_request(&state, &headers, session_id)
+        .await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    let active_grant = if let Some(session_id) = session_id {
+        let session = sessions::repository::get(pool, session_id)
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("session not found".to_owned()))?;
+        if !auth.is_admin && session.owner_id.as_deref() != Some(auth.user_id.as_str()) {
+            return Err(GatewayError::NotFound("session not found".to_owned()));
+        }
+        let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await?
+        else {
+            return Ok(Json(rpc_error(
+                request.id,
+                -32001,
+                "active invocation MCP grant is required",
+            )));
+        };
+        let Some(invocation) = snapshot.invocations.first() else {
+            return Ok(Json(rpc_error(
+                request.id,
+                -32001,
+                "active invocation MCP grant is required",
+            )));
+        };
+        let grant = mcp_invocation_grants::repository::active_for_invocation(
+            pool,
+            &invocation.id,
+            PLATFORM_MCP_SERVER_NAME,
+        )
+        .await?;
+        let Some(grant) = grant else {
+            return Ok(Json(rpc_error(
+                request.id,
+                -32001,
+                "active invocation MCP grant is required",
+            )));
+        };
+        Some(grant)
+    } else {
+        None
+    };
+    let requested_tool = (request.method == "tools/call")
+        .then(|| {
+            request
+                .params
+                .as_ref()
+                .and_then(|params| params.get("name"))
+                .and_then(Value::as_str)
+        })
+        .flatten();
+    if let (Some(grant), Some(tool_name)) = (active_grant.as_ref(), requested_tool) {
+        if !grant.allows(tool_name) {
+            return Ok(Json(rpc_error(
+                request.id,
+                -32602,
+                "tool is not allowed by the invocation MCP grant",
+            )));
+        }
+        if !mcp_invocation_grants::repository::mark_used(pool, &grant.id).await? {
+            return Ok(Json(rpc_error(
+                request.id,
+                -32001,
+                "active invocation MCP grant is required",
+            )));
+        }
+        audit::record(
+            pool,
+            &auth.user_id,
+            "mcp.tool_call",
+            "mcp_invocation_grant",
+            &grant.id,
+            json!({
+                "session_id": grant.session_id,
+                "turn_id": grant.turn_id,
+                "invocation_id": grant.invocation_id,
+                "server_id": grant.server_id,
+                "tool_names": [tool_name],
+            }),
+        )
+        .await?;
+    }
     let response = match request.method.as_str() {
         "initialize" => initialize_response(request.id),
-        "tools/list" => json!({
-            "jsonrpc": "2.0",
-            "id": request.id,
-            "result": { "tools": definitions::tool_defs() }
-        }),
+        "tools/list" => {
+            let mut tools = definitions::tool_defs();
+            if let Some(grant) = active_grant.as_ref() {
+                tools.retain(|tool| {
+                    tool.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| grant.allows(name))
+                });
+            }
+            json!({
+                "jsonrpc": "2.0",
+                "id": request.id,
+                "result": { "tools": tools }
+            })
+        }
         "tools/call" => {
             let Some(params) = request.params else {
                 return Ok(Json(rpc_error(request.id, -32602, "params are required")));

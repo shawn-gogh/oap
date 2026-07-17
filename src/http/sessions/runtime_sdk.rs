@@ -72,7 +72,21 @@ pub(super) async fn register_runtime_session(
             provider_session_id: Some(provider_session_id),
             provider_run_id: row.provider_run_id.clone(),
         })
-        .map_err(agent_sdk_error)
+        .map_err(agent_sdk_error)?;
+    if let Some(invocation) =
+        crate::db::managed_agents::session_control::repository::active_turn(pool, &row.id)
+            .await?
+            .and_then(|snapshot| snapshot.invocations.into_iter().next())
+    {
+        if let Some((traceparent, tracestate)) =
+            crate::managed_agents::adapters::telemetry::trace_headers(&invocation.metadata)
+        {
+            client
+                .remember_trace_headers(&row.id, traceparent, tracestate)
+                .map_err(agent_sdk_error)?;
+        }
+    }
+    Ok(())
 }
 
 async fn runtime_agent_id_from_ref(

@@ -188,7 +188,8 @@ pub async fn mark_tested(
         r#"
         UPDATE "LiteLLM_ManagedAgentGovernanceTable"
         SET lifecycle_status = $2, runtime_health = $3, health_detail = $4,
-            tested_revision = $5, last_health_at = $6, updated_at = $6
+            tested_revision = $5, last_health_at = $6, updated_at = $6,
+            publish_approval_id = NULL
         WHERE agent_id = $1
         RETURNING *
         "#,
@@ -327,9 +328,14 @@ pub async fn publish(
     .bind(agent_id)
     .bind(revision)
     .bind(now_ms())
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
-    .map_err(GatewayError::Database)
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| {
+        GatewayError::BadRequest(
+            "该智能体当前不处于待审批状态，发布审批可能已过期或被撤销。".to_owned(),
+        )
+    })
 }
 
 pub async fn mark_rolled_back(
@@ -340,7 +346,8 @@ pub async fn mark_rolled_back(
     sqlx::query_as::<_, AgentGovernanceRow>(
         r#"
         UPDATE "LiteLLM_ManagedAgentGovernanceTable"
-        SET lifecycle_status = 'rolled_back', runtime_health = 'healthy',
+        SET lifecycle_status = 'rolled_back', runtime_health = 'unknown',
+            health_detail = '已回滚到先前发布的版本，建议重新运行检查确认当前健康状态。',
             previous_published_revision = published_revision,
             published_revision = $2, tested_revision = $2,
             publish_approval_id = NULL, updated_at = $3

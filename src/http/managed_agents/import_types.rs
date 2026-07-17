@@ -13,6 +13,7 @@ pub struct ImportProviderResponse {
     pub name: &'static str,
     pub api_spec: &'static str,
     pub capabilities: ImportProviderCapabilities,
+    pub expose_runtime_harness: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +105,9 @@ pub(crate) fn provider_error(error: ImportAgentsError) -> GatewayError {
         ImportAgentsError::Upstream { status, body } => GatewayError::UpstreamHttp(status, body),
         ImportAgentsError::Decode(error) => {
             GatewayError::InvalidConfig(format!("invalid provider response: {error}"))
+        }
+        ImportAgentsError::InvalidDocument(error) => {
+            GatewayError::InvalidConfig(format!("invalid provider document: {error}"))
         }
     }
 }

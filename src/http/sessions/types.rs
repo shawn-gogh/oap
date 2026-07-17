@@ -37,6 +37,7 @@ pub(super) struct ResolvedSession {
 
 #[derive(Debug, Deserialize)]
 pub struct PromptRequest {
+    request_id: Option<String>,
     model: Option<PromptModel>,
     parts: Option<Vec<PromptPart>>,
 }
@@ -67,6 +68,13 @@ impl PromptRequest {
             .as_ref()
             .map(|model| model.model_id.trim())
             .filter(|model_id| !model_id.is_empty())
+    }
+
+    pub(super) fn request_id(&self) -> Option<&str> {
+        self.request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|request_id| !request_id.is_empty())
     }
 }
 

@@ -146,7 +146,15 @@ async fn proxy_inner(
         Some(query) => format!("/apps/{app_id}/{path}?{query}"),
         None => format!("/apps/{app_id}/{path}"),
     };
-    match authorize(&state, &app, &headers, query_token.as_deref(), &reload_location).await? {
+    match authorize(
+        &state,
+        &app,
+        &headers,
+        query_token.as_deref(),
+        &reload_location,
+    )
+    .await?
+    {
         Access::Redirect(response) => return Ok(response),
         Access::Allowed => {}
     }
@@ -200,8 +208,10 @@ async fn authorize(
             )));
         }
     }
-    if let (Some(token), Some(key)) = (cookie_value(headers, &share::share_cookie_name(&app.id)), master_key)
-    {
+    if let (Some(token), Some(key)) = (
+        cookie_value(headers, &share::share_cookie_name(&app.id)),
+        master_key,
+    ) {
         if share::verify_token(key, &token, &app.id, app.share_version, now_ms()) {
             return Ok(Access::Allowed);
         }
@@ -357,7 +367,11 @@ async fn proxy_websocket(
     mut target: Url,
     headers: &HeaderMap,
 ) -> Result<Response, GatewayError> {
-    let scheme = if target.scheme() == "https" { "wss" } else { "ws" };
+    let scheme = if target.scheme() == "https" {
+        "wss"
+    } else {
+        "ws"
+    };
     target
         .set_scheme(scheme)
         .map_err(|_| GatewayError::InvalidConfig("cannot set ws scheme".to_owned()))?;
@@ -438,12 +452,12 @@ fn client_to_tungstenite(message: ws::Message) -> tungstenite::Message {
         ws::Message::Binary(data) => tungstenite::Message::Binary(data),
         ws::Message::Ping(data) => tungstenite::Message::Ping(data),
         ws::Message::Pong(data) => tungstenite::Message::Pong(data),
-        ws::Message::Close(frame) => tungstenite::Message::Close(frame.map(|frame| {
-            tungstenite::protocol::CloseFrame {
+        ws::Message::Close(frame) => {
+            tungstenite::Message::Close(frame.map(|frame| tungstenite::protocol::CloseFrame {
                 code: frame.code.into(),
                 reason: frame.reason.as_str().to_owned().into(),
-            }
-        })),
+            }))
+        }
     }
 }
 
@@ -453,12 +467,12 @@ fn tungstenite_to_client(message: tungstenite::Message) -> Option<ws::Message> {
         tungstenite::Message::Binary(data) => ws::Message::Binary(data),
         tungstenite::Message::Ping(data) => ws::Message::Ping(data),
         tungstenite::Message::Pong(data) => ws::Message::Pong(data),
-        tungstenite::Message::Close(frame) => ws::Message::Close(frame.map(|frame| {
-            ws::CloseFrame {
+        tungstenite::Message::Close(frame) => {
+            ws::Message::Close(frame.map(|frame| ws::CloseFrame {
                 code: frame.code.into(),
                 reason: frame.reason.as_str().into(),
-            }
-        })),
+            }))
+        }
         tungstenite::Message::Frame(_) => return None,
     })
 }

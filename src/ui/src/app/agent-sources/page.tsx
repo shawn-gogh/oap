@@ -133,9 +133,9 @@ export default function AgentSourcesPage() {
     <div className="flex min-h-screen bg-background">
       <Sidebar />
       <main className="min-w-0 flex-1">
-        <header className="flex h-14 items-center justify-between border-b border-border px-5">
+        <header className="flex h-12 items-center justify-between border-b border-border px-4">
           <div>
-            <h1 className="text-sm font-semibold">智能体来源</h1>
+            <h1 className="text-sm font-semibold tracking-tight">智能体来源</h1>
             <p className="text-xs text-muted-foreground">管理外部平台连接、能力协商与持续同步。</p>
           </div>
           <div className="flex items-center gap-2">
@@ -148,11 +148,18 @@ export default function AgentSourcesPage() {
         <div className="mx-auto max-w-5xl p-5">
           {error && <p className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
           {loading ? (
-            <p className="text-sm text-muted-foreground">正在加载来源连接器…</p>
+            <div className="flex flex-col gap-3" aria-label="正在加载来源连接器">
+              {[0, 1, 2].map((item) => (
+                <div key={item} className="flex flex-col gap-2 rounded-lg border border-border p-4">
+                  <div className="h-4 w-1/3 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+                  <div className="h-3 w-2/3 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+                </div>
+              ))}
+            </div>
           ) : connectors.length === 0 ? (
             <Card className="grid place-items-center p-12 text-center">
               <Server className="size-8 text-muted-foreground" />
-              <h2 className="mt-3 text-sm font-semibold">尚未配置来源连接器</h2>
+              <h2 className="mt-3 text-sm font-semibold tracking-tight">尚未配置来源连接器</h2>
               <p className="mt-1 max-w-md text-xs text-muted-foreground">创建连接器后，平台可以定期发现来源变化、生成候选快照并阻断高风险漂移。</p>
             </Card>
           ) : (
@@ -162,15 +169,16 @@ export default function AgentSourcesPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-sm font-semibold">{connector.name}</h2>
+                        <h2 className="text-sm font-semibold tracking-tight">{connector.name}</h2>
                         <Badge variant={connector.status === "healthy" ? "secondary" : connector.status === "unreachable" ? "destructive" : "outline"}>{connector.status}</Badge>
+                        {connector.protocol && <Badge variant="outline">{connector.protocol}{connector.protocol_version ? ` v${connector.protocol_version}` : ""}</Badge>}
                       </div>
                       <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{connector.provider} · {connector.endpoint}</p>
                       <p className="mt-2 text-xs text-muted-foreground">{connector.last_test_detail ?? "尚未执行连接测试。"}</p>
                     </div>
                     <div className="flex gap-2">
                       <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void test(connector)}>
-                        {busy === connector.id ? <RefreshCw className="size-3.5 animate-spin" /> : <Activity className="size-3.5" />}测试
+                        {busy === connector.id ? <RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Activity className="size-3.5" />}测试
                       </Button>
                       <Button size="icon-sm" variant="ghost" className="text-destructive" disabled={busy !== null} onClick={() => void remove(connector)} aria-label={`删除来源 ${connector.name}`}>
                         <Trash2 className="size-3.5" />
@@ -194,7 +202,7 @@ export default function AgentSourcesPage() {
               <div className="grid gap-2 sm:grid-cols-2">
                 {providers.map((item) => (
                   <button key={item.id} type="button" onClick={() => setProvider(item.id)} className={`rounded-md border px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${provider === item.id ? "border-ring ring-2 ring-ring/20" : "border-border"}`}>
-                    <span className="block font-medium">{item.name}</span><span className="font-mono text-[11px] text-muted-foreground">{item.capabilities.runtime_contract}</span>
+                    <span className="block font-medium">{item.name}</span><span className="font-mono text-[11px] text-muted-foreground">来源协议 · {item.capabilities.runtime_contract}</span>
                   </button>
                 ))}
               </div>

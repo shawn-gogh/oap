@@ -376,8 +376,9 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function listSessions(): Promise<OpencodeSession[]> {
-  const res = await reqHarness("/session");
+export async function listSessions(agentId?: string): Promise<OpencodeSession[]> {
+  const path = agentId ? `/session?agent_id=${encodeURIComponent(agentId)}` : "/session";
+  const res = await reqHarness(path);
   if (!res.ok) {
     throw new ApiError(res.status, await res.text().catch(() => ""));
   }
@@ -537,6 +538,36 @@ export async function listAgents(): Promise<Agent[]> {
   return data.agents;
 }
 
+export async function getAgentByoCredentialStatus(agentId: string): Promise<boolean> {
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/byo-credential`);
+  const data = await jsonOrThrow<{ configured: boolean }>(res);
+  return data.configured;
+}
+
+export async function listByoConfiguredAgents(): Promise<string[]> {
+  const res = await req("/api/agents/byo-credentials");
+  const data = await jsonOrThrow<{ agent_ids: string[] }>(res);
+  return data.agent_ids;
+}
+
+export async function saveAgentByoCredential(agentId: string, apiKey: string): Promise<void> {
+  await jsonOrThrow(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/byo-credential`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    }),
+  );
+}
+
+export async function deleteAgentByoCredential(agentId: string): Promise<void> {
+  await jsonOrThrow(
+    await req(`/api/agents/${encodeURIComponent(agentId)}/byo-credential`, {
+      method: "DELETE",
+    }),
+  );
+}
+
 export interface ExternalAgent {
   id: string;
   name: string;
@@ -565,6 +596,7 @@ export interface ImportProvider {
   name: string;
   api_spec: string;
   capabilities: ImportProviderCapabilities;
+  expose_runtime_harness: boolean;
 }
 
 export async function listImportProviders(): Promise<ImportProvider[]> {
@@ -580,6 +612,10 @@ export interface AgentSourceConnector {
   credential_name?: string | null;
   status: "unknown" | "healthy" | "degraded" | "unreachable" | "disabled";
   capabilities: ImportProviderCapabilities;
+  adapter_id?: string | null;
+  protocol?: string | null;
+  protocol_version?: string | null;
+  negotiated_profile?: ImportProviderCapabilities | Record<string, unknown>;
   last_test_detail?: string | null;
   last_test_at?: number | null;
   created_at: number;
@@ -948,20 +984,73 @@ export async function getMessages(sid: string): Promise<HarnessMessage[]> {
   return jsonOrThrow<HarnessMessage[]>(res);
 }
 
-export async function sendMessage(opts: { sessionId: string; text: string; model: string }): Promise<void> {
-  const res = await reqHarness(`/session/${encodeURIComponent(opts.sessionId)}/prompt_async`, {
+export type SessionTurnStatus =
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "waiting_approval"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "rejected"
+  | "cancelled"
+  | "timed_out";
+
+export interface SessionTurn {
+  id: string;
+  session_id: string;
+  request_id: string;
+  status: SessionTurnStatus;
+  model?: string | null;
+  error_json?: unknown;
+  started_at?: number | null;
+  completed_at?: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SessionInvocation {
+  id: string;
+  session_id: string;
+  turn_id: string;
+  protocol: string;
+  adapter_id: string;
+  role: string;
+  status: SessionTurnStatus;
+  remote_session_id?: string | null;
+  remote_context_id?: string | null;
+  remote_task_id?: string | null;
+  resume_cursor?: string | null;
+}
+
+export interface SessionTurnSnapshot {
+  turn: SessionTurn;
+  invocations: SessionInvocation[];
+}
+
+function newRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `req_${crypto.randomUUID().replaceAll("-", "")}`;
+  }
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
+
+export async function sendMessage(opts: {
+  sessionId: string;
+  text: string;
+  model: string;
+}): Promise<SessionTurnSnapshot> {
+  const requestId = newRequestId();
+  const res = await reqHarness(`/api/sessions/${encodeURIComponent(opts.sessionId)}/turns`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "idempotency-key": requestId },
     body: JSON.stringify({
+      request_id: requestId,
       model: { providerID: "litellm", modelID: opts.model },
       parts: [{ type: "text", text: opts.text }],
     }),
   });
-  if (res.status === 204) return;
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, body);
-  }
+  return jsonOrThrow<SessionTurnSnapshot>(res);
 }
 
 export async function sendMessageWithRuntimeModel(opts: {
@@ -970,7 +1059,7 @@ export async function sendMessageWithRuntimeModel(opts: {
   model: string;
   runtime?: string;
   apiSpec?: string | null; // resolved api_spec; null = harnesses not yet loaded
-}): Promise<void> {
+}): Promise<SessionTurnSnapshot> {
   if (opts.runtime && !opts.model.trim()) {
     throw new Error("必须选择运行时模型。");
   }
@@ -979,6 +1068,22 @@ export async function sendMessageWithRuntimeModel(opts: {
     text: opts.text,
     model: opts.model,
   });
+}
+
+export async function getActiveTurn(sessionId: string): Promise<SessionTurnSnapshot | null> {
+  const res = await reqHarness(`/api/sessions/${encodeURIComponent(sessionId)}/active-turn`);
+  return jsonOrThrow<SessionTurnSnapshot | null>(res);
+}
+
+export async function cancelTurn(
+  sessionId: string,
+  turnId: string,
+): Promise<SessionTurnSnapshot> {
+  const res = await reqHarness(
+    `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel`,
+    { method: "POST" },
+  );
+  return jsonOrThrow<SessionTurnSnapshot>(res);
 }
 
 export async function abortSession(id: string): Promise<void> {
@@ -1540,7 +1645,8 @@ export type InboxKind =
   | "data_egress"
   | "agent_publish"
   | "agent_change"
-  | "platform_action";
+  | "platform_action"
+  | "a2a_continuation";
 export type InboxStatus = "pending" | "accepted" | "rejected" | "expired" | "open" | "resolved";
 export type InboxFilter = "attention" | "completed" | "all";
 

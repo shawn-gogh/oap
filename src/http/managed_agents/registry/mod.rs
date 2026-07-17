@@ -1,12 +1,12 @@
+pub mod cleanup;
 pub mod create;
 pub mod delete;
 pub mod get;
 pub mod list;
 pub mod pause;
 pub mod preflight;
+pub mod restore;
 pub mod resume;
 pub mod revisions;
 pub mod types;
 pub mod update;
-pub mod restore;
-pub mod cleanup;

@@ -27,9 +27,10 @@ pub async fn create_connector(
         r#"
         INSERT INTO "LiteLLM_AgentSourceConnectorsTable" (
           id, owner_id, name, provider, endpoint, credential_name,
-          status, capabilities, created_at, updated_at
+          status, capabilities, adapter_id, protocol, protocol_version,
+          negotiated_profile, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'unknown', $7, $8, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, 'unknown', $7, $8, $9, $10, $7, $11, $11)
         RETURNING *
         "#,
     )
@@ -40,6 +41,9 @@ pub async fn create_connector(
     .bind(input.endpoint)
     .bind(input.credential_name)
     .bind(capabilities)
+    .bind(input.adapter_id)
+    .bind(input.protocol)
+    .bind(input.protocol_version)
     .bind(now)
     .fetch_one(pool)
     .await
@@ -641,6 +645,31 @@ pub async fn mark_sync_state(
     .map_err(GatewayError::Database)
 }
 
+/// Most-recent statuses of one check kind for an agent, newest first. Lets
+/// the auto-pause logic require N consecutive failures instead of reacting
+/// to a single (possibly transient) one.
+pub async fn recent_health_statuses(
+    pool: &PgPool,
+    agent_id: &str,
+    check_kind: &str,
+    limit: i64,
+) -> Result<Vec<String>, GatewayError> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT status FROM "LiteLLM_AgentHealthChecksTable"
+        WHERE agent_id = $1 AND check_kind = $2
+        ORDER BY checked_at DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(agent_id)
+    .bind(check_kind)
+    .bind(limit.clamp(1, 20))
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn record_health(
     pool: &PgPool,
     agent_id: &str,
@@ -731,6 +760,26 @@ pub async fn cancel_agent_work(pool: &PgPool, agent_id: &str) -> Result<u64, Gat
     .await
     .map_err(GatewayError::Database)?
     .rows_affected();
+    // Converge every non-terminal turn of this agent's sessions: the session
+    // sweep above changes only session status, and an orphaned running /
+    // waiting_approval turn would otherwise stay "active" forever.
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_SessionTurnsTable"
+        SET status = 'cancelled',
+            error_json = '{"code": "agent_stopped", "message": "智能体已被紧急停止或退役。"}'::jsonb,
+            completed_at = $2, updated_at = $2
+        WHERE session_id IN (
+            SELECT id FROM "LiteLLM_ManagedAgentSessionsTable" WHERE agent_id = $1
+        )
+          AND status NOT IN ('completed', 'failed', 'rejected', 'cancelled', 'timed_out')
+        "#,
+    )
+    .bind(agent_id)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
     sqlx::query(
         r#"
         UPDATE "LiteLLM_AgentSessionCapabilityTokensTable"
@@ -821,6 +870,29 @@ pub async fn issue_capability_token(
     .await
     .map_err(GatewayError::Database)?;
     Ok((token, expires_at))
+}
+
+pub async fn validate_capability_token(
+    pool: &PgPool,
+    session_id: &str,
+    token: &str,
+) -> Result<bool, GatewayError> {
+    let token_hash = format!("{:x}", Sha256::digest(token.as_bytes()));
+    sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+          SELECT 1 FROM "LiteLLM_AgentSessionCapabilityTokensTable"
+          WHERE session_id = $1 AND token_hash = $2
+            AND revoked_at IS NULL AND expires_at > $3
+        )
+        "#,
+    )
+    .bind(session_id)
+    .bind(token_hash)
+    .bind(now_ms())
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 pub async fn accept_webhook_delivery(

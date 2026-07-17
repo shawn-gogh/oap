@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-    db::managed_agents::{now_ms, memory, registry},
+    db::managed_agents::{memory, now_ms, registry},
     errors::GatewayError,
     proxy::state::AppState,
 };
@@ -29,36 +29,53 @@ pub async fn run_cleanup_once(state: &AppState) -> Result<(), GatewayError> {
     let Some(pool) = state.db.as_ref() else {
         return Ok(());
     };
-    
+
     let cutoff = now_ms() - RETENTION_PERIOD_MS;
-    
+
     let due_agents: Vec<String> = sqlx::query_scalar(
         r#"
         SELECT id FROM "LiteLLM_ManagedAgentsTable"
         WHERE status = 'archived_pending_delete'
           AND (config->>'deleted_at')::BIGINT < $1
-        "#
+        "#,
     )
     .bind(cutoff)
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)?;
-    
+
     for agent_id in due_agents {
         tracing::info!(agent_id = %agent_id, "permanently deleting soft-deleted agent");
         if registry::repository::delete(pool, &agent_id).await? {
             let _ = memory::repository::delete_all(pool, &agent_id).await;
-            let _ = crate::db::managed_agents::agent_grants::repository::delete_all_for_agent(pool, &agent_id).await;
-            let _ = crate::db::managed_agents::groups::agent_grants::delete_all_for_agent(pool, &agent_id).await;
-            
+            let _ = crate::db::managed_agents::agent_grants::repository::delete_all_for_agent(
+                pool, &agent_id,
+            )
+            .await;
+            let _ = crate::db::managed_agents::groups::agent_grants::delete_all_for_agent(
+                pool, &agent_id,
+            )
+            .await;
+            // Per-user BYO keys are named after the agent id and can never be
+            // reused once it's gone — purge them so encrypted keys don't
+            // accumulate as orphans. (The shared provider credential is keyed
+            // by provider+external id and survives re-imports, so it stays.)
+            let _ = sqlx::query(
+                r#"DELETE FROM "LiteLLM_CredentialsTable" WHERE credential_name = $1 AND scope = 'personal'"#,
+            )
+            .bind(crate::http::runtime_resolution::byo_credential_name(&agent_id))
+            .execute(pool)
+            .await;
+
             if let Some(storage) = &state.object_storage {
-                let bucket = crate::object_storage::ObjectStorageClient::agent_bucket_name(&agent_id);
+                let bucket =
+                    crate::object_storage::ObjectStorageClient::agent_bucket_name(&agent_id);
                 if storage.bucket_exists(&bucket).await {
                     let _ = storage.delete_bucket_recursive(&bucket).await;
                 }
             }
         }
     }
-    
+
     Ok(())
 }

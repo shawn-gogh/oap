@@ -43,10 +43,10 @@ pub async fn runtime_events(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
-    // generic_chat sessions have no provider stream: replay the local event
+    // Gateway-hosted sessions have no provider stream: replay the local event
     // store, then stay subscribed to the session's local event channel so new
     // turns stream in real time instead of waiting on the UI's poll loop.
-    if super::generic_chat::is_generic_chat(pool, runtime).await? {
+    if is_gateway_event_runtime(pool, runtime).await? {
         // Subscribe before the replay query so events appended in between
         // are not lost (they'd be duplicated instead, which the UI dedupes).
         let mut local_rx = state.local_session_events.subscribe(&row.id);
@@ -112,7 +112,7 @@ fn local_event_body_stream(
 
 /// Spawns the session's provider stream consumer unless one is already
 /// running, so N concurrent SSE subscribers share one provider connection.
-async fn ensure_provider_consumer(
+pub(super) async fn ensure_provider_consumer(
     state: &Arc<AppState>,
     pool: &PgPool,
     row: &crate::db::managed_agents::sessions::schema::SessionRow,
@@ -121,7 +121,9 @@ async fn ensure_provider_consumer(
     if state.provider_consumers.is_running(&row.id) {
         return Ok(());
     }
-    let resolved = crate::http::runtime_resolution::resolve_runtime(pool, state, runtime).await?;
+    let resolved =
+        crate::http::runtime_resolution::resolve_runtime_for_session(pool, state, runtime, row)
+            .await?;
     let client = runtime_sdk_client(&resolved)?;
     register_runtime_session(&client, pool, row, &resolved).await?;
     let provider_stream = client
@@ -288,8 +290,8 @@ pub async fn runtime_event_list(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
-    // generic_chat: the local store IS the source of truth.
-    if super::generic_chat::is_generic_chat(pool, runtime).await? {
+    // Gateway-hosted runtimes: the local store IS the source of truth.
+    if is_gateway_event_runtime(pool, runtime).await? {
         let events = json!({ "data": stored });
         reconcile_terminal_status_from_events(&state, pool, &row.id, &row.status, &events).await?;
         return Ok(Json(events));
@@ -334,6 +336,26 @@ pub(crate) async fn runtime_event_stream_for_session(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
+    if is_gateway_event_runtime(pool, runtime).await? {
+        let mut local_rx = state.local_session_events.subscribe(&row.id);
+        let stored = runtime_events::repository::list(pool, &row.id).await?;
+        let replay = futures_util::stream::iter(stored.into_iter().map(|value| {
+            serde_json::from_value(value).map_err(crate::sdk::agents::AgentSdkError::Json)
+        }));
+        let live = async_stream::stream! {
+            loop {
+                match local_rx.recv().await {
+                    Ok(value) => {
+                        yield serde_json::from_value(value)
+                            .map_err(crate::sdk::agents::AgentSdkError::Json);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        };
+        return Ok(Box::pin(replay.chain(live)));
+    }
     let resolved = crate::http::runtime_resolution::resolve_runtime(pool, state, runtime).await?;
     let client = runtime_sdk_client(&resolved)?;
     register_runtime_session(&client, pool, &row, &resolved).await?;
@@ -344,6 +366,11 @@ pub(crate) async fn runtime_event_stream_for_session(
         .stream(&row.id)
         .await
         .map_err(agent_sdk_error)
+}
+
+async fn is_gateway_event_runtime(pool: &PgPool, runtime: &str) -> Result<bool, GatewayError> {
+    Ok(super::external_bridge::supports(runtime)
+        || super::generic_chat::is_generic_chat(pool, runtime).await?)
 }
 
 /// Events endpoints authenticate like everything else, but additionally

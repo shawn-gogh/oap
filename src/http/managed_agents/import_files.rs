@@ -150,6 +150,7 @@ fn create_input(
         on_failure: Some("pause_and_notify".to_owned()),
         config: Some(json!({
             "runtime": runtime,
+            "runtime_capabilities": { "session_workspace": true },
             "source": {
                 "kind": "opencode_agent_file",
                 "provider": "opencode",

@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use crate::{
     db::managed_agents::{
         registry::{self, schema::ManagedAgentRow},
+        session_control,
         sessions::{self, schema::SessionRow},
         sources::repository as source_repository,
     },
@@ -40,18 +41,27 @@ pub(super) async fn create_runtime_session(
     pool: &PgPool,
     input: CreateSessionRequest,
     owner: Option<&str>,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
 ) -> Result<SessionResponse, GatewayError> {
     // generic_chat harnesses have no managed-agents provider to provision
     // against; the gateway itself is the runtime.
     if let Some(alias) = input.runtime.as_deref() {
-        if super::generic_chat::is_generic_chat(pool, alias).await? {
-            return create_generic_chat_session(state, pool, input, owner).await;
+        if super::generic_chat::is_generic_chat(pool, alias).await?
+            || super::external_bridge::supports(alias)
+        {
+            return create_generic_chat_session(state, pool, input, owner, traceparent, tracestate)
+                .await;
         }
     }
     let mut created = create_runtime_session_row(&state, pool, input, owner).await?;
-    // Workspaces are opt-in per runtime — only local-opencode's per-session
-    // process model (see runtime_provision.rs) can actually mount one today.
-    if created.resolved.alias == "local-opencode" {
+    if created
+        .agent
+        .config
+        .pointer("/runtime_capabilities/session_workspace")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         if let Some(storage) = &state.object_storage {
             let bucket = crate::object_storage::ObjectStorageClient::bucket_name(&created.row.id);
             storage.ensure_bucket(&bucket).await?;
@@ -65,12 +75,44 @@ pub(super) async fn create_runtime_session(
             created.row.workspace_bucket = Some(bucket);
         }
     }
-    if let Some(prompt) = created.initial_user_prompt.as_deref() {
+    let initial_turn = if let Some(prompt) = created.initial_user_prompt.as_deref() {
+        let request_id = crate::db::managed_agents::id("req");
+        let turn = session_control::repository::create_or_get(
+            pool,
+            session_control::repository::NewTurn {
+                session_id: &created.row.id,
+                request_id: &request_id,
+                model: Some(&created.agent.model),
+                agent_id: Some(&created.agent.id),
+                runtime: created.row.runtime.as_deref(),
+                protocol: &created.resolved.protocol,
+                protocol_version: &created.resolved.protocol_version,
+                adapter_id: &created.resolved.adapter_id,
+                traceparent: traceparent.as_deref(),
+                tracestate: tracestate.as_deref(),
+            },
+        )
+        .await?
+        .snapshot
+        .turn;
         persist_message(pool, &created.row.id, "user", prompt, None).await?;
-    }
+        session_control::repository::transition(pool, &turn.id, "running", None).await?;
+        Some(turn)
+    } else {
+        None
+    };
     let mut row = match provision_runtime_session(&state, pool, &created).await {
         Ok(row) => row,
         Err(error) => {
+            if let Some(turn) = initial_turn.as_ref() {
+                let _ = session_control::repository::transition(
+                    pool,
+                    &turn.id,
+                    "failed",
+                    Some(json!({"code": "provision_failed", "message": error.to_string()})),
+                )
+                .await;
+            }
             if created.row.task_id.is_some() {
                 let _ = sessions::repository::set_status(pool, &created.row.id, "error").await;
                 let _ = crate::db::managed_agents::tasks::repository::fail_for_session(
@@ -116,8 +158,28 @@ pub(super) async fn create_runtime_session(
     }
     if row.provider_run_id.is_none() {
         if let Some(prompt) = created.initial_user_prompt.as_deref() {
-            execute_runtime_prompt(state.clone(), pool, row.clone(), prompt.to_owned(), None)
-                .await?;
+            match execute_runtime_prompt(state.clone(), pool, row.clone(), prompt.to_owned(), None)
+                .await
+            {
+                Ok(()) => {
+                    if let Some(turn) = initial_turn.as_ref() {
+                        session_control::repository::transition(pool, &turn.id, "completed", None)
+                            .await?;
+                    }
+                }
+                Err(error) => {
+                    if let Some(turn) = initial_turn.as_ref() {
+                        let _ = session_control::repository::transition(
+                            pool,
+                            &turn.id,
+                            "failed",
+                            Some(json!({"code": "runtime_error", "message": error.to_string()})),
+                        )
+                        .await;
+                    }
+                    return Err(error);
+                }
+            }
         } else {
             sessions::repository::set_status(pool, &row.id, "idle").await?;
             state
@@ -134,6 +196,8 @@ async fn create_generic_chat_session(
     pool: &PgPool,
     input: CreateSessionRequest,
     owner: Option<&str>,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
 ) -> Result<SessionResponse, GatewayError> {
     let alias = input.runtime.clone().unwrap_or_default();
     let agent = load_agent(pool, &input).await?;
@@ -145,6 +209,9 @@ async fn create_generic_chat_session(
         .filter(|prompt| !prompt.is_empty())
         .map(str::to_owned);
     let agent_id = input.agent_id.as_deref().or(input.agent.as_deref());
+    if agent_id.is_some() {
+        crate::http::managed_agents::assert_agent_interactive(pool, &agent).await?;
+    }
     let mut environment = input.environment.clone().unwrap_or_else(|| json!({}));
     if agent_id.is_none() {
         environment["temporary_model"] = json!(agent.model);
@@ -179,19 +246,63 @@ async fn create_generic_chat_session(
     }
     state.agent_runs.track_run(&agent.id, &row.id);
     if let Some(prompt) = prompt {
+        let request_id = crate::db::managed_agents::id("req");
+        let descriptor =
+            crate::http::runtime_resolution::describe_session_runtime(pool, &row).await?;
+        let turn = session_control::repository::create_or_get(
+            pool,
+            session_control::repository::NewTurn {
+                session_id: &row.id,
+                request_id: &request_id,
+                model: Some(&agent.model),
+                agent_id,
+                runtime: Some(&alias),
+                protocol: &descriptor.protocol,
+                protocol_version: &descriptor.protocol_version,
+                adapter_id: &descriptor.adapter_id,
+                traceparent: traceparent.as_deref(),
+                tracestate: tracestate.as_deref(),
+            },
+        )
+        .await?
+        .snapshot
+        .turn;
         if row.task_id.is_some() {
             crate::db::managed_agents::tasks::repository::mark_running_for_session(pool, &row.id)
                 .await?;
         }
         persist_message(pool, &row.id, "user", &prompt, None).await?;
+        session_control::repository::transition(pool, &turn.id, "running", None).await?;
         let state = state.clone();
         let pool_bg = pool.clone();
         let row_bg = row.clone();
+        let external_bridge = super::external_bridge::supports(&alias);
         tokio::spawn(async move {
-            if let Err(error) =
+            let result = if external_bridge {
+                super::external_bridge::execute_prompt(state, &pool_bg, &row_bg, &prompt).await
+            } else {
                 super::generic_chat::execute_prompt(state, &pool_bg, &row_bg, &prompt).await
-            {
-                tracing::warn!(session_id = %row_bg.id, %error, "generic chat prompt failed");
+            };
+            match result {
+                Ok(()) => {
+                    let _ = session_control::repository::transition(
+                        &pool_bg,
+                        &turn.id,
+                        "completed",
+                        None,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let _ = session_control::repository::transition(
+                        &pool_bg,
+                        &turn.id,
+                        "failed",
+                        Some(json!({"code": "runtime_error", "message": error.to_string()})),
+                    )
+                    .await;
+                    tracing::warn!(session_id = %row_bg.id, %error, "generic chat prompt failed");
+                }
             }
         });
         let mut row = row;
@@ -299,6 +410,8 @@ pub(crate) async fn create_runtime_session_for_agent_task_with_prompt(
             task_id: Some(task_id),
         },
         None,
+        None,
+        None,
     )
     .await?;
     Ok(response.id().to_owned())
@@ -335,6 +448,8 @@ async fn create_runtime_session_for_agent_input(
             task_id,
         },
         None,
+        None,
+        None,
     )
     .await?;
     Ok(response.id().to_owned())
@@ -357,6 +472,9 @@ async fn create_runtime_session_row(
     owner: Option<&str>,
 ) -> Result<CreatedRuntimeSession, GatewayError> {
     let mut agent = load_agent(pool, &input).await?;
+    if input.agent_id.is_some() || input.agent.is_some() {
+        crate::http::managed_agents::assert_agent_interactive(pool, &agent).await?;
+    }
     let alias = input.runtime.as_deref().unwrap_or_default();
     let resolved =
         crate::http::runtime_resolution::resolve_runtime_for_agent(pool, state, alias, &agent)
@@ -442,6 +560,9 @@ pub(super) async fn execute_runtime_prompt(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("runtime session is missing runtime".to_owned())
     })?;
+    if super::external_bridge::supports(runtime) {
+        return super::external_bridge::execute_prompt(state, pool, &row, &prompt).await;
+    }
     if super::generic_chat::is_generic_chat(pool, runtime).await? {
         return super::generic_chat::execute_prompt(state, pool, &row, &prompt).await;
     }

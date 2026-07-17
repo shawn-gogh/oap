@@ -1,0 +1,561 @@
+---
+title: "Universal agent adapters and session control plane"
+description: "Detailed delivery plan for multi-source agent onboarding and protocol-neutral sessions."
+---
+
+# Universal agent adapters and session control plane
+
+## Goal
+
+The platform must manage agents from A2A, ACP, Dify, OpenAPI/REST, native
+providers, uploaded packages, and platform runtimes without leaking
+provider-specific behavior into governance or conversation code. A source can
+be inventoried before it is executable. Execution is enabled only after
+identity, capabilities, credentials, policy, event semantics, cancellation,
+and terminal-state behavior have been verified.
+
+This plan extends the existing multi-source governance baseline. It does not
+replace source evidence, immutable revisions, publication gates, or runtime
+conformance. It adds the adapter boundary and the session control plane needed
+to make those controls consistent during real conversations.
+
+## Current implementation status
+
+The first delivery slice is implemented:
+
+- adapter interfaces and canonical capability, credential, artifact, identity,
+  MCP, CloudEvents, policy, and telemetry boundary types;
+- durable turn, invocation, operation, approval binding, and ordered control
+  event storage;
+- idempotent turn submission, active-turn snapshots, turn cancellation, legacy
+  prompt/interrupt compatibility, and initial-prompt coverage;
+- approval-to-turn binding plus explicit approval and rejected-operation
+  control events;
+- UI submission and stop behavior backed by authoritative active-turn state;
+- connector protocol metadata and source discovery for A2A, Dify,
+  OpenAPI/REST, and pinned-profile ACP compatibility;
+- platform bridges for A2A blocking/task-poll execution and cancellation,
+  Dify blocking chat and stop, and explicitly mapped OpenAPI POST execution.
+
+ACP execution intentionally remains disabled until an operator selects a
+specific compatibility profile. Dify workflow execution remains disabled until
+typed input mapping is approved. OpenAPI execution remains disabled without an
+`x-lap-runtime` mapping. These fail-closed states are part of the design, not
+missing URL inference.
+
+The control-event SSE endpoint is resumable through `Last-Event-ID` and
+`after_sequence`. OpenCode and Elastic invocations now record their source
+adapter, protocol, and negotiated protocol version independently of the local
+runtime alias. A recovery sweeper compares legacy session status with Turn
+status, reconnects recoverable SDK event consumers, and fails stale unknown
+state after a bounded grace period. Remaining slices are native streaming
+bridges, an authoritative Elastic restart-recovery mechanism, concrete
+artifact storage adapters, and OpenTelemetry exporters. Short-lived
+owner-scoped credential leases are implemented: lease rows contain only
+credential references and audit timestamps, bind to a Turn and Invocation,
+expire automatically, and are revoked when the Turn becomes terminal.
+
+## Non-negotiable invariants
+
+1. `Session`, `Turn`, `Invocation`, `Operation`, and `Approval` are distinct
+   resources with distinct states.
+2. A session is a durable conversation container. Cancelling a turn must not
+   close the session or revoke unrelated future-session permissions.
+3. Every submitted turn has a stable `request_id`. Repeating the same request
+   is idempotent and cannot start a second remote task.
+4. Every remote execution has an invocation that records protocol, adapter,
+   remote context, remote task identifier, and recovery cursor.
+5. Provider events remain immutable source evidence. The UI consumes
+   canonical control events and state snapshots, not provider-specific event
+   names.
+6. Each turn converges to exactly one terminal state: `completed`, `failed`,
+   `rejected`, `cancelled`, or `timed_out`.
+7. Approval rejection is terminal for the blocked operation. It must produce a
+   visible result and cannot leave the turn indefinitely in
+   `waiting_approval`.
+8. Stop is layered: cooperative cancel, bounded wait, adapter abort, then
+   platform containment and capability-token revocation.
+9. Declared, observed, verified, and granted capabilities are stored
+   separately. Discovery is never authorization.
+10. Secrets cross adapters only through owner-scoped credential references and
+    short-lived resolved values. They are excluded from snapshots and events.
+11. Adding a protocol or vendor requires an adapter and conformance fixtures,
+    not branching in core session or governance handlers.
+12. Existing APIs remain available during migration and are implemented on top
+    of the new model.
+
+## Target architecture
+
+```text
+Source endpoint / package / registry
+              |
+        SourceAdapter
+              |
+  immutable evidence + canonical agent specification
+              |
+   governance, policy, publication, capability grant
+              |
+        RuntimeAdapter
+              |
+ Session -> Turn -> Invocation -> remote task / local process
+              |
+         EventAdapter
+              |
+ raw provider events + canonical ordered control events
+              |
+       API / SSE / UI / audit / telemetry
+```
+
+The adapter registry selects implementations by protocol and API profile. Core
+services depend on narrow adapter interfaces and canonical data types. Vendor
+modules depend on HTTP clients and vendor schemas; the dependency never points
+back from the core to a vendor.
+
+## Adapter service provider interface
+
+### Source adapter
+
+`SourceAdapter` owns connectivity tests, discovery, incremental synchronization,
+raw evidence collection, normalization, and source health. It returns a
+canonical agent candidate plus typed mapping findings. It does not publish an
+agent or grant execution permissions.
+
+Required operations:
+
+- identify adapter and supported protocol versions;
+- validate connector configuration without exposing credentials;
+- discover agents with a stable cursor and deterministic external IDs;
+- fetch one current source snapshot;
+- normalize declared capabilities and requirements;
+- report source health and optional remote lifecycle capabilities.
+
+### Runtime adapter
+
+`RuntimeAdapter` owns invocation, event streaming or polling, state recovery,
+approval-result delivery, cooperative cancellation, and enforced abort. It
+accepts the platform execution envelope and returns a remote binding. It never
+decides whether an agent is allowed to execute.
+
+Required operations:
+
+- negotiate protocol and capabilities;
+- create or resume an idempotent invocation;
+- stream or poll from a cursor;
+- obtain an authoritative state snapshot;
+- deliver an operation or approval result;
+- cancel and, when advertised, abort;
+- perform readiness and health checks.
+
+### Supporting adapters
+
+- `EventAdapter` converts vendor events to canonical events while retaining
+  raw evidence and vendor sequence identifiers.
+- `CredentialAdapter` resolves credential references just in time, refreshes
+  expiring credentials, and scrubs secrets from errors.
+- `ArtifactAdapter` stores and retrieves files, structured results, citations,
+  and remote artifact references with digests and media types.
+- `PolicyAdapter` evaluates agent revision, requested capabilities, data
+  classification, and operation risk; its result is a grant or approval
+  requirement, never a mutation of source declarations.
+- `IdentityAdapter` maps external principals and agent identities to platform
+  subjects and preserves issuer/audience evidence.
+- `TelemetryAdapter` starts trace spans, propagates W3C trace context, records
+  protocol-neutral metrics, and attaches vendor correlation identifiers.
+- `McpAdapter` exposes granted MCP servers and tools to runtimes. MCP remains a
+  capability channel, not the agent execution protocol.
+
+## Capability model
+
+Capability negotiation produces four sets:
+
+| Set | Meaning |
+|---|---|
+| Declared | Claims made by the source or provider |
+| Observed | Behavior seen during discovery or execution |
+| Verified | Behavior proven by conformance tests |
+| Granted | Subset authorized for a revision and invocation |
+
+The negotiated runtime profile includes streaming, resumable events,
+idempotency, remote sessions, remote tasks, approval delivery, cancel, abort,
+artifacts, multimodal input, MCP, maximum payload sizes, and deadlines. Missing
+mandatory capabilities downgrade the source to inventory or sandbox.
+
+## Canonical session model
+
+### Session
+
+A session contains conversation identity, owner, agent reference, workspace,
+and lifecycle (`open`, `closing`, `closed`, `failed`). It may contain many
+turns, but only one active interactive turn during the initial rollout.
+
+### Turn
+
+A turn represents one accepted user submission. States are:
+
+```text
+queued -> running -> waiting_input -> running -> completed
+                 -> waiting_approval -> running -> completed
+                 -> cancelling -> cancelled
+                 -> failed | rejected | timed_out
+```
+
+The turn owns `request_id`, timestamps, terminal error, and primary invocation.
+The user message is persisted once; retries reuse the existing turn.
+
+### Invocation
+
+An invocation is one agent execution within a turn. Parent and child
+invocations represent delegation. It records the exact agent revision,
+protocol, adapter, role, remote identifiers, resume cursor, status, and timing.
+One turn can therefore call a platform agent, a remote A2A agent, and a local
+tool without confusing their lifecycles.
+
+### Operation and approval
+
+An operation represents a tool, MCP, data-egress, filesystem, or other
+side-effect request. An approval references the operation, invocation, turn,
+session, agent revision, and policy decision. Rejection writes an operation
+result immediately. The invocation may continue with that result; if the
+protocol defines rejection as request-terminal, the adapter terminalizes the
+turn as `rejected`.
+
+## Canonical events
+
+Control events are ordered per session, deduplicated by `event_key`, and carry
+`session_id`, optional `turn_id`, optional `invocation_id`, `request_id`,
+sequence, timestamp, type, and payload. Initial event types are:
+
+- `turn.accepted`, `turn.started`, `turn.waiting_approval`,
+  `turn.cancelling`, and the five terminal turn events;
+- `invocation.started`, `invocation.bound`, `invocation.progress`, and terminal
+  invocation events;
+- `message.delta`, `message.completed`, `artifact.available`;
+- `operation.requested`, `approval.requested`, `approval.resolved`,
+  `operation.completed`, `operation.rejected`;
+- `session.opened`, `session.closed`, `control.warning`.
+
+Provider-native events continue to be stored in the runtime-event table. The
+normalizer records the raw event identifier on each canonical event. SSE
+clients reconnect with `Last-Event-ID` or `after_sequence`; a snapshot endpoint
+repairs gaps and reports the authoritative active turn.
+
+### CloudEvents boundary
+
+`POST /api/sessions/{session_id}/cloudevents` accepts the CloudEvents 1.0 HTTP
+structured JSON profile (`application/cloudevents+json`) and binary JSON
+profile (`ce-*` attributes plus a JSON body). The caller must own the session
+or be an administrator. The source, id, type, subject, digest, caller, and
+delivery count are recorded without duplicating the full data payload in the
+receipt table. Replaying an identical source/id is idempotent; reusing the
+same source/id with different content is rejected.
+
+Inbound types are stored as provider evidence and normalized to
+`external.event.received`. They cannot directly impersonate Turn or Invocation
+control events. `GET /api/sessions/{session_id}/cloudevents` exports authorized
+runtime evidence as `application/cloudevents-batch+json`; `after_sequence` and
+`limit` provide bounded incremental export. Both directions write audit logs
+and per-event receipts.
+
+### Invocation-scoped MCP grants
+
+Every active Turn projects the agent's MCP toolsets into grants bound to its
+primary Invocation. A grant records the owner, Session, Turn, Invocation,
+server, explicit tool set or explicit server-wide scope, expiry, use count,
+last use, and revocation time. Registered-server permissions are intersected
+with the server's global allowlist. Platform MCP grants contain only the
+platform tools selected in the agent configuration.
+
+Managed runtimes authenticate MCP traffic with the opaque session capability
+token rather than the gateway master key. The token is useful only together
+with its `session_id`; the proxy then resolves the active Invocation and its
+grant. Non-platform MCP endpoints must be present in the managed MCP registry;
+runtime provisioning routes them through the gateway instead of allowing an
+uncontrolled direct URL. `tools/list` is filtered to the effective grant and
+every `tools/call` is checked before forwarding, counted, and audited without
+storing arguments.
+Turn completion, failure, rejection, cancellation, timeout, or grant expiry
+removes access. Calls without a session remain the administrator/user MCP
+management path and do not inherit runtime grants.
+
+### Canonical artifact boundary
+
+`POST /api/sessions/{session_id}/turns/{turn_id}/artifacts` is the only
+runtime-facing persistence boundary for agent-produced artifacts. Every record
+is bound to its owner, Session, Turn, primary Invocation, and managed task when
+one exists. A stable source artifact ID makes retry idempotent; reusing the ID
+with a different media type, digest, or size is rejected.
+
+Inline Base64 content and `s3://` objects in the same Session bucket are capped
+at 20 MiB, read by the platform, checked against optional SHA-256 and size
+claims, and copied to a canonical object key. The resulting record is
+`verified`, always has a platform-computed SHA-256 and size, and is exposed only
+through a short-lived presigned download URL. Internal bucket names and object
+keys are not returned by the API.
+
+HTTP(S) URIs are recorded as `unverified_external`. The platform validates the
+URI shape and claims but never fetches it, follows redirects, or treats its
+digest and size as verified. API consumers receive it in a separate
+`external_reference_url` field with no `download_url`. URI credentials and
+unsupported schemes are rejected. Persistence and task mirroring are audited
+without storing artifact bytes or inline payloads in the audit log.
+
+### OpenTelemetry boundary
+
+Every newly created Invocation starts an `agent.invocation` client Span and
+stores its W3C context in the Invocation metadata. Incoming `traceparent` and
+`tracestate` headers on prompt, Turn, and initial runtime-Session requests are
+validated by the W3C propagator and become the parent context. The platform
+propagates the resulting child context to A2A, Dify, confirmed OpenAPI, Claude
+Managed Agents, Cursor, Gemini, and Elastic runtime requests, including their
+polling and streaming calls.
+
+Terminal Turn transitions end the Invocation Span and attach the normalized
+status plus any remote task, context, Session, or agent correlation ID. The
+adapter records `lap.agent.invocation.started`,
+`lap.agent.invocation.finished`, `lap.agent.invocation.active`, and
+`lap.agent.invocation.duration`. Metric dimensions are intentionally limited
+to adapter, protocol, and terminal status; Session, Turn, Invocation, and
+remote IDs remain trace attributes so they cannot create unbounded metric
+cardinality.
+
+OTLP export is opt-in. Configure `OTEL_EXPORTER_OTLP_ENDPOINT`, or a
+signal-specific `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, with
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Standard OTLP headers, timeout,
+sampling, resource, and metric interval environment variables remain owned by
+the OpenTelemetry SDK. Without an endpoint, valid trace context is still
+created and propagated, but no exporter or periodic network task is installed.
+
+## Protocol and source adapters
+
+### Native providers
+
+OpenCode and Elastic remain first-party modules but implement the same source
+and runtime interfaces. Existing provider event mappings become their
+`EventAdapter` implementations. No provider may mutate session state directly
+after migration.
+
+### A2A
+
+A2A is the preferred interoperable remote-agent path. The source adapter reads
+the Agent Card, preserves it as evidence, maps skills and security schemes,
+and verifies stable identity. The runtime adapter maps platform turns to A2A
+messages/tasks, stores context and task IDs, consumes streaming or polling
+updates, maps input-required/auth-required states, and sends task cancellation
+where supported.
+
+### ACP compatibility
+
+ACP is provided as a versioned legacy/compatibility adapter. The connector must
+pin a supported ACP profile because implementations differ. Unsupported or
+ambiguous terminal and cancellation semantics remain sandbox-only. ACP events
+are normalized through the same invocation and event pipeline.
+
+### OpenAPI and generic REST
+
+The OpenAPI source adapter accepts OpenAPI 3 documents and an explicit mapping
+profile. Automatic inference may propose identity, input, output, health,
+status, and cancellation operations, but an operator must confirm ambiguous
+or side-effecting mappings. A restricted generic-chat profile supports
+OpenAI-compatible chat APIs. Arbitrary REST is never enabled from URL discovery
+alone.
+
+### Dify
+
+The Dify source adapter detects chat, agent-chat, text-generation, and workflow
+applications through metadata and parameters endpoints. The runtime adapter
+maps blocking/streaming responses, conversation IDs, workflow task IDs,
+message feedback, stop endpoints, files, and errors. Workflow applications use
+typed workflow inputs; they are not silently treated as chat agents.
+
+### Packages and registered runtimes
+
+Uploaded packages use a platform runner and package source adapter. Registered
+runtimes use the platform runtime contract directly. Both still create turns,
+invocations, canonical events, and short-lived capability grants.
+
+## API rollout
+
+New additive endpoints:
+
+```text
+POST /api/sessions/{session_id}/turns
+GET  /api/sessions/{session_id}/turns
+GET  /api/sessions/{session_id}/turns/{turn_id}
+POST /api/sessions/{session_id}/turns/{turn_id}/cancel
+POST /api/sessions/{session_id}/turns/{turn_id}/artifacts
+GET  /api/sessions/{session_id}/artifacts
+GET  /api/sessions/{session_id}/artifacts/{artifact_id}
+GET  /api/sessions/{session_id}/control-events
+GET  /api/sessions/{session_id}/control-events/stream
+```
+
+Turn creation accepts `Idempotency-Key` and also permits an explicit
+`request_id`. The response returns the existing turn for a duplicate request.
+The current prompt and interrupt endpoints remain compatibility facades over
+turn creation and cancellation.
+
+Source APIs expose adapter catalog, connector validation, discovery preview,
+sync, candidate acceptance, conformance, and runtime-profile negotiation. API
+responses expose capability states and findings without credential values.
+
+## Storage changes
+
+Additive migrations introduce:
+
+- `LiteLLM_SessionTurnsTable` with one active interactive turn per session and
+  a unique `(session_id, request_id)` constraint;
+- `LiteLLM_SessionInvocationsTable` with delegation and remote-task bindings;
+- `LiteLLM_SessionControlEventsTable` with per-session sequence and event-key
+  deduplication;
+- approval references for turn, invocation, operation, and request;
+- adapter protocol/version and negotiated-profile fields on connectors and
+  runtime bindings;
+- optional credential lease, artifact, and operation records in later
+  migrations;
+- `LiteLLM_ManagedArtifactsTable` with owner, Session, Turn, Invocation, task,
+  verification, digest, and canonical storage bindings.
+
+Legacy session status and raw runtime events remain readable until every UI and
+worker consumes the canonical state.
+
+## Delivery plan
+
+### Phase 1: foundation
+
+- Add adapter SPI, registry, canonical capability profile, and typed errors.
+- Add turn, invocation, and control-event storage with repository state guards.
+- Make existing prompt submission idempotently create a turn and invocation.
+- Make existing stop cancel the active turn without destroying the session.
+- Attach approvals to the active turn and publish explicit resolution events.
+
+Exit: existing OpenCode, Elastic, and generic-chat flows pass unchanged while
+every new prompt has a recoverable terminal turn.
+
+### Phase 2: compatibility APIs and UI
+
+- Add turn, cancel, snapshot, and resumable event APIs.
+- Derive the conversation responder and stop-button state only from the active
+  turn snapshot.
+- Render approval and operation results in the timeline.
+- Add reconnect, duplicate-submit, rejection, stop, and refresh tests.
+
+Exit: refresh and SSE loss cannot create duplicate work or a permanent
+“waiting for model” state.
+
+### Phase 3: existing provider migration
+
+- Wrap OpenCode and Elastic discovery and execution behind adapters.
+- Move provider-native event mapping out of session handlers.
+- Add runtime recovery sweeper and cancellation escalation.
+- Compare old and new state in shadow mode before removing direct mutations.
+
+Exit: the session core contains no OpenCode- or Elastic-specific branches.
+
+Status: runtime execution already uses the provider SDK `RuntimeAdapter`;
+Invocation metadata, owner-scoped recovery credentials, legacy/new state
+reconciliation, consumer recovery, and capability-driven workspace
+provisioning are implemented. The phase remains open until Elastic has an
+authoritative restart-recovery strategy instead of bounded `state_unknown`.
+
+### Phase 4: interoperable sources
+
+- Implement A2A Agent Card discovery, source snapshots, tasks, streaming,
+  polling, recovery, and cancellation.
+- Implement confirmed OpenAPI mapping profiles and generic REST execution.
+- Add ACP compatibility profiles and conformance fixtures.
+- Implement Dify discovery and separate chat, generation, and workflow runtime
+  bridges.
+
+Exit: each adapter passes the same contract suite for identity, idempotency,
+terminal events, approvals, recovery, and cancellation.
+
+### Phase 5: enterprise boundaries
+
+- Add credential leases and refresh, external identity mapping, artifacts,
+  CloudEvents ingress/egress profiles, MCP grant projection, and OpenTelemetry
+  traces and metrics.
+- Add policy simulation and capability-diff approval.
+- Add connector rate limits, circuit breakers, quarantine, and emergency-stop
+  propagation.
+
+Exit: secrets, artifacts, events, and delegated identities cross sources only
+through audited adapters and grants.
+
+Status: credential leases, external identity mapping, the CloudEvents JSON
+boundary, Invocation-scoped MCP projection, canonical Artifact persistence,
+and OpenTelemetry traces, metrics, and W3C propagation are implemented.
+Shared imported-agent credentials are owner-, Turn-, and Invocation-scoped.
+Initial runtime provisioning still uses the existing provisioning credential
+path because no Invocation exists yet. An external identity is first observed
+as `pending`; raw claims are reduced to a SHA-256 digest and minimal evidence,
+and only an explicit audited administrator binding to an active platform user
+activates it. Blocking removes that binding immediately. CloudEvents 1.0
+structured and binary JSON ingress are deduplicated by source/id and cannot
+mutate control state directly; batch egress is owner-scoped and audited.
+MCP access is scoped to Session, Turn, Invocation, server, tools, and expiry;
+runtime authentication uses a session capability token and terminal Turns
+revoke their grants. Artifacts are owner- and Invocation-bound; inline and
+same-Session object content is digest-verified, while external URLs remain
+explicitly unverified and are never fetched. OpenTelemetry starts and closes
+Invocation spans, exports low-cardinality lifecycle metrics, and propagates W3C
+context across supported runtime adapters. Connector rate limits, circuit
+breakers, quarantine, and emergency-stop propagation remain open.
+
+### Phase 6: migration and operations
+
+- Backfill turns for active legacy sessions and adapter profiles for existing
+  connectors.
+- Run dual-write and state-difference reporting, then switch reads to canonical
+  state by feature flag.
+- Publish dashboards for stuck turns, adapter errors, cancellation latency,
+  event lag, credential failures, and source drift.
+- Remove legacy state derivation only after rollback and restore drills pass.
+
+## Testing matrix
+
+Every runtime adapter must pass reusable tests for:
+
+- discovery identity stability and snapshot determinism;
+- credential redaction and SSRF-safe connector validation;
+- repeated request IDs and retry after ambiguous network failure;
+- ordered, duplicate, missing, and reconnected event streams;
+- approve and reject operation results;
+- cancel before start, during streaming, while awaiting approval, and after
+  remote completion;
+- timeout, provider restart, platform restart, and authoritative recovery;
+- child invocation failure and partial artifact production;
+- capability mismatch, revision drift, token expiry, and emergency stop.
+
+Unit tests cover state transitions and protocol mapping. Repository tests cover
+transactions and uniqueness. Contract tests run against simulators and vendor
+fixtures. Browser tests cover send-on-Enter, approval visibility, rejection
+results, stop behavior, resize behavior, refresh, and reconnect.
+
+## Security and failure policy
+
+- Connector endpoints are allowlisted by policy and protected against private
+  network access, redirect abuse, DNS rebinding, oversized bodies, and invalid
+  content types.
+- Unknown protocols and unconfirmed REST mappings are inventory-only.
+- Adapters use bounded timeouts, retries only for idempotent operations,
+  backoff, circuit breakers, and per-connector concurrency limits.
+- A failed event mapping emits a warning and retains raw evidence; it never
+  fabricates successful completion.
+- Recovery prefers provider-authoritative status. If status cannot be proven,
+  the turn fails as `state_unknown` instead of remaining active indefinitely.
+
+## Definition of done
+
+- All submitted messages create a durable, idempotent turn and invocation.
+- Session, turn, invocation, operation, and approval states are independently
+  queryable and audited.
+- Approval rejection and stop always produce visible canonical outcomes.
+- A refresh or reconnect reconstructs the same active-turn state.
+- OpenCode and Elastic execute through the adapter boundary.
+- A2A, confirmed OpenAPI/REST, ACP compatibility, and Dify each have source and
+  runtime adapters with conformance evidence.
+- The UI has no provider-specific busy-state heuristic.
+- No plaintext credential appears in source evidence, control events, logs, or
+  API responses.
+- Migration is additive, feature-flagged, observable, and reversible.

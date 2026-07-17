@@ -19,7 +19,7 @@ use crate::{
     proxy::{auth::master_key::authenticate, state::AppState},
 };
 
-use super::registry::preflight::{run_preflight, PreflightReport};
+use super::registry::preflight::{run_preflight_with_smoke, PreflightReport};
 
 #[derive(Debug, Serialize)]
 pub struct GovernanceResponse {
@@ -85,7 +85,10 @@ pub async fn test(
 ) -> Result<Json<GovernanceResponse>, GatewayError> {
     let (pool, auth, agent, _) = owned_imported_agent(&state, &headers, &agent_id).await?;
     let revision = current_revision(&pool, &agent_id).await?;
-    let report = run_preflight(&state, &pool, &agent).await?;
+    // The explicit governance test exercises the real execution path (A2A
+    // message/send smoke) on top of the passive checks — discovery-only
+    // probes have green-lit agents whose sessions then failed 100%.
+    let report = run_preflight_with_smoke(&state, &pool, &agent, Some(&auth.user_id)).await?;
     let detail = report
         .checks
         .iter()
@@ -208,13 +211,17 @@ pub async fn apply_publish_approval(
     repository::set_status(pool, agent_id, "active")
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+    // Flag approvals where the approver is also the agent owner (typical in
+    // single-admin deployments): the separation-of-duties control didn't
+    // apply, and the audit trail should say so explicitly.
+    let self_approval = current.owner_id == actor;
     audit::record(
         pool,
         actor,
         "agent.governance.published",
         "agent",
         agent_id,
-        json!({ "revision": revision, "approval_id": item.id }),
+        json!({ "revision": revision, "approval_id": item.id, "self_approval": self_approval }),
     )
     .await?;
     Ok(())
@@ -231,6 +238,19 @@ pub async fn rollback(
         .version
         .or(governance.previous_published_revision)
         .ok_or_else(|| GatewayError::BadRequest("没有可回滚的已发布版本。".to_owned()))?;
+    // Rollback may only target a revision that went through the full
+    // test→approval→publish pipeline. Without this check, "rollback" to an
+    // arbitrary (untested, unapproved) revision would mint it as published —
+    // a one-call bypass of the admin publish approval.
+    let published_targets = [
+        governance.published_revision,
+        governance.previous_published_revision,
+    ];
+    if !published_targets.contains(&Some(target)) {
+        return Err(GatewayError::BadRequest(format!(
+            "版本 {target} 不是已发布版本，不能作为回滚目标。"
+        )));
+    }
     let revision = revisions::get_version(&pool, &agent_id, target)
         .await?
         .ok_or_else(|| GatewayError::BadRequest(format!("版本 {target} 不存在。")))?;

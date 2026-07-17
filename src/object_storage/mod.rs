@@ -290,6 +290,25 @@ impl ObjectStorageClient {
             .map_err(|e| GatewayError::SandboxError(format!("read object {key} failed: {e}")))
     }
 
+    pub async fn object_meta(&self, bucket: &str, key: &str) -> Result<ObjectMeta, GatewayError> {
+        let response = self
+            .internal
+            .head_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| GatewayError::SandboxError(format!("head object {key} failed: {e}")))?;
+        Ok(ObjectMeta {
+            key: key.to_owned(),
+            size: response.content_length().unwrap_or_default(),
+            last_modified_ms: response.last_modified().map(|time| time.secs() * 1000),
+            etag: response
+                .e_tag()
+                .map(|value| value.trim_matches('"').to_owned()),
+        })
+    }
+
     /// Deletes every object in the bucket, then the bucket itself. Used when
     /// a session is deleted; best-effort per-object (a single stuck object
     /// shouldn't block session deletion), but bucket deletion is reported.

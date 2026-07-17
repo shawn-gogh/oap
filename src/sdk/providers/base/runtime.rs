@@ -64,6 +64,10 @@ impl RuntimeAdapterRegistry {
 }
 
 pub(crate) trait RuntimeAdapter: Send + Sync + 'static {
+    fn protocol_version(&self) -> &'static str {
+        "unverified"
+    }
+
     fn normalize_stream(&self, stream: AgentEventStream) -> AgentEventStream {
         stream
     }

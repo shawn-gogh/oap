@@ -11,6 +11,7 @@ pub enum ImportAgentsError {
     Request(reqwest::Error),
     Upstream { status: u16, body: String },
     Decode(serde_json::Error),
+    InvalidDocument(String),
 }
 
 impl From<reqwest::Error> for ImportAgentsError {
@@ -54,6 +55,24 @@ pub trait ImportAgentsProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn api_spec(&self) -> &'static str;
+
+    /// Connector-level protocol version before discovery negotiation. A
+    /// provider may override this only when the transport contract itself is
+    /// pinned; otherwise evidence from discovery must populate the negotiated
+    /// profile instead of inventing a version.
+    fn protocol_version(&self) -> &'static str {
+        "unverified"
+    }
+
+    /// Whether this source protocol is also a user-selectable general runtime.
+    /// Per-agent bridges such as A2A and Dify stay out of the runtime dropdown.
+    fn expose_runtime_harness(&self) -> bool {
+        true
+    }
+
+    fn requires_session_workspace(&self) -> bool {
+        false
+    }
 
     fn capabilities(&self) -> ImportProviderCapabilities {
         ImportProviderCapabilities {

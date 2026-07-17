@@ -41,9 +41,9 @@ import { WorkspacePanel } from "@/components/workspace-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
-import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, interruptSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage, ensureWebSession } from "@/lib/api";
+import { getMessages, getSession, createSession, deleteSession, renameSession, subscribeRuntimeEvents, listModels, abortSession, listAgents, listApprovals, acceptApproval, rejectApproval, sendMessageWithRuntimeModel, listRuntimeEvents, listRuntimeHarnesses, listWorkspaceFiles, apiErrorMessage, ensureWebSession, getActiveTurn, cancelTurn } from "@/lib/api";
 import { setSessionApprovalMode } from "@/lib/api";
-import type { ApprovalMode, PendingApproval, RuntimeAgentEvent } from "@/lib/api";
+import type { ApprovalMode, PendingApproval, RuntimeAgentEvent, SessionTurnSnapshot } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
 import { ExposedAppsMenu } from "@/components/exposed-apps-menu";
 import { toast } from "sonner";
@@ -121,6 +121,7 @@ function ChatInner() {
   const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
   const [model, setModel] = useState(FALLBACK_MODELS[0]);
   const [sessionStatus, setSessionStatus] = useState<"idle" | "busy">("idle");
+  const [activeTurn, setActiveTurn] = useState<SessionTurnSnapshot | null | undefined>(undefined);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [approvalsLoaded, setApprovalsLoaded] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
@@ -157,6 +158,7 @@ function ChatInner() {
   const { scrollRef, contentRef, onScroll, isPinned, jumpToBottom } = useStickToBottom(sessionStatus === "busy");
   const activeSessionRef = useRef<string | null>(null);
   const terminalSessionSnapshotRef = useRef(false);
+  const canonicalTurnObservedRef = useRef(false);
   const initiallyScrolledSessionRef = useRef<string | null>(null);
   const autostartedRef = useRef<string | null>(null);
   // Tombstones for approvals the user already decided: the DB write can lag
@@ -183,6 +185,10 @@ function ChatInner() {
   useEffect(() => {
     approvalsRef.current = approvals;
   }, [approvals]);
+
+  useEffect(() => {
+    if (activeTurn) canonicalTurnObservedRef.current = true;
+  }, [activeTurn]);
 
   const refetch = useCallback(async () => {
     if (!sid) return;
@@ -376,7 +382,9 @@ function ChatInner() {
     setSessionRuntime(undefined);
     setSessionLoaded(false);
     setSessionStatus("idle");
+    setActiveTurn(undefined);
     terminalSessionSnapshotRef.current = false;
+    canonicalTurnObservedRef.current = false;
     setSessionHarness("claude-code");
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
@@ -610,18 +618,19 @@ function ChatInner() {
       }
       // A new message always replaces the active runtime turn. This keeps the
       // Enter and send-button paths consistent instead of silently queueing.
-      await interruptSession(sid);
+      await abortSession(sid);
       if (activeSessionRef.current !== sid) return;
       beginRuntimeTurn(text);
     }
     try {
-      await sendMessageWithRuntimeModel({
+      const turn = await sendMessageWithRuntimeModel({
         sessionId: sid,
         text,
         model,
         runtime: sessionRuntime,
         apiSpec: resolveApiSpec(sessionRuntime ?? "", harnesses),
       });
+      setActiveTurn(turn);
     } catch (err) {
       if (activeSessionRef.current !== sid) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -649,8 +658,9 @@ function ChatInner() {
       runtime: sessionRuntime,
       apiSpec: resolveApiSpec(sessionRuntime, harnesses),
     })
-      .then(() => {
+      .then((turn) => {
         if (activeSessionRef.current === sid) {
+          setActiveTurn(turn);
           setRuntimeStreamVersion((version) => version + 1);
         }
       })
@@ -688,7 +698,8 @@ function ChatInner() {
       await sendOrQueueRuntimePrompt(prompt);
       return;
     }
-    await sendMessageWithRuntimeModel({ sessionId: sid, text: prompt, model });
+    const turn = await sendMessageWithRuntimeModel({ sessionId: sid, text: prompt, model });
+    setActiveTurn(turn);
     await refetch();
   }, [beginRuntimeTurn, model, refetch, sendOrQueueRuntimePrompt, sessionRuntime, sessionStatus, sid]);
 
@@ -709,18 +720,19 @@ function ChatInner() {
     setInterruptingQueuedPromptId(id);
     try {
       if (sessionStatus === "busy") {
-        await interruptSession(sid);
+        await abortSession(sid);
       }
       if (activeSessionRef.current !== sid) return;
       setQueuedPrompts((current) => current.filter((item) => item.id !== id));
       beginRuntimeTurn(prompt.text);
-      await sendMessageWithRuntimeModel({
+      const turn = await sendMessageWithRuntimeModel({
         sessionId: sid,
         text: prompt.text,
         model,
         runtime: sessionRuntime,
         apiSpec: resolveApiSpec(sessionRuntime ?? "", harnesses),
       });
+      setActiveTurn(turn);
       if (activeSessionRef.current === sid) {
         setRuntimeStreamVersion((version) => version + 1);
       }
@@ -751,7 +763,13 @@ function ChatInner() {
     setSessionStatus("idle");
     setQueuedPrompts([]);
     try {
-      await abortSession(sid);
+      if (activeTurn?.turn.id) {
+        const turn = await cancelTurn(sid, activeTurn.turn.id);
+        setActiveTurn(turn);
+      } else {
+        await abortSession(sid);
+        setActiveTurn(null);
+      }
       if (activeSessionRef.current !== sid) return;
       setRuntimeStreamVersion((version) => version + 1);
     } catch (err) {
@@ -760,7 +778,7 @@ function ChatInner() {
       setSessionStatus("busy");
       setError(apiErrorMessage(err, "中断会话失败"));
     }
-  }, [sessionRuntime, sid]);
+  }, [activeTurn, sessionRuntime, sid]);
 
   useEffect(() => {
     if (!sid || !sessionLoaded) return;
@@ -811,8 +829,10 @@ function ChatInner() {
         runtime: sessionRuntime,
         apiSpec: resolveApiSpec(sessionRuntime ?? "", harnesses),
       })
-        .then(() => {
+        .then((turn) => {
           if (activeSessionRef.current !== sid) return;
+          canonicalTurnObservedRef.current = true;
+          setActiveTurn(turn);
           if (!sessionRuntime) return refetch();
         })
         .then(() => router.replace(`/chat/?id=${encodeURIComponent(sid)}`))
@@ -836,6 +856,38 @@ function ChatInner() {
       unsub?.();
     };
   }, [sid, sessionLoaded, refetch, appendRuntimeEvent, applyApprovals, mergeRuntimeEventsAndStatus, autostartPrompt, beginRuntimeTurn, model, router, sessionRuntime, runtimeStreamVersion, harnesses]);
+
+  useEffect(() => {
+    if (!sid || !sessionLoaded) return;
+    let mounted = true;
+    let timer: number | undefined;
+    const refresh = () => {
+      getActiveTurn(sid)
+        .then((turn) => {
+          if (!mounted || activeSessionRef.current !== sid) return;
+          if (turn) {
+            canonicalTurnObservedRef.current = true;
+            setActiveTurn(turn);
+            terminalSessionSnapshotRef.current = false;
+            setSessionStatus("busy");
+          } else if (canonicalTurnObservedRef.current) {
+            setActiveTurn(null);
+            terminalSessionSnapshotRef.current = true;
+            setSessionStatus("idle");
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!mounted) return;
+          timer = window.setTimeout(refresh, sessionStatus === "busy" ? 1500 : 8000);
+        });
+    };
+    refresh();
+    return () => {
+      mounted = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [sessionLoaded, sessionStatus, sid]);
 
   useEffect(() => {
     if (!sid || !sessionRuntime) return;

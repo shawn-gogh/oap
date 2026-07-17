@@ -367,10 +367,7 @@ pub async fn soft_delete(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn restore(
-    pool: &PgPool,
-    agent_id: &str,
-) -> Result<bool, GatewayError> {
+pub async fn restore(pool: &PgPool, agent_id: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(
         r#"
         UPDATE "LiteLLM_ManagedAgentsTable"

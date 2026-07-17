@@ -203,10 +203,11 @@ impl RuntimeAdapter for ElasticAgentBuilderRuntime {
             })?;
             let body = binding.converse_body(&prompt, conversation_id.as_deref());
             client
-                .stream_post(
+                .stream_post_for_session(
                     AgentRuntime::ElasticAgentBuilder,
                     &binding.converse_path(),
                     &body,
+                    session_id,
                 )
                 .await
         })

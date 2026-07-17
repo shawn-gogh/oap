@@ -236,6 +236,7 @@ pub(crate) async fn deliver_and_record(
         Ok(()) => {
             repository::mark_delivery_applied(pool, item_id).await?;
             publish_approval_reply(state, pool, &item).await?;
+            publish_control_resolution(pool, &item).await?;
             Ok("applied".to_owned())
         }
         Err(error) => {
@@ -243,6 +244,71 @@ pub(crate) async fn deliver_and_record(
             Ok("delivery_failed".to_owned())
         }
     }
+}
+
+async fn publish_control_resolution(
+    pool: &PgPool,
+    item: &InboxItemRow,
+) -> Result<(), GatewayError> {
+    let (Some(session_id), Some(turn_id)) = (item.session_id.as_deref(), item.turn_id.as_deref())
+    else {
+        return Ok(());
+    };
+    let event_type = if item.status == "rejected" {
+        "approval.rejected"
+    } else {
+        "approval.accepted"
+    };
+    crate::db::managed_agents::session_control::repository::append_event(
+        pool,
+        crate::db::managed_agents::session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(turn_id),
+            invocation_id: item.invocation_id.as_deref(),
+            request_id: item.request_id.as_deref(),
+            event_key: &format!("approval:{}:{}", item.id, item.status),
+            event_type,
+            event: serde_json::json!({
+                "approval_id": item.id,
+                "status": item.status,
+                "feedback": item.feedback,
+                "delivery_status": "applied"
+            }),
+        },
+    )
+    .await?;
+    if item.status == "rejected" {
+        crate::db::managed_agents::session_control::repository::append_event(
+            pool,
+            crate::db::managed_agents::session_control::repository::NewControlEvent {
+                session_id,
+                turn_id: Some(turn_id),
+                invocation_id: item.invocation_id.as_deref(),
+                request_id: item.request_id.as_deref(),
+                event_key: &format!(
+                    "operation:{}:rejected",
+                    item.operation_id.as_deref().unwrap_or(&item.id)
+                ),
+                event_type: "operation.rejected",
+                event: serde_json::json!({
+                    "approval_id": item.id,
+                    "operation_id": item.operation_id,
+                    "message": item.feedback.as_deref().unwrap_or("operation rejected by user")
+                }),
+            },
+        )
+        .await?;
+    }
+    let snapshot =
+        crate::db::managed_agents::session_control::repository::get_turn(pool, session_id, turn_id)
+            .await?;
+    if snapshot.as_ref().map(|value| value.turn.status.as_str()) == Some("waiting_approval") {
+        crate::db::managed_agents::session_control::repository::transition(
+            pool, turn_id, "running", None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn deliver(
@@ -281,6 +347,15 @@ async fn deliver(
             Ok(())
         }
         "resume_session" => resume_linked_session(state.clone(), pool.clone(), item).await,
+        "a2a_continuation" => {
+            crate::http::sessions::external_bridge::resolve_continuation(
+                state,
+                pool,
+                item,
+                item.status == "accepted",
+            )
+            .await
+        }
         "platform_action" if item.status != "accepted" => Ok(()),
         handler => Err(GatewayError::InvalidConfig(format!(
             "approval effect handler is not implemented: {handler}"

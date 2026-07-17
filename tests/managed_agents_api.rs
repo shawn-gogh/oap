@@ -2,9 +2,737 @@
 mod support;
 
 use serde_json::{json, Value};
-use support::{flows, request_json, request_json_raw, request_json_raw_with_key, AppFixture};
+use support::{
+    flows, request_json, request_json_raw, request_json_raw_with_key, request_with_headers,
+    AppFixture,
+};
 
 static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn invocation_telemetry_persists_and_continues_w3c_context_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping telemetry integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    let session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        None,
+        "Telemetry boundary test",
+        None,
+        Some("admin"),
+        None,
+    )
+    .await
+    .unwrap();
+    let parent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let created = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::session_control::repository::NewTurn {
+            session_id: &session.id,
+            request_id: "telemetry-request",
+            model: Some("test-model"),
+            agent_id: None,
+            runtime: None,
+            protocol: "a2a",
+            protocol_version: "1.0",
+            adapter_id: "a2a_v1",
+            traceparent: Some(parent),
+            tracestate: Some("vendor=value"),
+        },
+    )
+    .await
+    .unwrap();
+    let invocation = &created.snapshot.invocations[0];
+    let telemetry = &invocation.metadata["telemetry"];
+    assert_eq!(telemetry["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
+    assert_eq!(telemetry["parent_traceparent"], parent);
+    assert_eq!(telemetry["adapter_id"], "a2a_v1");
+    let propagated = telemetry["traceparent"].as_str().unwrap();
+    assert!(propagated.starts_with("00-4bf92f3577b34da6a3ce929d0e0e4736-"));
+    assert_ne!(propagated, parent);
+    let headers =
+        litellm_rust::managed_agents::adapters::telemetry::trace_headers(&invocation.metadata)
+            .unwrap();
+    assert_eq!(headers.0, propagated);
+    assert_eq!(headers.1.as_deref(), Some("vendor=value"));
+
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &created.snapshot.turn.id,
+        "running",
+        None,
+    )
+    .await
+    .unwrap();
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &created.snapshot.turn.id,
+        "completed",
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn canonical_external_artifacts_are_unverified_idempotent_and_owner_scoped() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping artifact integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    let session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        None,
+        "Artifact boundary test",
+        None,
+        Some("admin"),
+        None,
+    )
+    .await
+    .unwrap();
+    let turn = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::session_control::repository::NewTurn {
+            session_id: &session.id,
+            request_id: "artifact-boundary-request",
+            model: Some("test-model"),
+            agent_id: None,
+            runtime: None,
+            protocol: "platform",
+            protocol_version: "1",
+            adapter_id: "platform",
+            traceparent: None,
+            tracestate: None,
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = format!(
+        "/api/sessions/{}/turns/{}/artifacts",
+        session.id, turn.snapshot.turn.id
+    );
+    let input = json!({
+        "id": "source-report-1",
+        "name": "assessment.json",
+        "media_type": "application/json",
+        "digest": format!("sha256:{}", "a".repeat(64)),
+        "size_bytes": 42,
+        "uri": "https://intelligence.example/reports/42",
+        "metadata": {"classification": "open-source"}
+    });
+    let created = request_json(fixture.app.clone(), "POST", &endpoint, Some(input.clone())).await;
+    assert_eq!(created["status"], "unverified_external");
+    assert_eq!(created["download_url"], Value::Null);
+    assert_eq!(
+        created["external_reference_url"],
+        "https://intelligence.example/reports/42"
+    );
+    assert_eq!(created["invocation_id"], turn.snapshot.invocations[0].id);
+    assert_eq!(created["metadata"]["name"], "assessment.json");
+
+    let duplicate = request_json(fixture.app.clone(), "POST", &endpoint, Some(input.clone())).await;
+    assert_eq!(duplicate["id"], created["id"]);
+    let listed = request_json(
+        fixture.app.clone(),
+        "GET",
+        &format!("/api/sessions/{}/artifacts", session.id),
+        None,
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], created["id"]);
+
+    let mut changed = input;
+    changed["digest"] = json!(format!("sha256:{}", "b".repeat(64)));
+    let (status, _) = request_json_raw(fixture.app.clone(), "POST", &endpoint, Some(changed)).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    let stored = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        r#"
+        SELECT status, storage_backend, object_bucket, object_key
+        FROM "LiteLLM_ManagedArtifactsTable"
+        WHERE id = $1
+        "#,
+    )
+    .bind(created["id"].as_str().unwrap())
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored.0, "unverified_external");
+    assert_eq!(stored.1, "external_reference");
+    assert!(stored.2.is_none());
+    assert!(stored.3.is_none());
+}
+
+#[tokio::test]
+async fn mcp_grants_are_invocation_scoped_and_revoked_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping MCP invocation grant integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    let agent = create_test_agent(
+        &fixture,
+        json!({
+            "name": "mcp-grant-agent",
+            "owner_id": "mcp-owner",
+            "model": "test-model",
+            "system": "test",
+            "tools": [],
+            "config": {
+                "platform_mcp_ids": ["read_platform_session"]
+            }
+        }),
+    )
+    .await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        Some(agent_id),
+        "MCP grant test",
+        None,
+        Some("mcp-owner"),
+        None,
+    )
+    .await
+    .unwrap();
+    let created = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::session_control::repository::NewTurn {
+            session_id: &session.id,
+            request_id: "mcp-grant-request",
+            model: Some("test-model"),
+            agent_id: Some(agent_id),
+            runtime: None,
+            protocol: "platform",
+            protocol_version: "1",
+            adapter_id: "platform",
+            traceparent: None,
+            tracestate: None,
+        },
+    )
+    .await
+    .unwrap();
+    let invocation_id = &created.snapshot.invocations[0].id;
+    let grant =
+        litellm_rust::db::managed_agents::mcp_invocation_grants::repository::active_for_invocation(
+            &fixture.pool,
+            invocation_id,
+            "platform",
+        )
+        .await
+        .unwrap()
+        .expect("active grant");
+    assert!(grant.allows("read_platform_session"));
+    assert!(!grant.allows("create_managed_agent"));
+
+    let (capability_token, _) =
+        litellm_rust::db::managed_agents::sources::repository::issue_capability_token(
+            &fixture.pool,
+            &session.id,
+            agent_id,
+            json!({"mcp": true}),
+            60_000,
+        )
+        .await
+        .unwrap();
+    let endpoint = format!("/mcp/platform/{agent_id}?session_id={}", session.id);
+    let (status, listed) = request_json_raw_with_key(
+        fixture.app.clone(),
+        "POST",
+        &endpoint,
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})),
+        &capability_token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let listed = serde_json::from_str::<Value>(&listed).unwrap();
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "read_platform_session");
+    let (status, denied) = request_json_raw_with_key(
+        fixture.app.clone(),
+        "POST",
+        &endpoint,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "create_managed_agent", "arguments": {}}
+        })),
+        &capability_token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let denied = serde_json::from_str::<Value>(&denied).unwrap();
+    assert_eq!(denied["error"]["code"], -32602);
+
+    let (status, _) = request_json_raw_with_key(
+        fixture.app.clone(),
+        "POST",
+        &format!("/mcp/platform/{agent_id}"),
+        Some(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})),
+        &capability_token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &created.snapshot.turn.id,
+        "cancelled",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        litellm_rust::db::managed_agents::mcp_invocation_grants::repository::active_for_invocation(
+            &fixture.pool,
+            invocation_id,
+            "platform",
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let revoked = request_json(
+        fixture.app.clone(),
+        "POST",
+        &endpoint,
+        Some(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})),
+    )
+    .await;
+    assert_eq!(revoked["error"]["code"], -32001);
+}
+
+#[tokio::test]
+async fn cloud_events_ingress_dedup_and_egress_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping CloudEvents integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    let session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        None,
+        "CloudEvents test",
+        None,
+        Some("cloud-owner"),
+        None,
+    )
+    .await
+    .unwrap();
+    let event = json!({
+        "specversion": "1.0",
+        "id": "delivery-1",
+        "source": "urn:example:agent-runtime",
+        "type": "com.example.agent.completed",
+        "subject": "task/42",
+        "time": "2026-07-16T12:00:00Z",
+        "datacontenttype": "application/json",
+        "traceparent": "00-test-trace-test-span-01",
+        "data": {"result": "done"}
+    });
+    let endpoint = format!("/api/sessions/{}/cloudevents", session.id);
+    let first = request_with_headers(
+        fixture.app.clone(),
+        "POST",
+        &endpoint,
+        event.to_string(),
+        "application/cloudevents+json",
+        &[],
+        axum::http::StatusCode::ACCEPTED,
+    )
+    .await;
+    assert!(!serde_json::from_str::<Value>(&first).unwrap()["duplicate"]
+        .as_bool()
+        .unwrap());
+    let replay = request_with_headers(
+        fixture.app.clone(),
+        "POST",
+        &endpoint,
+        event.to_string(),
+        "application/cloudevents+json",
+        &[],
+        axum::http::StatusCode::ACCEPTED,
+    )
+    .await;
+    assert!(serde_json::from_str::<Value>(&replay).unwrap()["duplicate"]
+        .as_bool()
+        .unwrap());
+
+    let mut changed = event.clone();
+    changed["data"] = json!({"result": "tampered"});
+    request_with_headers(
+        fixture.app.clone(),
+        "POST",
+        &endpoint,
+        changed.to_string(),
+        "application/cloudevents+json",
+        &[],
+        axum::http::StatusCode::BAD_REQUEST,
+    )
+    .await;
+
+    let stored = litellm_rust::db::managed_agents::runtime_events::repository::list(
+        &fixture.pool,
+        &session.id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0]["type"], "external.event.received");
+    assert_eq!(
+        stored[0]["raw"]["traceparent"],
+        "00-test-trace-test-span-01"
+    );
+
+    let exported = request_json(fixture.app.clone(), "GET", &endpoint, None).await;
+    assert_eq!(exported[0]["specversion"], "1.0");
+    assert_eq!(
+        exported[0]["type"],
+        "io.lap.runtime.external.event.received"
+    );
+    assert_eq!(exported[0]["data"]["type"], "external.event.received");
+
+    let receipts: Vec<(String, i32)> = sqlx::query_as(
+        r#"
+        SELECT direction, delivery_count
+        FROM "LiteLLM_CloudEventReceiptsTable"
+        WHERE session_id = $1
+        ORDER BY direction
+        "#,
+    )
+    .bind(&session.id)
+    .fetch_all(&fixture.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        receipts,
+        vec![("egress".to_owned(), 1), ("ingress".to_owned(), 2)]
+    );
+}
+
+#[tokio::test]
+async fn external_identity_requires_explicit_mapping_against_postgres() {
+    use litellm_rust::managed_agents::adapters::{
+        platform_identity::DatabaseIdentityAdapter, types::ExternalIdentity, AdapterError,
+        IdentityAdapter,
+    };
+
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping identity mapping integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    litellm_rust::db::managed_agents::users::repository::ensure(&fixture.pool, "mapped-user")
+        .await
+        .unwrap();
+    let adapter = DatabaseIdentityAdapter::new(fixture.pool.clone());
+    let identity = ExternalIdentity {
+        issuer: "https://identity.example.test".to_owned(),
+        subject: "external-subject-1".to_owned(),
+        audience: Some("agent-platform".to_owned()),
+        claims: json!({"email": "sensitive@example.test", "roles": ["operator"]}),
+    };
+
+    let pending_id = match adapter.resolve(&identity).await {
+        Err(AdapterError::UnmappedIdentity(mapping_id)) => mapping_id,
+        result => panic!("expected pending identity, got {result:?}"),
+    };
+    let pending = litellm_rust::db::managed_agents::identity_mappings::repository::get(
+        &fixture.pool,
+        &pending_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(pending.status, "pending");
+    assert!(pending.claims_digest.starts_with("sha256:"));
+    assert!(!pending
+        .evidence
+        .to_string()
+        .contains("sensitive@example.test"));
+
+    let user_key = litellm_rust::db::managed_agents::api_keys::repository::create(
+        &fixture.pool,
+        Some("identity-non-admin"),
+        Some("mapped-user"),
+        Some("user"),
+    )
+    .await
+    .unwrap()
+    .key;
+    let (status, _) = request_json_raw_with_key(
+        fixture.app.clone(),
+        "GET",
+        "/api/identity-mappings",
+        None,
+        &user_key,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    let listed = request_json(
+        fixture.app.clone(),
+        "GET",
+        "/api/identity-mappings?status=pending",
+        None,
+    )
+    .await;
+    assert_eq!(listed["mappings"][0]["id"], pending.id);
+    let bound = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/identity-mappings/{}/bind", pending.id),
+        Some(json!({"user_id": "mapped-user"})),
+    )
+    .await;
+    assert_eq!(bound["status"], "active");
+    assert_eq!(bound["platform_user_id"], "mapped-user");
+    let resolved = adapter.resolve(&identity).await.expect("identity resolves");
+    assert_eq!(resolved.user_id, "mapped-user");
+    assert_eq!(resolved.agent_id, None);
+    assert_eq!(
+        resolved.mapping_evidence["mapping_id"].as_str(),
+        Some(pending_id.as_str())
+    );
+
+    let blocked = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/identity-mappings/{}/block", pending.id),
+        None,
+    )
+    .await;
+    assert_eq!(blocked["status"], "blocked");
+    assert!(blocked["platform_user_id"].is_null());
+    assert!(matches!(
+        adapter.resolve(&identity).await,
+        Err(AdapterError::BlockedIdentity(_))
+    ));
+}
+
+#[tokio::test]
+async fn session_turn_idempotency_approval_and_cancel_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping session control integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    let session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        None,
+        "turn state test",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let input = || litellm_rust::db::managed_agents::session_control::repository::NewTurn {
+        session_id: &session.id,
+        request_id: "req_idempotent",
+        model: Some("test-model"),
+        agent_id: None,
+        runtime: None,
+        protocol: "platform",
+        protocol_version: "1",
+        adapter_id: "platform",
+        traceparent: None,
+        tracestate: None,
+    };
+    let created = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
+        &fixture.pool,
+        input(),
+    )
+    .await
+    .unwrap();
+    assert!(created.created);
+    assert_eq!(created.snapshot.invocations[0].protocol_version, "1");
+    let duplicate = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
+        &fixture.pool,
+        input(),
+    )
+    .await
+    .unwrap();
+    assert!(!duplicate.created);
+    assert_eq!(created.snapshot.turn.id, duplicate.snapshot.turn.id);
+
+    let invocation_id = &created.snapshot.invocations[0].id;
+    let lease = litellm_rust::db::managed_agents::credential_leases::repository::issue(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::credential_leases::repository::NewCredentialLease {
+            owner_id: "lease-owner",
+            session_id: &session.id,
+            turn_id: &created.snapshot.turn.id,
+            invocation_id,
+            credential_name: "provider:test",
+            adapter_id: "platform",
+            purpose: "agent_runtime",
+            ttl_ms: 60_000,
+            metadata: json!({"protocol": "platform"}),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        litellm_rust::db::managed_agents::credential_leases::repository::mark_resolved(
+            &fixture.pool,
+            &lease.id,
+            "lease-owner",
+            litellm_rust::db::managed_agents::now_ms(),
+        )
+        .await
+        .unwrap()
+    );
+
+    let turn_id = created.snapshot.turn.id;
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &turn_id,
+        "running",
+        None,
+    )
+    .await
+    .unwrap();
+    let approval = litellm_rust::db::managed_agents::inbox::repository::create_approval(
+        &fixture.pool,
+        "runtime_permission",
+        "test permission".to_owned(),
+        Some(session.id.clone()),
+        None,
+        None,
+        Some(json!({"request_id": "provider-request"})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(approval.turn_id.as_deref(), Some(turn_id.as_str()));
+    assert_eq!(approval.request_id.as_deref(), Some("req_idempotent"));
+    assert_eq!(
+        litellm_rust::db::managed_agents::session_control::repository::active_turn(
+            &fixture.pool,
+            &session.id,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .turn
+        .status,
+        "waiting_approval"
+    );
+
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &turn_id,
+        "running",
+        None,
+    )
+    .await
+    .unwrap();
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &turn_id,
+        "cancelling",
+        None,
+    )
+    .await
+    .unwrap();
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &turn_id,
+        "cancelled",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        litellm_rust::db::managed_agents::session_control::repository::active_turn(
+            &fixture.pool,
+            &session.id,
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let lease = litellm_rust::db::managed_agents::credential_leases::repository::get(
+        &fixture.pool,
+        &lease.id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(lease.last_resolved_at.is_some());
+    assert!(lease.revoked_at.is_some());
+    let events = litellm_rust::db::managed_agents::session_control::repository::list_events(
+        &fixture.pool,
+        &session.id,
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(events.first().unwrap().event_type, "turn.accepted");
+    assert_eq!(events.last().unwrap().event_type, "turn.cancelled");
+
+    let recovered = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::session_control::repository::NewTurn {
+            session_id: &session.id,
+            request_id: "req_recovery",
+            model: Some("test-model"),
+            agent_id: None,
+            runtime: None,
+            protocol: "platform",
+            protocol_version: "1",
+            adapter_id: "platform",
+            traceparent: None,
+            tracestate: None,
+        },
+    )
+    .await
+    .unwrap();
+    litellm_rust::db::managed_agents::session_control::repository::transition(
+        &fixture.pool,
+        &recovered.snapshot.turn.id,
+        "running",
+        None,
+    )
+    .await
+    .unwrap();
+    litellm_rust::db::managed_agents::sessions::repository::set_status(
+        &fixture.pool,
+        &session.id,
+        "idle",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        litellm_rust::http::sessions::recovery::run_once(
+            fixture.state.clone(),
+            litellm_rust::db::managed_agents::now_ms(),
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    let recovered = litellm_rust::db::managed_agents::session_control::repository::get_turn(
+        &fixture.pool,
+        &session.id,
+        &recovered.snapshot.turn.id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(recovered.turn.status, "completed");
+}
 
 #[tokio::test]
 async fn permission_matrix_and_not_found_isolation_against_postgres() {
@@ -1449,13 +2177,20 @@ async fn persisted_runtime_permission_flow_against_postgres() {
         "patterns": ["*.txt"],
         "metadata": {}
     });
-    
+
     use tower::ServiceExt;
     let req_body = axum::body::Body::from(serde_json::to_vec(&body).unwrap());
-    let response = fixture.app.clone().oneshot(req.body(req_body).unwrap()).await.unwrap();
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(req.body(req_body).unwrap())
+        .await
+        .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    
-    let res_body = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+
+    let res_body = axum::body::to_bytes(response.into_body(), 10000)
+        .await
+        .unwrap();
     let res_json: serde_json::Value = serde_json::from_slice(&res_body).unwrap();
     let approval_id = res_json["id"].as_str().unwrap();
 
@@ -1508,7 +2243,7 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     litellm_rust::db::managed_agents::settings::repository::set_outbound_domain_whitelist(
         &fixture.pool,
         Some("google.com, *.github.com"),
-        "test-actor"
+        "test-actor",
     )
     .await
     .unwrap();
@@ -1559,7 +2294,12 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     });
     use tower::ServiceExt;
     let req_body1 = axum::body::Body::from(serde_json::to_vec(&body1).unwrap());
-    let response1 = fixture.app.clone().oneshot(req1.body(req_body1).unwrap()).await.unwrap();
+    let response1 = fixture
+        .app
+        .clone()
+        .oneshot(req1.body(req_body1).unwrap())
+        .await
+        .unwrap();
     assert_eq!(response1.status(), axum::http::StatusCode::OK);
 
     let list_response = request_json(
@@ -1585,10 +2325,17 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
         "metadata": {}
     });
     let req_body2 = axum::body::Body::from(serde_json::to_vec(&body2).unwrap());
-    let response2 = fixture.app.clone().oneshot(req2.body(req_body2).unwrap()).await.unwrap();
+    let response2 = fixture
+        .app
+        .clone()
+        .oneshot(req2.body(req_body2).unwrap())
+        .await
+        .unwrap();
     assert_eq!(response2.status(), axum::http::StatusCode::OK);
-    
-    let res_body2 = axum::body::to_bytes(response2.into_body(), 10000).await.unwrap();
+
+    let res_body2 = axum::body::to_bytes(response2.into_body(), 10000)
+        .await
+        .unwrap();
     let res_json2: serde_json::Value = serde_json::from_slice(&res_body2).unwrap();
     let approval_id = res_json2["id"].as_str().unwrap();
 
@@ -1605,13 +2352,11 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     assert_eq!(approvals2[0]["kind"], "data_egress");
     assert_eq!(approvals2[0]["required_role"], "admin");
 
-    let egress_item = litellm_rust::db::managed_agents::inbox::repository::get(
-        &fixture.pool,
-        approval_id,
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let egress_item =
+        litellm_rust::db::managed_agents::inbox::repository::get(&fixture.pool, approval_id)
+            .await
+            .unwrap()
+            .unwrap();
     let non_admin = litellm_rust::proxy::auth::master_key::AuthContext {
         user_id: "admin".to_owned(),
         is_admin: false,
@@ -1683,18 +2428,17 @@ async fn approval_timeout_persists_denial_delivery_and_escalation_against_postgr
     )
     .await
     .unwrap();
-    let runtime_permission =
-        litellm_rust::db::managed_agents::inbox::repository::create_approval(
-            &fixture.pool,
-            "runtime_permission",
-            "runtime permission timeout".to_owned(),
-            Some(session.id),
-            Some(agent_id.to_owned()),
-            None,
-            Some(json!({ "request_id": "timeout-request" })),
-        )
-        .await
-        .unwrap();
+    let runtime_permission = litellm_rust::db::managed_agents::inbox::repository::create_approval(
+        &fixture.pool,
+        "runtime_permission",
+        "runtime permission timeout".to_owned(),
+        Some(session.id),
+        Some(agent_id.to_owned()),
+        None,
+        Some(json!({ "request_id": "timeout-request" })),
+    )
+    .await
+    .unwrap();
     let business = litellm_rust::db::managed_agents::inbox::repository::create_approval(
         &fixture.pool,
         "business_decision",
@@ -1743,13 +2487,11 @@ async fn approval_timeout_persists_denial_delivery_and_escalation_against_postgr
     assert_eq!(timed_out.delivery_status, "delivery_failed");
     assert_eq!(timed_out.delivery_attempts, 1);
 
-    let escalated = litellm_rust::db::managed_agents::inbox::repository::get(
-        &fixture.pool,
-        &business.id,
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let escalated =
+        litellm_rust::db::managed_agents::inbox::repository::get(&fixture.pool, &business.id)
+            .await
+            .unwrap()
+            .unwrap();
     assert!(escalated.escalated_at.is_some());
     assert_eq!(escalated.escalation_role.as_deref(), Some("group_admin"));
 }
@@ -1771,13 +2513,7 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
     let agent = create_test_agent(&fixture, agent_body).await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let list_response = request_json(
-        fixture.app.clone(),
-        "GET",
-        "/api/agents",
-        None,
-    )
-    .await;
+    let list_response = request_json(fixture.app.clone(), "GET", "/api/agents", None).await;
     let agents = list_response["agents"].as_array().unwrap();
     assert!(agents.iter().any(|a| a["id"] == agent_id));
 
@@ -1790,20 +2526,15 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
     .await;
     assert_eq!(delete_response["ok"], true);
 
-    let list_response_after = request_json(
-        fixture.app.clone(),
-        "GET",
-        "/api/agents",
-        None,
-    )
-    .await;
+    let list_response_after = request_json(fixture.app.clone(), "GET", "/api/agents", None).await;
     let agents_after = list_response_after["agents"].as_array().unwrap();
     assert!(!agents_after.iter().any(|a| a["id"] == agent_id));
 
-    let db_agent = litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, agent_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let db_agent =
+        litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, agent_id)
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(db_agent.status, "archived_pending_delete");
     assert!(db_agent.config.get("deleted_at").is_some());
 
@@ -1816,13 +2547,8 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
     .await;
     assert_eq!(restore_response["ok"], true);
 
-    let list_response_restored = request_json(
-        fixture.app.clone(),
-        "GET",
-        "/api/agents",
-        None,
-    )
-    .await;
+    let list_response_restored =
+        request_json(fixture.app.clone(), "GET", "/api/agents", None).await;
     let agents_restored = list_response_restored["agents"].as_array().unwrap();
     assert!(agents_restored.iter().any(|a| a["id"] == agent_id));
 
@@ -1840,7 +2566,7 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
         UPDATE "LiteLLM_ManagedAgentsTable"
         SET config = jsonb_set(config, '{deleted_at}', to_jsonb($2::BIGINT), true)
         WHERE id = $1
-        "#
+        "#,
     )
     .bind(agent_id)
     .bind(eight_days_ago)
@@ -1852,8 +2578,9 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
         .await
         .unwrap();
 
-    let deleted_agent = litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, agent_id)
-        .await
-        .unwrap();
+    let deleted_agent =
+        litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, agent_id)
+            .await
+            .unwrap();
     assert!(deleted_agent.is_none());
 }

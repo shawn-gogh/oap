@@ -49,6 +49,7 @@ function approvalKindLabel(kind: PendingApproval["kind"]): string {
   if (kind === "agent_publish") return "发布审批";
   if (kind === "agent_change") return "配置变更";
   if (kind === "platform_action") return "平台操作";
+  if (kind === "a2a_continuation") return "远程任务续接";
   return "操作确认";
 }
 

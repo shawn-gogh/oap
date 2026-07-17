@@ -173,7 +173,12 @@ impl RuntimeAdapter for CursorRuntime {
             let mut delay = Duration::from_millis(500);
             loop {
                 let result = client
-                    .post(AgentRuntime::Cursor, &format!("/v1/agents/{agent_id}/runs"), &body)
+                    .post_for_session(
+                        AgentRuntime::Cursor,
+                        &format!("/v1/agents/{agent_id}/runs"),
+                        &body,
+                        session_id,
+                    )
                     .await;
                 match result {
                     Ok(raw) => {
@@ -215,9 +220,10 @@ impl RuntimeAdapter for CursorRuntime {
                 None => latest_run_id(client, &agent_id).await?,
             };
             client
-                .stream(
+                .stream_for_session(
                     AgentRuntime::Cursor,
                     &format!("/v1/agents/{agent_id}/runs/{run_id}/stream"),
+                    session_id,
                 )
                 .await
         })
@@ -236,10 +242,11 @@ impl RuntimeAdapter for CursorRuntime {
                 None => latest_run_id(client, &agent_id).await?,
             };
             client
-                .post(
+                .post_for_session(
                     AgentRuntime::Cursor,
                     &format!("/v1/agents/{agent_id}/runs/{run_id}/cancel"),
                     &serde_json::json!({}),
+                    session_id,
                 )
                 .await?;
             Ok(())

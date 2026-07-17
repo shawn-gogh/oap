@@ -1,0 +1,19 @@
+services:
+  a2a-opencode-test:
+    build: .
+    image: a2a-opencode-agent:latest
+    container_name: a2a-opencode-test
+    ports:
+      - "9200:9200"
+    environment:
+      # Unset GATEWAY_BASE_URL so opencode uses its default free providers/auth.
+      A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://a2a-opencode-test:9200/}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  default:
+    name: litellm-agent-control-plane_default
+    external: true
+
+

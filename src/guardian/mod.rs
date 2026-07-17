@@ -160,9 +160,8 @@ fn parse_assessment(raw: &str) -> Result<GuardianAssessment, GatewayError> {
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
-    serde_json::from_str(cleaned).map_err(|error| {
-        GatewayError::SandboxError(format!("guardian JSON parse failed: {error}"))
-    })
+    serde_json::from_str(cleaned)
+        .map_err(|error| GatewayError::SandboxError(format!("guardian JSON parse failed: {error}")))
 }
 
 /// Per-session denial tracking, mirroring Codex's

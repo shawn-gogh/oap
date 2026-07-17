@@ -44,6 +44,9 @@ use super::{
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const SYNC_LEASE_MS: i64 = 60_000;
 const MISSING_THRESHOLD: i32 = 3;
+/// Consecutive failed health-check runs required before an active agent is
+/// auto-paused (mirrors MISSING_THRESHOLD's rationale for source sync).
+const HEALTH_PAUSE_THRESHOLD: i64 = 3;
 
 #[derive(Debug, Deserialize)]
 pub struct DriftResolutionRequest {
@@ -125,6 +128,9 @@ pub async fn create_connector(
             provider: provider.id().to_owned(),
             endpoint,
             credential_name,
+            adapter_id: provider.id().to_owned(),
+            protocol: provider.api_spec().to_owned(),
+            protocol_version: provider.protocol_version().to_owned(),
         },
         capabilities,
     )
@@ -518,13 +524,78 @@ pub(crate) async fn run_health_check(
         )
         .await?;
     }
+    // A per-run summary record, so consecutive-failure counting has a single
+    // stable check kind to look at (per-check kinds vary between runs).
+    sources::record_health(
+        pool,
+        &agent.id,
+        source.as_ref().map(|source| source.id.as_str()),
+        "preflight",
+        if report.can_activate {
+            "healthy"
+        } else {
+            "unhealthy"
+        },
+        None,
+        Some(latency),
+    )
+    .await?;
+    // Auto-pause only after HEALTH_PAUSE_THRESHOLD consecutive failed runs:
+    // a single failure is often transient (flaky MCP smoke test, network
+    // blip) and shouldn't take a production agent offline by itself.
     if !report.can_activate && agent.status == "active" {
-        repository::set_status(pool, &agent.id, "paused").await?;
-        if governance::get(pool, &agent.id).await?.is_some() {
-            governance::suspend(pool, &agent.id, "连续健康检查发现阻断项。运行已暂停。").await?;
+        let recent =
+            sources::recent_health_statuses(pool, &agent.id, "preflight", HEALTH_PAUSE_THRESHOLD)
+                .await?;
+        let consecutive_failures = recent.len() as i64 >= HEALTH_PAUSE_THRESHOLD
+            && recent.iter().all(|status| status == "unhealthy");
+        if consecutive_failures {
+            repository::set_status(pool, &agent.id, "paused").await?;
+            if governance::get(pool, &agent.id).await?.is_some() {
+                governance::suspend(
+                    pool,
+                    &agent.id,
+                    &format!("连续 {HEALTH_PAUSE_THRESHOLD} 次健康检查发现阻断项，运行已暂停。"),
+                )
+                .await?;
+            }
         }
     }
     Ok((report, latency))
+}
+
+/// Interrupts every live runtime session of the agent (best effort) before
+/// the DB-level status sweep. `cancel_agent_work` alone only rewrites rows:
+/// without this, remote runtimes and A2A pollers keep executing after an
+/// "emergency stop", and an in-flight prompt's completion handler would even
+/// overwrite the swept 'cancelled' status and resurrect the session.
+async fn interrupt_agent_sessions(
+    state: &Arc<AppState>,
+    pool: &sqlx::PgPool,
+    agent_id: &str,
+    reason: &str,
+) -> u64 {
+    let rows = match crate::db::managed_agents::sessions::repository::list_active_for_agent(
+        pool, agent_id,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(agent_id, %error, "failed to list active sessions for interruption");
+            return 0;
+        }
+    };
+    let mut interrupted = 0;
+    for row in rows {
+        match crate::http::sessions::abort_session_internal(state, pool, &row, reason).await {
+            Ok(()) => interrupted += 1,
+            Err(error) => {
+                tracing::warn!(agent_id, session_id = %row.id, %error, "failed to interrupt session during agent stop");
+            }
+        }
+    }
+    interrupted
 }
 
 pub async fn emergency_stop(
@@ -536,9 +607,11 @@ pub async fn emergency_stop(
     repository::set_status(&pool, &agent_id, "paused")
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
+    let interrupted =
+        interrupt_agent_sessions(&state, &pool, &agent_id, "智能体被紧急停止").await;
     let cancelled = sources::cancel_agent_work(&pool, &agent_id).await?;
     if governance::get(&pool, &agent_id).await?.is_some() {
-        governance::suspend(&pool, &agent_id, "管理员执行紧急停止。所有能力令牌已撤销。").await?;
+        governance::suspend(&pool, &agent_id, "执行了紧急停止。所有能力令牌已撤销。").await?;
     }
     audit::record(
         &pool,
@@ -546,11 +619,11 @@ pub async fn emergency_stop(
         "agent.emergency_stopped",
         "agent",
         &agent_id,
-        json!({ "cancelled_work_items": cancelled }),
+        json!({ "cancelled_work_items": cancelled, "interrupted_sessions": interrupted }),
     )
     .await?;
     Ok(Json(
-        json!({ "ok": true, "cancelled_work_items": cancelled }),
+        json!({ "ok": true, "cancelled_work_items": cancelled, "interrupted_sessions": interrupted }),
     ))
 }
 
@@ -560,6 +633,7 @@ pub async fn retire(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, GatewayError> {
     let (pool, auth, _) = editable_agent(&state, &headers, &agent_id).await?;
+    let interrupted = interrupt_agent_sessions(&state, &pool, &agent_id, "智能体已退役").await;
     let cancelled = sources::cancel_agent_work(&pool, &agent_id).await?;
     repository::set_status(&pool, &agent_id, "archived_pending_delete")
         .await?
@@ -574,7 +648,7 @@ pub async fn retire(
         "agent.retired",
         "agent",
         &agent_id,
-        json!({ "cancelled_work_items": cancelled, "evidence_preserved": true }),
+        json!({ "cancelled_work_items": cancelled, "interrupted_sessions": interrupted, "evidence_preserved": true }),
     )
     .await?;
     Ok(Json(
@@ -590,22 +664,45 @@ pub(crate) async fn reconcile_source(
     governance: &governance::AgentGovernanceRow,
     source: &ManagedAgentSourceRow,
 ) -> Result<bool, GatewayError> {
-    let Some(connector_id) = source.connector_id.as_deref() else {
-        sources::mark_sync_state(pool, &source.id, "in_sync", 0).await?;
-        return Ok(false);
+    // Sources imported directly (no connector) still know their provider,
+    // endpoint and credential via governance — sync them by discovering
+    // against the endpoint itself. Previously this arm silently marked
+    // in_sync, which made drift detection a no-op for every directly
+    // imported agent.
+    let (provider, endpoint, api_key) = match source.connector_id.as_deref() {
+        Some(connector_id) => {
+            let connector = sources::get_connector(pool, connector_id)
+                .await?
+                .ok_or_else(|| GatewayError::NotFound("source connector not found".to_owned()))?;
+            if connector.status == "disabled" {
+                return Err(GatewayError::BadRequest("来源连接器已停用。".to_owned()));
+            }
+            let api_key = connector_api_key(state, pool, &connector).await?;
+            (
+                provider_for_id(&connector.provider)?,
+                connector.endpoint.clone(),
+                api_key,
+            )
+        }
+        None => {
+            let api_key = credential_api_key(
+                state,
+                pool,
+                governance.credential_name.as_deref(),
+                &governance.owner_id,
+            )
+            .await?;
+            (
+                provider_for_id(&governance.source_provider)?,
+                governance.source_endpoint.clone(),
+                api_key,
+            )
+        }
     };
-    let connector = sources::get_connector(pool, connector_id)
-        .await?
-        .ok_or_else(|| GatewayError::NotFound("source connector not found".to_owned()))?;
-    if connector.status == "disabled" {
-        return Err(GatewayError::BadRequest("来源连接器已停用。".to_owned()));
-    }
-    validate_connector_endpoint(&connector.endpoint).await?;
-    let provider = provider_for_id(&connector.provider)?;
-    let api_key = connector_api_key(state, pool, &connector).await?;
+    validate_connector_endpoint(&endpoint).await?;
     let discovered = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        provider.discover(&state.http, &connector.endpoint, &api_key),
+        provider.discover(&state.http, &endpoint, &api_key),
     )
     .await
     .map_err(|_| GatewayError::BadRequest("来源同步连接超时。".to_owned()))?
@@ -766,12 +863,31 @@ async fn connector_api_key(
     pool: &sqlx::PgPool,
     connector: &SourceConnectorRow,
 ) -> Result<String, GatewayError> {
-    let Some(name) = connector.credential_name.as_deref() else {
+    credential_api_key(
+        state,
+        pool,
+        connector.credential_name.as_deref(),
+        &connector.owner_id,
+    )
+    .await
+}
+
+/// Decrypts a named personal credential's `api_key`, or `""` if the source
+/// has no credential reference (e.g. BYO-mode imports never persist one).
+/// Shared by connector "test connection" and the federated-source reachability
+/// probe in `registry::preflight`.
+pub(crate) async fn credential_api_key(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    credential_name: Option<&str>,
+    owner_id: &str,
+) -> Result<String, GatewayError> {
+    let Some(name) = credential_name else {
         return Ok(String::new());
     };
-    let credential = credentials::get_personal_by_name(pool, name, &connector.owner_id)
+    let credential = credentials::get_personal_by_name(pool, name, owner_id)
         .await?
-        .ok_or_else(|| GatewayError::BadRequest("连接器凭据不存在或不属于当前属主。".to_owned()))?;
+        .ok_or_else(|| GatewayError::BadRequest("凭据不存在或不属于当前属主。".to_owned()))?;
     let Some(encrypted) = credential
         .credential_values
         .get("api_key")
@@ -1017,7 +1133,8 @@ fn health_kind(id: &str) -> &'static str {
         "model" => "model",
         "tools" => "tool",
         "mcp_server" => "mcp",
-        "vault_key" => "credential",
+        "vault_key" | "source_credential" => "credential",
+        "execution_smoke" => "runtime",
         _ => "source",
     }
 }

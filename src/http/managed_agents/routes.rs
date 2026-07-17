@@ -29,6 +29,18 @@ pub fn router() -> Router<Arc<AppState>> {
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
+            "/api/identity-mappings",
+            get(super::identity_mappings::list),
+        )
+        .route(
+            "/api/identity-mappings/{mapping_id}/bind",
+            post(super::identity_mappings::bind),
+        )
+        .route(
+            "/api/identity-mappings/{mapping_id}/block",
+            post(super::identity_mappings::block),
+        )
+        .route(
             "/api/agent-source-connectors",
             get(super::source_management::list_connectors)
                 .post(super::source_management::create_connector),
@@ -90,6 +102,16 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/restore",
             post(super::registry::restore::restore),
+        )
+        .route(
+            "/api/agents/byo-credentials",
+            get(super::byo_credentials::list_configured),
+        )
+        .route(
+            "/api/agents/{agent_id}/byo-credential",
+            get(super::byo_credentials::status)
+                .put(super::byo_credentials::store)
+                .delete(super::byo_credentials::delete),
         )
         .route(
             "/api/agents/{agent_id}/preflight",

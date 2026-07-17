@@ -11,6 +11,10 @@ pub struct SourceConnectorRow {
     pub credential_name: Option<String>,
     pub status: String,
     pub capabilities: Value,
+    pub adapter_id: Option<String>,
+    pub protocol: Option<String>,
+    pub protocol_version: Option<String>,
+    pub negotiated_profile: Value,
     pub last_test_detail: Option<String>,
     pub last_test_at: Option<i64>,
     pub created_at: i64,
@@ -23,6 +27,9 @@ pub struct CreateSourceConnector {
     pub provider: String,
     pub endpoint: String,
     pub credential_name: Option<String>,
+    pub adapter_id: String,
+    pub protocol: String,
+    pub protocol_version: String,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -34,7 +34,9 @@ use crate::{
         state::AppState,
     },
     sdk::providers::{
-        elastic::import_agents::ELASTIC_IMPORT_AGENTS, import_agents::ImportAgentsProvider,
+        a2a_import_agents::A2A_IMPORT_AGENTS, acp_import_agents::ACP_IMPORT_AGENTS,
+        dify_import_agents::DIFY_IMPORT_AGENTS, elastic::import_agents::ELASTIC_IMPORT_AGENTS,
+        import_agents::ImportAgentsProvider, openapi_import_agents::OPENAPI_IMPORT_AGENTS,
         opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
 };
@@ -266,6 +268,47 @@ fn preview_item(
             }
         }
     }
+    let raw = agent.raw.as_ref().cloned().unwrap_or(Value::Null);
+    match provider.id() {
+        "a2a" if raw.get("url").and_then(Value::as_str).is_none() => {
+            issues.push(json!({
+                "severity": "blocking",
+                "code": "a2a_runtime_url_missing",
+                "field": "source.raw.url",
+                "message": "A2A Agent Card 缺少运行端点 URL。"
+            }));
+        }
+        "dify"
+            if raw
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| mode.contains("workflow")) =>
+        {
+            issues.push(json!({
+                "severity": "approval_required",
+                "code": "dify_workflow_mapping_required",
+                "field": "execution.input_mapping",
+                "message": "Dify 工作流必须确认输入映射后才能执行。"
+            }));
+        }
+        "openapi" if raw.get("x-lap-runtime").is_none() => {
+            issues.push(json!({
+                "severity": "approval_required",
+                "code": "openapi_runtime_mapping_required",
+                "field": "source.raw.x-lap-runtime",
+                "message": "OpenAPI 来源可进入资产清单，但执行前必须确认请求和响应映射。"
+            }));
+        }
+        "acp" => {
+            issues.push(json!({
+                "severity": "approval_required",
+                "code": "acp_profile_pin_required",
+                "field": "execution.compatibility_profile",
+                "message": "ACP 实现差异较大，执行前必须固定兼容配置并通过一致性测试。"
+            }));
+        }
+        _ => {}
+    }
     let can_import = !issues
         .iter()
         .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("blocking"));
@@ -338,6 +381,7 @@ pub(crate) fn import_runtime_providers() -> Vec<ImportProviderResponse> {
             name: provider.name(),
             api_spec: provider.api_spec(),
             capabilities: provider.capabilities(),
+            expose_runtime_harness: provider.expose_runtime_harness(),
         })
         .collect()
 }
@@ -351,7 +395,14 @@ pub async fn list_providers(
 }
 
 fn provider_registry() -> Vec<&'static dyn ImportAgentsProvider> {
-    vec![&ELASTIC_IMPORT_AGENTS, &OPENCODE_IMPORT_AGENTS]
+    vec![
+        &A2A_IMPORT_AGENTS,
+        &ACP_IMPORT_AGENTS,
+        &DIFY_IMPORT_AGENTS,
+        &OPENAPI_IMPORT_AGENTS,
+        &ELASTIC_IMPORT_AGENTS,
+        &OPENCODE_IMPORT_AGENTS,
+    ]
 }
 
 pub(crate) fn provider_for_id(
@@ -544,6 +595,9 @@ fn agent_config(
 ) -> Value {
     let mut config = json!({
         "runtime": runtime,
+        "runtime_capabilities": {
+            "session_workspace": provider.requires_session_workspace()
+        },
         "source": source_config(provider, endpoint, agent, credential_mode, credential_name),
     });
     if provider.api_spec() == "elastic_agent_builder" {

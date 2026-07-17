@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -34,6 +34,7 @@ pub struct AppState {
     pub local_session_events: LocalSessionEvents,
     pub provider_consumers: ProviderConsumers,
     pub guardian_circuit_breaker: crate::guardian::CircuitBreaker,
+    pub external_bridge_cancellations: ExternalBridgeCancellations,
     mcp_proxy_base_url: RwLock<Option<String>>,
 }
 
@@ -129,6 +130,43 @@ impl LocalSessionEvents {
     }
 }
 
+/// Tracks sessions whose external-bridge turn (A2A/Dify/…) was cancelled by
+/// the user while the background poller (`external_bridge::execute_prompt`)
+/// is still running. The poller has no `JoinHandle` to abort — it's detached
+/// via `tokio::spawn` — so it checks this set on every iteration instead and
+/// gives up as soon as the user cancels, rather than riding out the full
+/// remote poll timeout and resurrecting a "busy" state after the turn is
+/// already terminal.
+#[derive(Debug, Default)]
+pub struct ExternalBridgeCancellations {
+    sessions: Mutex<HashSet<String>>,
+}
+
+impl ExternalBridgeCancellations {
+    pub fn cancel(&self, session_id: &str) {
+        self.sessions
+            .lock()
+            .expect("external bridge cancellations lock")
+            .insert(session_id.to_owned());
+    }
+
+    pub fn is_cancelled(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .expect("external bridge cancellations lock")
+            .contains(session_id)
+    }
+
+    /// Clears the flag for a fresh turn so a stale cancellation from a
+    /// previous turn can't short-circuit the next one.
+    pub fn clear(&self, session_id: &str) {
+        self.sessions
+            .lock()
+            .expect("external bridge cancellations lock")
+            .remove(session_id);
+    }
+}
+
 impl AppState {
     pub fn build_http_client() -> Result<Client, GatewayError> {
         Client::builder()
@@ -163,6 +201,7 @@ impl AppState {
             local_session_events: LocalSessionEvents::default(),
             provider_consumers: ProviderConsumers::default(),
             guardian_circuit_breaker: crate::guardian::CircuitBreaker::default(),
+            external_bridge_cancellations: ExternalBridgeCancellations::default(),
             mcp_proxy_base_url: RwLock::new(None),
         })
     }

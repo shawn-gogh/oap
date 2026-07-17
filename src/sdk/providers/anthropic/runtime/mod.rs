@@ -136,13 +136,14 @@ impl RuntimeAdapter for ClaudeManagedAgentsRuntime {
         Box::pin(async move {
             let provider_session_id = provider_session_id(client, session_id)?;
             let raw = client
-                .post(
+                .post_for_session(
                     AgentRuntime::ClaudeManagedAgents,
                     &format!("/v1/sessions/{provider_session_id}/events"),
                     &SendEventsRequest {
                         model: None,
                         events: params.events,
                     },
+                    session_id,
                 )
                 .await?;
             Ok(SendEventsResponse { raw })
@@ -157,9 +158,10 @@ impl RuntimeAdapter for ClaudeManagedAgentsRuntime {
         Box::pin(async move {
             let provider_session_id = provider_session_id(client, session_id)?;
             client
-                .stream(
+                .stream_for_session(
                     AgentRuntime::ClaudeManagedAgents,
                     &format!("/v1/sessions/{provider_session_id}/events/stream"),
+                    session_id,
                 )
                 .await
         })
@@ -173,9 +175,10 @@ impl RuntimeAdapter for ClaudeManagedAgentsRuntime {
         Box::pin(async move {
             let provider_session_id = provider_session_id(client, session_id)?;
             client
-                .get(
+                .get_for_session(
                     AgentRuntime::ClaudeManagedAgents,
                     &format!("/v1/sessions/{provider_session_id}/events"),
+                    session_id,
                 )
                 .await
         })
@@ -189,13 +192,14 @@ impl RuntimeAdapter for ClaudeManagedAgentsRuntime {
         Box::pin(async move {
             let provider_session_id = provider_session_id(client, session_id)?;
             client
-                .post(
+                .post_for_session(
                     AgentRuntime::ClaudeManagedAgents,
                     &format!("/v1/sessions/{provider_session_id}/events"),
                     &SendEventsRequest {
                         model: None,
                         events: vec![serde_json::json!({ "type": "user.interrupt" })],
                     },
+                    session_id,
                 )
                 .await?;
             Ok(())

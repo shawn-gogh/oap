@@ -41,19 +41,18 @@ pub(super) async fn provision_runtime_session(
 ) -> Result<SessionRow, GatewayError> {
     let sdk_rt = created.resolved.agent_runtime;
     let client = runtime_client(state, created);
-    // Custom harnesses (opencode) have no credential vault, so the platform-MCP
-    // bearer must travel inline in the MCP config for the wrapper to apply it.
-    let inline_auth_token = created
-        .resolved
-        .is_custom_harness
-        .then_some(state.config.general_settings.master_key.as_deref())
-        .flatten();
+    let mcp_auth_token = created
+        .environment
+        .get("LAP_CAPABILITY_TOKEN")
+        .and_then(Value::as_str);
     let provider_mcp_servers = mcp_servers(
         state,
+        pool,
         &created.agent,
         Some(&created.row.id),
-        inline_auth_token,
-    )?;
+        mcp_auth_token,
+    )
+    .await?;
     let provider_agent = match gemini::reusable_provider_agent(pool, sdk_rt, created).await? {
         Some(agent) => agent,
         None => {

@@ -106,7 +106,6 @@ mod whitelist_tests {
     }
 }
 
-
 async fn get_value(pool: &PgPool, key: &str) -> Result<Option<String>, GatewayError> {
     sqlx::query_scalar::<_, String>(
         r#"

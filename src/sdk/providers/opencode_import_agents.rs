@@ -38,6 +38,10 @@ impl ImportAgentsProvider for OpencodeImportAgents {
         "claude_managed_agents"
     }
 
+    fn requires_session_workspace(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> ImportProviderCapabilities {
         ImportProviderCapabilities {
             discover: true,
