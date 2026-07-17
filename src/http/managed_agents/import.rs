@@ -34,9 +34,12 @@ use crate::{
         state::AppState,
     },
     sdk::providers::{
-        a2a_import_agents::A2A_IMPORT_AGENTS, acp_import_agents::ACP_IMPORT_AGENTS,
-        dify_import_agents::DIFY_IMPORT_AGENTS, elastic::import_agents::ELASTIC_IMPORT_AGENTS,
-        import_agents::ImportAgentsProvider, openapi_import_agents::OPENAPI_IMPORT_AGENTS,
+        a2a_import_agents::A2A_IMPORT_AGENTS,
+        acp_import_agents::ACP_IMPORT_AGENTS,
+        dify_import_agents::DIFY_IMPORT_AGENTS,
+        elastic::import_agents::ELASTIC_IMPORT_AGENTS,
+        import_agents::{ImportAgentsProvider, ImportedAgent},
+        openapi_import_agents::OPENAPI_IMPORT_AGENTS,
         opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
 };
@@ -82,10 +85,39 @@ pub async fn import(
     let credential_mode = input.credential_mode;
     validate_credential_mode(&credential_mode, &auth)?;
     let runtime = runtime_for_import(&state, provider, &provider_id, &endpoint).await;
+    // Materialize a connector for this platform as a by-product of the import
+    // (reused if one already exists), so directly imported agents get the
+    // connector-backed capabilities — webhook push, credential reuse — without
+    // the user ever configuring a "connector". ensure_source links sources to
+    // it automatically by owner/provider/endpoint.
+    super::source_management::ensure_connector_for_import(
+        &state, pool, &owner_id, provider, &endpoint, api_key,
+    )
+    .await?;
 
     let mut rows = Vec::with_capacity(input.agents.len());
     let mut results = Vec::with_capacity(input.agents.len());
     for agent in input.agents {
+        // Normalize the identity key: it is the dedupe key in governance, so
+        // whitespace variants must not mint distinct (or colliding) agents.
+        let agent = ImportAgent {
+            external_id: agent.external_id.trim().to_owned(),
+            ..agent
+        };
+        // Enforce the same blocking rules preview reports: a broken identity
+        // or unusable execution contract must not enter the registry, even
+        // when the caller skips preview and posts to import directly.
+        let issues = import_issues(provider, &agent);
+        if !blocking_issues(&issues).is_empty() {
+            results.push(ImportItemResult {
+                external_id: agent.external_id,
+                agent_id: None,
+                status: "blocked",
+                snapshot_id: None,
+                issues: Value::Array(issues),
+            });
+            continue;
+        }
         let external_agent_id = agent.external_id.clone();
         let source_hash = source_hash(&agent)?;
         let existing = governance::find_by_source(
@@ -99,6 +131,59 @@ pub async fn import(
         let unchanged = existing
             .as_ref()
             .is_some_and(|governance| governance.source_hash == source_hash);
+        // Re-importing an already governed agent with a *changed* definition
+        // must not overwrite it directly — that would bypass drift review.
+        // Route the change through the same candidate-snapshot path source
+        // sync uses; the operator then accepts or rejects it explicitly.
+        if let Some(existing) = existing.as_ref().filter(|_| !unchanged) {
+            let row = repository::get(pool, &existing.agent_id)
+                .await?
+                .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?;
+            let source =
+                source_repository::ensure_source(pool, existing, "federated", None).await?;
+            let remote = ImportedAgent {
+                id: external_agent_id.clone(),
+                name: agent_name(&agent).to_owned(),
+                description: agent.description.clone(),
+                model: agent.model.clone(),
+                provider: provider.id().to_owned(),
+                raw: agent.raw.clone().unwrap_or_else(|| json!({})),
+            };
+            let snapshot = super::source_management::record_drift_candidate(
+                pool,
+                &row,
+                provider,
+                &source,
+                &remote,
+                &source_hash,
+                &auth.user_id,
+            )
+            .await?;
+            audit::record(
+                pool,
+                &auth.user_id,
+                "agent.source.drift_candidate",
+                "agent",
+                &row.id,
+                json!({
+                    "provider": provider.id(),
+                    "endpoint": endpoint,
+                    "external_agent_id": external_agent_id,
+                    "snapshot_id": snapshot.id,
+                    "via": "import",
+                }),
+            )
+            .await?;
+            results.push(ImportItemResult {
+                external_id: external_agent_id,
+                agent_id: Some(row.id.clone()),
+                status: "drift_pending",
+                snapshot_id: Some(snapshot.id),
+                issues: snapshot.normalization_issues,
+            });
+            rows.push(row);
+            continue;
+        }
         let create = create_input(
             &state,
             provider,
@@ -116,15 +201,12 @@ pub async fn import(
             .and_then(|config| config.pointer("/source/credential_name"))
             .and_then(Value::as_str)
             .map(str::to_owned);
+        // Changed existing agents were diverted to drift review above, so
+        // only "unchanged re-import" and "first import" reach this point.
         let row = match existing.as_ref() {
-            Some(existing) if unchanged => repository::get(pool, &existing.agent_id)
+            Some(existing) => repository::get(pool, &existing.agent_id)
                 .await?
                 .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?,
-            Some(existing) => {
-                repository::update(pool, &existing.agent_id, update_from_import(create))
-                    .await?
-                    .ok_or_else(|| GatewayError::NotFound("imported agent not found".to_owned()))?
-            }
             None => repository::create(pool, create).await?,
         };
         let revision = if unchanged {
@@ -206,6 +288,19 @@ pub async fn import(
         rows.push(row);
     }
 
+    // Every requested agent was rejected — surface a hard failure instead of
+    // a 201 that quietly imported nothing.
+    if rows.is_empty() {
+        let messages = results
+            .iter()
+            .flat_map(|result| result.issues.as_array().into_iter().flatten())
+            .filter_map(|issue| issue.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("；");
+        return Err(GatewayError::BadRequest(format!(
+            "所有智能体均无法导入：{messages}"
+        )));
+    }
     Ok((
         StatusCode::CREATED,
         Json(ImportAgentsResponse {
@@ -233,11 +328,11 @@ pub async fn preview(
     Ok(Json(ImportPreviewResponse { items }))
 }
 
-fn preview_item(
-    provider: &dyn ImportAgentsProvider,
-    endpoint: &str,
-    agent: ImportAgent,
-) -> ImportPreviewItem {
+/// Issue detection shared by `preview` and `import`: the same rules that mark
+/// a preview item non-importable must also be enforced at import time —
+/// otherwise calling `import` directly (skipping preview) smuggles in agents
+/// with a broken identity or an unusable execution contract.
+fn import_issues(provider: &dyn ImportAgentsProvider, agent: &ImportAgent) -> Vec<Value> {
     let mut issues = Vec::new();
     if agent.external_id.trim().is_empty() {
         issues.push(json!({
@@ -309,9 +404,23 @@ fn preview_item(
         }
         _ => {}
     }
-    let can_import = !issues
+    issues
+}
+
+fn blocking_issues(issues: &[Value]) -> Vec<&Value> {
+    issues
         .iter()
-        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("blocking"));
+        .filter(|issue| issue.get("severity").and_then(Value::as_str) == Some("blocking"))
+        .collect()
+}
+
+fn preview_item(
+    provider: &dyn ImportAgentsProvider,
+    endpoint: &str,
+    agent: ImportAgent,
+) -> ImportPreviewItem {
+    let issues = import_issues(provider, &agent);
+    let can_import = blocking_issues(&issues).is_empty();
     ImportPreviewItem {
         external_id: agent.external_id.clone(),
         canonical_spec: json!({

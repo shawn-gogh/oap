@@ -16,6 +16,28 @@ use super::schema::{
     SourceConnectorRow, UpdateSourceConnector,
 };
 
+pub async fn find_connector(
+    pool: &PgPool,
+    owner_id: &str,
+    provider: &str,
+    endpoint: &str,
+) -> Result<Option<SourceConnectorRow>, GatewayError> {
+    sqlx::query_as::<_, SourceConnectorRow>(
+        r#"
+        SELECT * FROM "LiteLLM_AgentSourceConnectorsTable"
+        WHERE owner_id = $1 AND provider = $2 AND endpoint = $3
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(owner_id)
+    .bind(provider)
+    .bind(endpoint)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn create_connector(
     pool: &PgPool,
     owner_id: &str,
@@ -350,6 +372,7 @@ pub async fn record_candidate_snapshot(
         UPDATE "LiteLLM_ManagedAgentSourcesTable"
         SET candidate_snapshot_id = $2, sync_state = 'drifted',
             missing_count = 0, last_synced_at = $3,
+            next_sync_at = $3 + 300000,
             lease_owner = NULL, lease_until = NULL, updated_at = $3
         WHERE id = $1
         "#,
@@ -815,13 +838,20 @@ pub async fn list_due_sources(
     pool: &PgPool,
     limit: i64,
 ) -> Result<Vec<ManagedAgentSourceRow>, GatewayError> {
+    // LEFT JOIN: directly imported sources have no connector but still know
+    // their provider/endpoint/credential via governance — they must get
+    // scheduled sync (drift detection) and the post-sync health checks too,
+    // not only when someone clicks "sync" manually. Only an explicitly
+    // disabled connector opts a source out; an unreachable one keeps being
+    // retried at the normal cadence so it recovers without manual help.
     sqlx::query_as::<_, ManagedAgentSourceRow>(
         r#"
         SELECT source.*
         FROM "LiteLLM_ManagedAgentSourcesTable" source
-        JOIN "LiteLLM_AgentSourceConnectorsTable" connector ON connector.id = source.connector_id
+        LEFT JOIN "LiteLLM_AgentSourceConnectorsTable" connector
+          ON connector.id = source.connector_id
         WHERE source.sync_state != 'detached'
-          AND connector.status = 'healthy'
+          AND (source.connector_id IS NULL OR connector.status IS DISTINCT FROM 'disabled')
           AND COALESCE(source.next_sync_at, 0) <= $1
         ORDER BY COALESCE(source.next_sync_at, 0) ASC
         LIMIT $2

@@ -729,14 +729,41 @@ pub(crate) async fn reconcile_source(
         sources::mark_sync_state(pool, &source.id, "in_sync", 0).await?;
         return Ok(false);
     }
-    let candidate = candidate_agent(agent, provider, &remote);
+    record_drift_candidate(
+        pool,
+        agent,
+        provider,
+        source,
+        &remote,
+        &digest,
+        &auth.user_id,
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Records a candidate snapshot plus field-level drift findings for a changed
+/// remote definition, pausing the agent on high-risk drift. The single entry
+/// point for "the source changed" — used by scheduled/manual sync *and* by
+/// re-import, so a changed source always lands in drift review instead of
+/// being applied directly.
+pub(crate) async fn record_drift_candidate(
+    pool: &sqlx::PgPool,
+    agent: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
+    provider: &dyn ImportAgentsProvider,
+    source: &ManagedAgentSourceRow,
+    remote: &ImportedAgent,
+    digest: &str,
+    actor: &str,
+) -> Result<AgentSourceSnapshotRow, GatewayError> {
+    let candidate = candidate_agent(agent, provider, remote);
     let snapshot = sources::record_candidate_snapshot(
         pool,
         source,
         &candidate,
-        remote.raw,
-        &digest,
-        &auth.user_id,
+        remote.raw.clone(),
+        digest,
+        actor,
     )
     .await?;
     let previous = sources::get_snapshot(pool, source.current_snapshot_id.as_deref()).await?;
@@ -752,7 +779,7 @@ pub(crate) async fn reconcile_source(
         repository::set_status(pool, &agent.id, "paused").await?;
         governance::suspend(pool, &agent.id, "检测到高风险来源漂移，已暂停新工作。").await?;
     }
-    Ok(true)
+    Ok(snapshot)
 }
 
 fn candidate_agent(
@@ -869,6 +896,101 @@ async fn connector_api_key(
         &connector.owner_id,
     )
     .await
+}
+
+/// Silently materializes a source connector for a direct import, so the
+/// "import an agent" dialog stays the single user-facing entry point: the
+/// connector (scheduled sync grouping, webhook endpoint, shared credential)
+/// is created as a by-product instead of being a concept users must learn
+/// and configure up front. Reuses an existing connector for the same
+/// owner/provider/endpoint; stores the import's api_key as the connector
+/// credential only when the connector is newly created (never overwrites an
+/// existing connector's credential).
+pub(crate) async fn ensure_connector_for_import(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    owner_id: &str,
+    provider: &dyn ImportAgentsProvider,
+    endpoint: &str,
+    api_key: Option<&str>,
+) -> Result<SourceConnectorRow, GatewayError> {
+    if let Some(existing) = sources::find_connector(pool, owner_id, provider.id(), endpoint).await?
+    {
+        return Ok(existing);
+    }
+    let api_key = api_key.map(str::trim).filter(|value| !value.is_empty());
+    let credential_name = match api_key {
+        Some(api_key) => {
+            let name = format!(
+                "provider:{}:connector:{}",
+                provider.id(),
+                uuid::Uuid::new_v4().simple()
+            );
+            store_connector_credential(state, pool, owner_id, &name, endpoint, Some(api_key), None)
+                .await?;
+            Some(name)
+        }
+        None => None,
+    };
+    let host = reqwest::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| endpoint.to_owned());
+    let capabilities = serde_json::to_value(provider.capabilities())
+        .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+    let connector = sources::create_connector(
+        pool,
+        owner_id,
+        CreateSourceConnector {
+            name: format!("{} · {host}", provider.name()),
+            provider: provider.id().to_owned(),
+            endpoint: endpoint.to_owned(),
+            credential_name,
+            adapter_id: provider.id().to_owned(),
+            protocol: provider.api_spec().to_owned(),
+            protocol_version: provider.protocol_version().to_owned(),
+        },
+        capabilities,
+    )
+    .await?;
+    audit::record(
+        pool,
+        owner_id,
+        "agent.connector.created",
+        "agent_source_connector",
+        &connector.id,
+        json!({ "provider": connector.provider, "endpoint": connector.endpoint, "via": "import" }),
+    )
+    .await?;
+    Ok(connector)
+}
+
+/// Discovery credential for an agent's federated source, resolved exactly the
+/// way `reconcile_source` resolves it: the linked connector's credential when
+/// one exists, otherwise the source's own credential reference (`""` for BYO
+/// imports without a connector). Used by the preflight reachability probe so
+/// preflight and sync can never disagree about whether the source is
+/// reachable just because they authenticated differently.
+pub(crate) async fn discovery_api_key_for_agent(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    agent: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
+) -> Result<String, GatewayError> {
+    if let Some(source) = sources::get_source_by_agent(pool, &agent.id).await? {
+        if let Some(connector_id) = source.connector_id.as_deref() {
+            if let Some(connector) = sources::get_connector(pool, connector_id).await? {
+                if connector.credential_name.is_some() {
+                    return connector_api_key(state, pool, &connector).await;
+                }
+            }
+        }
+    }
+    let credential_name = agent
+        .config
+        .pointer("/source/credential_name")
+        .and_then(Value::as_str);
+    let owner_id = agent.owner_id.clone().unwrap_or_default();
+    credential_api_key(state, pool, credential_name, &owner_id).await
 }
 
 /// Decrypts a named personal credential's `api_key`, or `""` if the source

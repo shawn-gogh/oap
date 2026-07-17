@@ -86,9 +86,9 @@ export default function AgentSourcesPage() {
       setCredentialName("");
       setApiKey("");
       setWebhookSecret("");
-      toast.success("来源连接器已创建");
+      toast.success("来源平台已添加");
     } catch (cause) {
-      setError(apiErrorMessage(cause, "创建来源连接器失败"));
+      setError(apiErrorMessage(cause, "添加来源平台失败"));
     } finally {
       setBusy(null);
     }
@@ -112,7 +112,7 @@ export default function AgentSourcesPage() {
 
   const remove = async (connector: AgentSourceConnector) => {
     const confirmed = await confirmAction({
-      title: "删除来源连接器",
+      title: "删除来源平台",
       description: "关联智能体会保留来源证据，但将停止自动同步。",
       confirmLabel: "确认删除",
     });
@@ -121,9 +121,9 @@ export default function AgentSourcesPage() {
     try {
       await deleteAgentSourceConnector(connector.id);
       setConnectors((current) => current.filter((item) => item.id !== connector.id));
-      toast.success("来源连接器已删除");
+      toast.success("来源平台已删除");
     } catch (cause) {
-      setError(apiErrorMessage(cause, "删除来源连接器失败"));
+      setError(apiErrorMessage(cause, "删除来源平台失败"));
     } finally {
       setBusy(null);
     }
@@ -136,19 +136,19 @@ export default function AgentSourcesPage() {
         <header className="flex h-12 items-center justify-between border-b border-border px-4">
           <div>
             <h1 className="text-sm font-semibold tracking-tight">智能体来源</h1>
-            <p className="text-xs text-muted-foreground">管理外部平台连接、能力协商与持续同步。</p>
+            <p className="text-xs text-muted-foreground">导入智能体时会自动登记来源平台；在这里查看同步状态、更换凭据或配置 Webhook。</p>
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <Button size="sm" onClick={() => setOpen(true)}>
-              <Plus className="size-3.5" />添加来源
+              <Plus className="size-3.5" />手动添加
             </Button>
           </div>
         </header>
         <div className="mx-auto max-w-5xl p-5">
           {error && <p className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
           {loading ? (
-            <div className="flex flex-col gap-3" aria-label="正在加载来源连接器">
+            <div className="flex flex-col gap-3" aria-label="正在加载来源平台">
               {[0, 1, 2].map((item) => (
                 <div key={item} className="flex flex-col gap-2 rounded-lg border border-border p-4">
                   <div className="h-4 w-1/3 animate-pulse rounded bg-muted motion-reduce:animate-none" />
@@ -159,8 +159,8 @@ export default function AgentSourcesPage() {
           ) : connectors.length === 0 ? (
             <Card className="grid place-items-center p-12 text-center">
               <Server className="size-8 text-muted-foreground" />
-              <h2 className="mt-3 text-sm font-semibold tracking-tight">尚未配置来源连接器</h2>
-              <p className="mt-1 max-w-md text-xs text-muted-foreground">创建连接器后，平台可以定期发现来源变化、生成候选快照并阻断高风险漂移。</p>
+              <h2 className="mt-3 text-sm font-semibold tracking-tight">尚未接入外部平台</h2>
+              <p className="mt-1 max-w-md text-xs text-muted-foreground">从「智能体 → 导入」接入的平台会自动出现在这里，并获得定期同步与漂移防护；也可以手动添加。</p>
             </Card>
           ) : (
             <div className="grid gap-3">
@@ -194,7 +194,7 @@ export default function AgentSourcesPage() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>添加智能体来源</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>手动添加来源平台</DialogTitle></DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid gap-1.5"><Label htmlFor="source-name">名称</Label><Input id="source-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="生产 OpenCode" /></div>
             <div className="grid gap-1.5">
@@ -214,7 +214,7 @@ export default function AgentSourcesPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-            <Button disabled={busy !== null || !name.trim() || !provider || !endpoint.trim()} onClick={() => void create()}>{busy === "create" ? "创建中…" : "创建连接器"}</Button>
+            <Button disabled={busy !== null || !name.trim() || !provider || !endpoint.trim()} onClick={() => void create()}>{busy === "create" ? "添加中…" : "添加"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

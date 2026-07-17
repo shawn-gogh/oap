@@ -274,5 +274,6 @@ pub async fn rollback(
         "agent": restored,
         "governance": governance,
         "restored_from_revision": target,
+        "note": "配置已回滚。智能体保持当前运行状态，如需恢复运行请执行激活（将重新运行预检）。",
     })))
 }
