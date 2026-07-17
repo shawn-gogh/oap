@@ -86,6 +86,26 @@ pub async fn import(
     let mut rows = Vec::with_capacity(input.agents.len());
     let mut results = Vec::with_capacity(input.agents.len());
     for agent in input.agents {
+        // Normalize the identity key: it is the dedupe key in governance, so
+        // whitespace variants must not mint distinct (or colliding) agents.
+        let agent = ImportAgent {
+            external_id: agent.external_id.trim().to_owned(),
+            ..agent
+        };
+        // Enforce the same blocking rules preview reports: a broken identity
+        // or unusable execution contract must not enter the registry, even
+        // when the caller skips preview and posts to import directly.
+        let issues = import_issues(provider, &agent);
+        if !blocking_issues(&issues).is_empty() {
+            results.push(ImportItemResult {
+                external_id: agent.external_id,
+                agent_id: None,
+                status: "blocked",
+                snapshot_id: None,
+                issues: Value::Array(issues),
+            });
+            continue;
+        }
         let external_agent_id = agent.external_id.clone();
         let source_hash = source_hash(&agent)?;
         let existing = governance::find_by_source(
@@ -206,6 +226,19 @@ pub async fn import(
         rows.push(row);
     }
 
+    // Every requested agent was rejected — surface a hard failure instead of
+    // a 201 that quietly imported nothing.
+    if rows.is_empty() {
+        let messages = results
+            .iter()
+            .flat_map(|result| result.issues.as_array().into_iter().flatten())
+            .filter_map(|issue| issue.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("；");
+        return Err(GatewayError::BadRequest(format!(
+            "所有智能体均无法导入：{messages}"
+        )));
+    }
     Ok((
         StatusCode::CREATED,
         Json(ImportAgentsResponse {
@@ -233,11 +266,11 @@ pub async fn preview(
     Ok(Json(ImportPreviewResponse { items }))
 }
 
-fn preview_item(
-    provider: &dyn ImportAgentsProvider,
-    endpoint: &str,
-    agent: ImportAgent,
-) -> ImportPreviewItem {
+/// Issue detection shared by `preview` and `import`: the same rules that mark
+/// a preview item non-importable must also be enforced at import time —
+/// otherwise calling `import` directly (skipping preview) smuggles in agents
+/// with a broken identity or an unusable execution contract.
+fn import_issues(provider: &dyn ImportAgentsProvider, agent: &ImportAgent) -> Vec<Value> {
     let mut issues = Vec::new();
     if agent.external_id.trim().is_empty() {
         issues.push(json!({
@@ -309,9 +342,23 @@ fn preview_item(
         }
         _ => {}
     }
-    let can_import = !issues
+    issues
+}
+
+fn blocking_issues(issues: &[Value]) -> Vec<&Value> {
+    issues
         .iter()
-        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("blocking"));
+        .filter(|issue| issue.get("severity").and_then(Value::as_str) == Some("blocking"))
+        .collect()
+}
+
+fn preview_item(
+    provider: &dyn ImportAgentsProvider,
+    endpoint: &str,
+    agent: ImportAgent,
+) -> ImportPreviewItem {
+    let issues = import_issues(provider, &agent);
+    let can_import = blocking_issues(&issues).is_empty();
     ImportPreviewItem {
         external_id: agent.external_id.clone(),
         canonical_spec: json!({

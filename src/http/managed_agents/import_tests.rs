@@ -144,6 +144,55 @@ fn admin_import_can_save_shared_credentials() {
 }
 
 #[test]
+fn empty_external_id_is_a_blocking_import_issue() {
+    let agent = ImportAgent {
+        external_id: "   ".to_owned(),
+        name: Some("no identity".to_owned()),
+        description: None,
+        model: None,
+        raw: Some(json!({})),
+    };
+
+    let issues = import_issues(&ELASTIC_IMPORT_AGENTS, &agent);
+    let blocking = blocking_issues(&issues);
+
+    assert_eq!(blocking.len(), 1);
+    assert_eq!(blocking[0]["code"], "identity_missing");
+}
+
+#[test]
+fn a2a_agent_without_runtime_url_is_blocked() {
+    let agent = ImportAgent {
+        external_id: "remote-agent".to_owned(),
+        name: None,
+        description: None,
+        model: None,
+        raw: Some(json!({ "name": "remote-agent" })),
+    };
+
+    let issues = import_issues(&A2A_IMPORT_AGENTS, &agent);
+    let blocking = blocking_issues(&issues);
+
+    assert_eq!(blocking.len(), 1);
+    assert_eq!(blocking[0]["code"], "a2a_runtime_url_missing");
+}
+
+#[test]
+fn importable_agent_has_no_blocking_issues() {
+    let agent = ImportAgent {
+        external_id: "remote-agent".to_owned(),
+        name: Some("Remote".to_owned()),
+        description: None,
+        model: None,
+        raw: Some(json!({ "url": "https://agents.example.com/rpc" })),
+    };
+
+    let issues = import_issues(&A2A_IMPORT_AGENTS, &agent);
+
+    assert!(blocking_issues(&issues).is_empty());
+}
+
+#[test]
 fn provider_catalog_exposes_import_capabilities() {
     let providers = import_runtime_providers();
     let opencode = providers
