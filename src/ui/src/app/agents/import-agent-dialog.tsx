@@ -304,307 +304,316 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           <DialogTitle>纳管外部智能体</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-6 py-4 overflow-y-auto">
-          <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
-            {[
-              { value: "remote" as const, label: "远程运行时" },
-              { value: "files" as const, label: "Markdown 文件" },
-              { value: "bundle" as const, label: "智能体包（.zip）" },
-            ].map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  setMode(option.value);
-                  setError(null);
-                }}
-                className={cn(
-                  "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
-                  mode === option.value
-                    ? "bg-background text-foreground shadow-sm"
-                    : "hover:text-foreground",
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm">
-            <p className="font-medium">纳管流程：导入 → 测试 → 审批发布 → 授权 → 监控</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              导入只生成草稿版本，运行检查通过并由管理员审批后才可运行。共享凭据按导入人隔离存储，不会成为全局凭据。
+          {importResults && (
+            <p className="text-sm text-muted-foreground">
+              导入请求已处理完成。以下结果需要你关注——其余项已正常导入。
             </p>
-          </div>
-          <div className="grid gap-1.5">
-            <Label>{mode === "remote" ? "来源平台" : "执行运行时"}</Label>
-            <div className="grid gap-2">
-              {mode === "remote"
-                ? providers.map((provider) => {
-                    const selected = provider.id === providerId;
-                    return (
+          )}
+          {!importResults && (
+          <>
+            <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
+              {[
+                { value: "remote" as const, label: "远程运行时" },
+                { value: "files" as const, label: "Markdown 文件" },
+                { value: "bundle" as const, label: "智能体包（.zip）" },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    setMode(option.value);
+                    setError(null);
+                  }}
+                  className={cn(
+                    "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
+                    mode === option.value
+                      ? "bg-background text-foreground shadow-sm"
+                      : "hover:text-foreground",
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm">
+              <p className="font-medium">纳管流程：导入 → 测试 → 审批发布 → 授权 → 监控</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                导入只生成草稿版本，运行检查通过并由管理员审批后才可运行。共享凭据按导入人隔离存储，不会成为全局凭据。
+              </p>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>{mode === "remote" ? "来源平台" : "执行运行时"}</Label>
+              <div className="grid gap-2">
+                {mode === "remote"
+                  ? providers.map((provider) => {
+                      const selected = provider.id === providerId;
+                      return (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          onClick={() => {
+                            setProviderId(provider.id);
+                            setExternalAgents([]);
+                            setSelectedIds([]);
+                            setPreview([]);
+                            setPreviewConfirmed(false);
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                            selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
+                          )}
+                        >
+                          <RuntimeProviderLogo alias={provider.id} apiSpec={provider.api_spec} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-medium leading-tight">
+                              {provider.name}
+                            </span>
+                            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+                              {provider.id} · {provider.capabilities.runtime_contract}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })
+                  : runtimes.map((runtime) => {
+                      const selected = runtime.alias === runtimeId;
+                      return (
+                        <button
+                          key={runtime.alias}
+                          type="button"
+                          onClick={() => setRuntimeId(runtime.alias)}
+                          className={cn(
+                            "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                            selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
+                          )}
+                        >
+                          <RuntimeProviderLogo alias={runtime.alias} apiSpec={runtime.api_spec} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-medium leading-tight">
+                              {runtime.display_name}
+                            </span>
+                            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+                              {runtime.alias} · {runtime.connected ? "已连接" : "未连接"}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                {providersLoading && (
+                  <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                    正在加载纳管来源…
+                  </div>
+                )}
+                {!providersLoading &&
+                  (mode === "remote" ? providers.length === 0 : runtimes.length === 0) && (
+                  <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                    {mode === "remote" ? "暂无可用的导入来源。" : "暂无兼容的执行运行时。"}
+                  </div>
+                )}
+              </div>
+            </div>
+            {mode === "remote" ? (
+              <>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="import-endpoint">{providerName} 服务地址</Label>
+                  <Input
+                    id="import-endpoint"
+                    value={endpoint}
+                    onChange={(e) => {
+                      setEndpoint(e.target.value);
+                      setExternalAgents([]);
+                      setSelectedIds([]);
+                      setPreview([]);
+                      setPreviewConfirmed(false);
+                    }}
+                    placeholder="https://deployment.kb.us-central1.gcp.cloud.es.io"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="import-key">{providerName} API 密钥</Label>
+                  <Input
+                    id="import-key"
+                    type="password"
+                    autoComplete="current-password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="API 密钥"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>凭据策略</Label>
+                  <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
+                    {[
+                      { value: "shared" as const, label: "属主隔离密钥" },
+                      { value: "byo" as const, label: "运行时自带密钥" },
+                    ].map((option) => (
                       <button
-                        key={provider.id}
+                        key={option.value}
                         type="button"
                         onClick={() => {
-                          setProviderId(provider.id);
-                          setExternalAgents([]);
-                          setSelectedIds([]);
+                          setCredentialMode(option.value);
                           setPreview([]);
                           setPreviewConfirmed(false);
                         }}
                         className={cn(
-                          "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                          selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
+                          "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
+                          credentialMode === option.value
+                            ? "bg-background text-foreground shadow-sm"
+                            : "hover:text-foreground",
                         )}
                       >
-                        <RuntimeProviderLogo alias={provider.id} apiSpec={provider.api_spec} />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-medium leading-tight">
-                            {provider.name}
-                          </span>
-                          <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
-                            {provider.id} · {provider.capabilities.runtime_contract}
-                          </span>
-                        </span>
+                        {option.label}
                       </button>
-                    );
-                  })
-                : runtimes.map((runtime) => {
-                    const selected = runtime.alias === runtimeId;
-                    return (
-                      <button
-                        key={runtime.alias}
-                        type="button"
-                        onClick={() => setRuntimeId(runtime.alias)}
-                        className={cn(
-                          "flex w-full items-center gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                          selected && "border-ring bg-muted/60 ring-2 ring-ring/20",
-                        )}
-                      >
-                        <RuntimeProviderLogo alias={runtime.alias} apiSpec={runtime.api_spec} />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-medium leading-tight">
-                            {runtime.display_name}
-                          </span>
-                          <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
-                            {runtime.alias} · {runtime.connected ? "已连接" : "未连接"}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-              {providersLoading && (
-                <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  正在加载纳管来源…
-                </div>
-              )}
-              {!providersLoading &&
-                (mode === "remote" ? providers.length === 0 : runtimes.length === 0) && (
-                <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  {mode === "remote" ? "暂无可用的导入来源。" : "暂无兼容的执行运行时。"}
-                </div>
-              )}
-            </div>
-          </div>
-          {mode === "remote" ? (
-            <>
-              <div className="grid gap-1.5">
-                <Label htmlFor="import-endpoint">{providerName} 服务地址</Label>
-                <Input
-                  id="import-endpoint"
-                  value={endpoint}
-                  onChange={(e) => {
-                    setEndpoint(e.target.value);
-                    setExternalAgents([]);
-                    setSelectedIds([]);
-                    setPreview([]);
-                    setPreviewConfirmed(false);
-                  }}
-                  placeholder="https://deployment.kb.us-central1.gcp.cloud.es.io"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="import-key">{providerName} API 密钥</Label>
-                <Input
-                  id="import-key"
-                  type="password"
-                  autoComplete="current-password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="API 密钥"
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>凭据策略</Label>
-                <div className="grid grid-cols-3 rounded-lg border border-border bg-muted/30 p-1">
-                  {[
-                    { value: "shared" as const, label: "属主隔离密钥" },
-                    { value: "byo" as const, label: "运行时自带密钥" },
-                  ].map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => {
-                        setCredentialMode(option.value);
-                        setPreview([]);
-                        setPreviewConfirmed(false);
-                      }}
-                      className={cn(
-                        "h-8 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors",
-                        credentialMode === option.value
-                          ? "bg-background text-foreground shadow-sm"
-                          : "hover:text-foreground",
-                      )}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={discover}
-                  disabled={loading || !providerId || !endpoint.trim() || !apiKey.trim()}
-                >
-                  {loading ? "连接中..." : "连接并发现"}
-                </Button>
-                {externalAgents.length > 0 && (
-                  <span className="text-xs text-muted-foreground">
-                    已发现 {externalAgents.length} 个智能体
-                  </span>
-                )}
-              </div>
-            </>
-          ) : mode === "bundle" ? (
-            <div className="grid gap-2">
-              <Label htmlFor="agent-bundle-zip">智能体包（.zip）</Label>
-              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
-                <FileUp className="size-4" />
-                <span>{bundle ? bundle.filename : "选择 .zip 智能体包"}</span>
-                <input
-                  id="agent-bundle-zip"
-                  type="file"
-                  accept=".zip,application/zip"
-                  className="sr-only"
-                  onChange={(event) => loadBundle(event.target.files)}
-                />
-              </label>
-              <p className="text-xs text-muted-foreground">
-                zip 内的 agent .md（frontmatter + prompt）导入为智能体；其余文件作为知识文件进入智能体工作区，自动种子到每个新会话。
-              </p>
-            </div>
-          ) : (
-            <div className="grid gap-2">
-              <Label htmlFor="opencode-agent-files">OpenCode 智能体 Markdown</Label>
-              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
-                <FileUp className="size-4" />
-                <span>{agentFiles.length ? `已选择 ${agentFiles.length} 个文件` : "选择 .md 文件"}</span>
-                <input
-                  id="opencode-agent-files"
-                  type="file"
-                  multiple
-                  accept=".md,.markdown,text/markdown,text/plain"
-                  className="sr-only"
-                  onChange={(event) => void loadAgentFiles(event.target.files)}
-                />
-              </label>
-              {agentFiles.length > 0 && (
-                <div className="max-h-44 divide-y divide-border overflow-y-auto rounded-md border border-border">
-                  {agentFiles.map((file) => (
-                    <div key={file.filename} className="px-3 py-2">
-                      <div className="truncate text-sm font-medium">{file.filename}</div>
-                      <div className="text-xs text-muted-foreground">{file.content.length} 个字符</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {mode === "remote" && externalAgents.length > 0 && (
-            <div className="grid gap-2">
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Search className="absolute left-2 top-2 size-4 text-muted-foreground" />
-                  <Input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索智能体"
-                    aria-label="搜索已发现的智能体"
-                    className="pl-8"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setSelectedIds(filteredAgents.map((agent) => agent.id))}
-                >
-                  全选
-                </Button>
-              </div>
-              <div className="max-h-72 divide-y divide-border overflow-y-auto rounded-md border border-border">
-                {filteredAgents.map((agent) => (
-                  <label
-                    key={agent.id}
-                    className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-muted/50"
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={selectedIds.includes(agent.id)}
-                      onChange={() => toggleAgent(agent.id)}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">{agent.name}</span>
-                      <span className="block truncate font-mono text-[11px] text-muted-foreground">
-                        {agent.id}
-                      </span>
-                      {agent.description && (
-                        <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
-                          {agent.description}
-                        </span>
-                      )}
-                    </span>
-                  </label>
-                ))}
-                {filteredAgents.length === 0 && (
-                  <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                    没有匹配的智能体。
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-          {mode === "remote" && preview.length > 0 && (
-            <div className="rounded-lg border border-border bg-muted/20 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium">导入预检</p>
-                <span className="text-xs text-muted-foreground">
-                  {preview.length} 个规范化结果
-                </span>
-              </div>
-              <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
-                {preview.map((item) => (
-                  <div key={item.external_id} className="rounded-md border border-border bg-background px-3 py-2">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate font-mono">{item.external_id}</span>
-                      <span className={item.can_import ? "text-emerald-600" : "text-destructive"}>
-                        {item.can_import ? "可导入" : "已阻断"}
-                      </span>
-                    </div>
-                    {item.issues.map((issue) => (
-                      <p key={`${issue.code}-${issue.field}`} className="mt-1 text-xs text-muted-foreground">
-                        [{issue.severity}] {issue.field}：{issue.message}
-                      </p>
                     ))}
-                    {item.issues.length === 0 && (
-                      <p className="mt-1 text-xs text-muted-foreground">未发现兼容性问题。</p>
-                    )}
                   </div>
-                ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={discover}
+                    disabled={loading || !providerId || !endpoint.trim() || !apiKey.trim()}
+                  >
+                    {loading ? "连接中..." : "连接并发现"}
+                  </Button>
+                  {externalAgents.length > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      已发现 {externalAgents.length} 个智能体
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : mode === "bundle" ? (
+              <div className="grid gap-2">
+                <Label htmlFor="agent-bundle-zip">智能体包（.zip）</Label>
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
+                  <FileUp className="size-4" />
+                  <span>{bundle ? bundle.filename : "选择 .zip 智能体包"}</span>
+                  <input
+                    id="agent-bundle-zip"
+                    type="file"
+                    accept=".zip,application/zip"
+                    className="sr-only"
+                    onChange={(event) => loadBundle(event.target.files)}
+                  />
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  zip 内的 agent .md（frontmatter + prompt）导入为智能体；其余文件作为知识文件进入智能体工作区，自动种子到每个新会话。
+                </p>
               </div>
-            </div>
+            ) : (
+              <div className="grid gap-2">
+                <Label htmlFor="opencode-agent-files">OpenCode 智能体 Markdown</Label>
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-3 py-8 text-sm text-muted-foreground hover:bg-muted/40">
+                  <FileUp className="size-4" />
+                  <span>{agentFiles.length ? `已选择 ${agentFiles.length} 个文件` : "选择 .md 文件"}</span>
+                  <input
+                    id="opencode-agent-files"
+                    type="file"
+                    multiple
+                    accept=".md,.markdown,text/markdown,text/plain"
+                    className="sr-only"
+                    onChange={(event) => void loadAgentFiles(event.target.files)}
+                  />
+                </label>
+                {agentFiles.length > 0 && (
+                  <div className="max-h-44 divide-y divide-border overflow-y-auto rounded-md border border-border">
+                    {agentFiles.map((file) => (
+                      <div key={file.filename} className="px-3 py-2">
+                        <div className="truncate text-sm font-medium">{file.filename}</div>
+                        <div className="text-xs text-muted-foreground">{file.content.length} 个字符</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {mode === "remote" && externalAgents.length > 0 && (
+              <div className="grid gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-2 top-2 size-4 text-muted-foreground" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="搜索智能体"
+                      aria-label="搜索已发现的智能体"
+                      className="pl-8"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedIds(filteredAgents.map((agent) => agent.id))}
+                  >
+                    全选
+                  </Button>
+                </div>
+                <div className="max-h-72 divide-y divide-border overflow-y-auto rounded-md border border-border">
+                  {filteredAgents.map((agent) => (
+                    <label
+                      key={agent.id}
+                      className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-muted/50"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={selectedIds.includes(agent.id)}
+                        onChange={() => toggleAgent(agent.id)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{agent.name}</span>
+                        <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                          {agent.id}
+                        </span>
+                        {agent.description && (
+                          <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
+                            {agent.description}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+                  {filteredAgents.length === 0 && (
+                    <p className="px-3 py-8 text-center text-sm text-muted-foreground">
+                      没有匹配的智能体。
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+            {mode === "remote" && preview.length > 0 && (
+              <div className="rounded-lg border border-border bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium">导入预检</p>
+                  <span className="text-xs text-muted-foreground">
+                    {preview.length} 个规范化结果
+                  </span>
+                </div>
+                <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+                  {preview.map((item) => (
+                    <div key={item.external_id} className="rounded-md border border-border bg-background px-3 py-2">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="truncate font-mono">{item.external_id}</span>
+                        <span className={item.can_import ? "text-emerald-600" : "text-destructive"}>
+                          {item.can_import ? "可导入" : "已阻断"}
+                        </span>
+                      </div>
+                      {item.issues.map((issue) => (
+                        <p key={`${issue.code}-${issue.field}`} className="mt-1 text-xs text-muted-foreground">
+                          [{issue.severity}] {issue.field}：{issue.message}
+                        </p>
+                      ))}
+                      {item.issues.length === 0 && (
+                        <p className="mt-1 text-xs text-muted-foreground">未发现兼容性问题。</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
           )}
           {importResults && (
             <div className="rounded-lg border border-border bg-muted/20 p-3">
