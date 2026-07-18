@@ -27,6 +27,8 @@ import {
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DraftPreflightPanel, ManagedGovernancePanel } from "./governance-panel";
+import { AgentMetricsPanel } from "./metrics-panel";
+import { AgentAuditTimeline } from "./audit-timeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -91,6 +93,7 @@ import {
   retryAgentTask,
 } from "@/lib/api";
 import { scheduleLabel } from "@/lib/schedule";
+import { useCurrentTime } from "@/lib/use-current-time";
 import type { AgentApplicationInput } from "@/lib/agent-builder";
 import type {
   Agent,
@@ -277,6 +280,7 @@ const DASHBOARD_SECTIONS: Array<{ id: AgentDashboardSection; label: string }> = 
 ];
 
 function AgentDetail() {
+  const currentTime = useCurrentTime();
   const router = useRouter();
   const confirmAction = useConfirm();
   const searchParams = useSearchParams();
@@ -1195,6 +1199,7 @@ function AgentDetail() {
                 </nav>
 
                 {activeSection === "overview" && (
+                  <div className="grid gap-6">
                   <AgentApplicationOverview
                     agent={agent}
                     runtime={runtimeFromAgent(agent)}
@@ -1210,6 +1215,8 @@ function AgentDetail() {
                     preflightReport={preflightReport}
                     onSelectSection={setActiveSection}
                   />
+                  <AgentMetricsPanel agent={agent} onAgentUpdated={setAgent} />
+                  </div>
                 )}
 
                 {activeSection === "overview" && agent.status === "draft" && !governance && (
@@ -1348,6 +1355,8 @@ function AgentDetail() {
                     onReport={setPreflightReport}
                   />
                 )}
+
+                {activeSection === "governance" && <AgentAuditTimeline agentId={agent.id} />}
 
                 {activeSection === "governance" && grantsVisible && (
                 <section>
@@ -2124,9 +2133,9 @@ function AgentDetail() {
                                   {task.current_attempt_number > 1 && ` · 第 ${task.current_attempt_number} 次尝试`}
                                 </p>
                                 {task.deadline_at && !["verifying", "succeeded", "failed", "cancelled"].includes(task.status) && (
-                                  <p className={`mt-1 text-[11px] ${task.deadline_at < Date.now() ? "font-medium text-destructive" : "text-muted-foreground"}`}>
+                                  <p className={`mt-1 text-[11px] ${currentTime != null && task.deadline_at < currentTime ? "font-medium text-destructive" : "text-muted-foreground"}`}>
                                     截止：{formatMemoryDate(task.deadline_at)}
-                                    {task.deadline_at < Date.now() && "（已超期）"}
+                                    {currentTime != null && task.deadline_at < currentTime && "（已超期）"}
                                   </p>
                                 )}
                                 {task.failure_reason && (

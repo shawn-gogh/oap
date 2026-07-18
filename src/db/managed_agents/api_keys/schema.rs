@@ -1,5 +1,18 @@
 use serde::Serialize;
 
+pub const ROLE_ADMIN: &str = "admin";
+pub const ROLE_USER: &str = "user";
+pub const ROLE_IMPORTER: &str = "importer";
+pub const ROLE_APPROVER: &str = "approver";
+pub const ROLE_OPERATOR: &str = "operator";
+
+pub fn valid_role(role: &str) -> bool {
+    matches!(
+        role,
+        ROLE_ADMIN | ROLE_USER | ROLE_IMPORTER | ROLE_APPROVER | ROLE_OPERATOR
+    )
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct GatewayApiKeyRow {
     pub id: String,
@@ -14,6 +27,6 @@ pub struct GatewayApiKeyRow {
 
 impl GatewayApiKeyRow {
     pub fn is_admin(&self) -> bool {
-        self.role == "admin"
+        self.role == ROLE_ADMIN
     }
 }

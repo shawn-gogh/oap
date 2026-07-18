@@ -43,6 +43,34 @@ pub async fn set_outbound_domain_whitelist(
 }
 
 pub const GUARDIAN_MODEL_KEY: &str = "guardian_model";
+pub const SEPARATION_OF_DUTIES_KEY: &str = "governance_separation_of_duties";
+
+pub async fn enforce_separation_of_duties(pool: &PgPool) -> Result<bool, GatewayError> {
+    Ok(get_value(pool, SEPARATION_OF_DUTIES_KEY)
+        .await?
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "off"
+            )
+        })
+        .unwrap_or(true))
+}
+
+pub async fn set_separation_of_duties(
+    pool: &PgPool,
+    enabled: bool,
+    actor: &str,
+) -> Result<bool, GatewayError> {
+    upsert_value(
+        pool,
+        SEPARATION_OF_DUTIES_KEY,
+        if enabled { "true" } else { "false" },
+        actor,
+    )
+    .await?;
+    Ok(enabled)
+}
 
 /// Model used for the Guardian reviewer's LLM calls. Falls back to the
 /// acting session's own agent model when unset (see src/guardian/mod.rs) —

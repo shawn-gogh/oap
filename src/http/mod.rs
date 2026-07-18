@@ -12,6 +12,7 @@ pub mod management;
 pub mod mcp_invocation_auth;
 pub mod mcp_registry;
 pub mod messages;
+mod model_request_attribution;
 pub mod models;
 pub mod observability;
 pub mod openapi;

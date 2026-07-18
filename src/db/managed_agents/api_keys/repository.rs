@@ -6,7 +6,7 @@ use sqlx::PgPool;
 
 use crate::{db::managed_agents::now_ms, errors::GatewayError};
 
-use super::schema::GatewayApiKeyRow;
+use super::schema::{valid_role, GatewayApiKeyRow, ROLE_USER};
 
 pub fn hash_key(key: &str) -> String {
     format!("{:x}", Sha256::digest(key.as_bytes()))
@@ -29,10 +29,12 @@ pub async fn create(
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    let role = match role {
-        Some("admin") => "admin",
-        _ => "user",
-    };
+    let role = role.unwrap_or(ROLE_USER).trim();
+    if !valid_role(role) {
+        return Err(GatewayError::InvalidJsonMessage(format!(
+            "role must be one of: admin, user, importer, approver, operator; got {role}"
+        )));
+    }
     let user_id = user_id
         .map(str::trim)
         .filter(|value| !value.is_empty())

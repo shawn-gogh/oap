@@ -75,6 +75,16 @@ async fn create_post(
     parse_post_response(response, "create post").await
 }
 
+pub(super) async fn create_channel_post(
+    client: &Client,
+    server_url: &str,
+    bot_token: &str,
+    channel_id: &str,
+    text: &str,
+) -> Result<String, GatewayError> {
+    create_post(client, server_url, bot_token, channel_id, "", text).await
+}
+
 async fn update_post(
     client: &Client,
     server_url: &str,
@@ -151,4 +161,46 @@ pub(crate) async fn verify_bot_token(
     }
     let me: MeResponse = response.json().await.map_err(GatewayError::Upstream)?;
     Ok(me.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use reqwest::Client;
+    use serde_json::Value;
+    use wiremock::{
+        matchers::{header, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use super::create_channel_post;
+
+    #[tokio::test]
+    async fn channel_post_uses_bot_token_and_target_channel() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v4/posts"))
+            .and(header("authorization", "Bearer bot-token"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": "post-1"
+            })))
+            .mount(&server)
+            .await;
+
+        let post_id = create_channel_post(
+            &Client::new(),
+            &server.uri(),
+            "bot-token",
+            "channel-1",
+            "governance alert",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(post_id, "post-1");
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["channel_id"], "channel-1");
+        assert_eq!(body["root_id"], "");
+        assert_eq!(body["message"], "governance alert");
+    }
 }

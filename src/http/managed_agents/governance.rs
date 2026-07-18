@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::{
     db::managed_agents::{
         audit,
+        eval_runs::gate::{self, EvalGateStatus},
         governance::{self, AgentGovernanceRow},
         inbox::{repository as inbox, schema::InboxItemRow},
         registry::{repository, revisions, schema::ManagedAgentRow},
@@ -25,6 +26,7 @@ use super::registry::preflight::{run_preflight_with_smoke, PreflightReport};
 pub struct GovernanceResponse {
     pub governance: AgentGovernanceRow,
     pub current_revision: i32,
+    pub eval_gate: EvalGateStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preflight: Option<PreflightReport>,
 }
@@ -70,10 +72,12 @@ pub async fn get(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<Json<GovernanceResponse>, GatewayError> {
-    let (pool, _, _, governance) = owned_imported_agent(&state, &headers, &agent_id).await?;
+    let (pool, _, agent, governance) = owned_imported_agent(&state, &headers, &agent_id).await?;
+    let revision = current_revision(&pool, &agent_id).await?;
     Ok(Json(GovernanceResponse {
         governance,
-        current_revision: current_revision(&pool, &agent_id).await?,
+        current_revision: revision,
+        eval_gate: gate::evaluate(&pool, &agent, revision).await?,
         preflight: None,
     }))
 }
@@ -115,6 +119,7 @@ pub async fn test(
     Ok(Json(GovernanceResponse {
         governance,
         current_revision: revision,
+        eval_gate: gate::evaluate(&pool, &agent, revision).await?,
         preflight: Some(report),
     }))
 }
@@ -126,14 +131,9 @@ pub async fn request_publish(
 ) -> Result<Json<Value>, GatewayError> {
     let (pool, auth, agent, governance) = owned_imported_agent(&state, &headers, &agent_id).await?;
     let revision = current_revision(&pool, &agent_id).await?;
-    if governance.runtime_health != "healthy"
-        || governance.lifecycle_status != "tested"
-        || governance.tested_revision != Some(revision)
-    {
-        return Err(GatewayError::BadRequest(
-            "当前版本尚未通过运行测试，不能申请发布。".to_owned(),
-        ));
-    }
+    super::publish_gate::assert_runtime_ready(&governance, revision)?;
+    let (eval_gate, warnings) =
+        super::publish_gate::enforce(&pool, &auth.user_id, &agent, revision).await?;
     let approval = inbox::create_approval(
         &pool,
         "agent_publish",
@@ -145,9 +145,11 @@ pub async fn request_publish(
             "action": "publish_agent",
             "agent_id": agent_id,
             "revision": revision,
+            "base_revision": governance.published_revision.unwrap_or(0),
         })),
     )
     .await?;
+    let base_revision = governance.published_revision.unwrap_or(0);
     let governance = governance::request_publish(&pool, &agent.id, &approval.id).await?;
     audit::record(
         &pool,
@@ -158,9 +160,23 @@ pub async fn request_publish(
         json!({ "revision": revision, "approval_id": approval.id }),
     )
     .await?;
-    Ok(Json(
-        json!({ "governance": governance, "approval": approval }),
-    ))
+    super::mattermost::notify_governance_event(
+        &state,
+        &pool,
+        &agent,
+        super::mattermost::GovernanceNotification::PublishRequested {
+            approval_id: &approval.id,
+            base_revision,
+            revision,
+        },
+    )
+    .await;
+    Ok(Json(json!({
+        "governance": governance,
+        "approval": approval,
+        "eval_gate": eval_gate,
+        "warnings": warnings,
+    })))
 }
 
 pub fn is_publish_approval(item: &InboxItemRow) -> bool {
@@ -207,21 +223,25 @@ pub async fn apply_publish_approval(
     {
         return Err(GatewayError::BadRequest("发布审批已过期。".to_owned()));
     }
+    if current.owner_id == actor
+        && crate::db::managed_agents::settings::repository::enforce_separation_of_duties(pool)
+            .await?
+    {
+        return Err(GatewayError::BadRequest(
+            "职责分离已启用：不能审批自己导入的智能体。".to_owned(),
+        ));
+    }
     governance::publish(pool, agent_id, revision).await?;
     repository::set_status(pool, agent_id, "active")
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
-    // Flag approvals where the approver is also the agent owner (typical in
-    // single-admin deployments): the separation-of-duties control didn't
-    // apply, and the audit trail should say so explicitly.
-    let self_approval = current.owner_id == actor;
     audit::record(
         pool,
         actor,
         "agent.governance.published",
         "agent",
         agent_id,
-        json!({ "revision": revision, "approval_id": item.id, "self_approval": self_approval }),
+        json!({ "revision": revision, "approval_id": item.id, "self_approval": false }),
     )
     .await?;
     Ok(())

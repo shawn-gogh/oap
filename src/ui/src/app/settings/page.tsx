@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, KeyRound, ServerCog, X } from "lucide-react";
+import { Check, KeyRound, ServerCog, ShieldCheck, X } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -12,11 +12,13 @@ import { Label } from "@/components/ui/label";
 import {
   clearHarnessServerKey,
   clearHarnessServerUrl,
+  getGovernanceSettings,
   getHarnessServerKey,
   getHarnessServerUrl,
   normalizeHarnessServerUrl,
   setHarnessServerKey,
   setHarnessServerUrl,
+  saveGovernanceSettings,
   testHarnessServer,
 } from "@/lib/api";
 
@@ -29,13 +31,33 @@ export default function SettingsPage() {
     tone: "success" | "error" | "muted";
     text: string;
   } | null>(null);
+  const [separationOfDuties, setSeparationOfDuties] = useState(true);
+  const [governanceSaving, setGovernanceSaving] = useState(false);
+  const [governanceStatus, setGovernanceStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const url = getHarnessServerUrl();
     setHarnessUrl(url);
     setSavedHarnessUrl(url);
     setHarnessKey(getHarnessServerKey());
+    void getGovernanceSettings()
+      .then((settings) => setSeparationOfDuties(settings.separation_of_duties))
+      .catch(() => setGovernanceStatus("无法读取治理设置；仅管理员可以修改。"));
   }, []);
+
+  const saveGovernance = async () => {
+    setGovernanceSaving(true);
+    setGovernanceStatus(null);
+    try {
+      const saved = await saveGovernanceSettings(separationOfDuties);
+      setSeparationOfDuties(saved.separation_of_duties);
+      setGovernanceStatus("治理职责分离设置已保存。");
+    } catch (error) {
+      setGovernanceStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGovernanceSaving(false);
+    }
+  };
 
   const testHarness = async () => {
     const normalized = normalizeHarnessServerUrl(harnessUrl);
@@ -206,6 +228,39 @@ export default function SettingsPage() {
                   <Button size="sm" onClick={saveHarness}>
                     <Check className="size-3.5" />
                     Save
+                  </Button>
+                </div>
+              </Card>
+            </section>
+            <section className="grid gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="size-4 text-muted-foreground" />
+                <h2 className="text-lg font-semibold tracking-tight">治理职责分离</h2>
+              </div>
+              <Card className="p-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="max-w-2xl">
+                    <p className="text-sm font-medium">禁止智能体导入者审批自己的发布申请</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      启用后，发布必须由另一名审批者完成。系统管理员也不能绕过自审批限制。
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={separationOfDuties}
+                      onChange={(event) => setSeparationOfDuties(event.target.checked)}
+                    />
+                    {separationOfDuties ? "已启用" : "已停用"}
+                  </label>
+                </div>
+                {governanceStatus && (
+                  <p className="mt-3 text-xs text-muted-foreground">{governanceStatus}</p>
+                )}
+                <div className="mt-4 flex justify-end">
+                  <Button size="sm" onClick={() => void saveGovernance()} disabled={governanceSaving}>
+                    <Check className="size-3.5" />
+                    {governanceSaving ? "保存中…" : "保存治理设置"}
                   </Button>
                 </div>
               </Card>

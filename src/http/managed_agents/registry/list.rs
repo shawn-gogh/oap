@@ -25,9 +25,9 @@ pub async fn list(
     let mut agents = configured_agent_values(&state);
     if let Some(pool) = state.db.as_ref() {
         let rows = repository::list(pool, query.owner_id.as_deref()).await?;
-        // Isolation: non-admins see their own agents, agents shared with
-        // them via grants, and legacy ownerless agents.
-        let rows = if auth.is_admin {
+        // Operators need the global inventory to perform health and lifecycle
+        // actions. Other non-admins remain isolated to owned or shared agents.
+        let rows = if auth.can_operate() {
             rows
         } else {
             let granted = crate::db::managed_agents::agent_grants::repository::agent_ids_for_user(

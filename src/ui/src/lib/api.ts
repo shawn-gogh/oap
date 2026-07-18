@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentMetrics,
   AgentRunStart,
   AgentTask,
   AgentRuntime,
@@ -307,6 +308,7 @@ export interface CurrentUser {
   display_name: string;
   email?: string | null;
   is_admin: boolean;
+  role: "admin" | "user" | "importer" | "approver" | "operator";
   can_manage_groups: boolean;
 }
 
@@ -941,9 +943,29 @@ export interface GatewayApiKey {
   id: string;
   label?: string | null;
   user_id?: string | null;
-  role?: string | null;
+  role?: "admin" | "user" | "importer" | "approver" | "operator" | null;
   created_at: number;
   last_used_at?: number | null;
+}
+
+export interface GovernanceSettings {
+  separation_of_duties: boolean;
+}
+
+export async function getGovernanceSettings(): Promise<GovernanceSettings> {
+  return jsonOrThrow<GovernanceSettings>(await req("/api/governance/settings"));
+}
+
+export async function saveGovernanceSettings(
+  separationOfDuties: boolean,
+): Promise<GovernanceSettings> {
+  return jsonOrThrow<GovernanceSettings>(
+    await req("/api/governance/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ separation_of_duties: separationOfDuties }),
+    }),
+  );
 }
 
 export interface CreatedGatewayApiKey extends GatewayApiKey {
@@ -1562,6 +1584,39 @@ export async function listSpendLogs(input?: {
 export async function getSpendLog(requestId: string): Promise<SpendLog> {
   const res = await req(`/api/observability/logs/${encodeURIComponent(requestId)}`);
   return jsonOrThrow<SpendLog>(res);
+}
+
+export async function getAgentMetrics(agentId: string, days = 30): Promise<AgentMetrics> {
+  const params = new URLSearchParams({ days: String(days) });
+  const res = await req(`/api/agents/${encodeURIComponent(agentId)}/metrics?${params}`);
+  return jsonOrThrow<AgentMetrics>(res);
+}
+
+export interface RevisionDiffFinding {
+  field_path: string;
+  risk: "low" | "medium" | "high" | "critical";
+  change_type: "added" | "removed" | "changed";
+  previous_value?: unknown;
+  candidate_value?: unknown;
+}
+
+export interface AgentRevisionDiff {
+  agent_id: string;
+  from_version: number;
+  to_version: number;
+  highest_risk: RevisionDiffFinding["risk"];
+  findings: RevisionDiffFinding[];
+}
+
+export async function getAgentRevisionDiff(
+  agentId: string,
+  fromVersion: number,
+  toVersion: number,
+): Promise<AgentRevisionDiff> {
+  const path =
+    `/api/agents/${encodeURIComponent(agentId)}/revisions/` +
+    `${fromVersion}/diff/${toVersion}`;
+  return jsonOrThrow<AgentRevisionDiff>(await req(path));
 }
 
 export interface PendingApproval {
@@ -2512,9 +2567,26 @@ export interface AgentGovernance {
   updated_at: number;
 }
 
+export interface AgentEvalGate {
+  required: boolean;
+  passed: boolean;
+  state: "not_required" | "invalid_definition" | "not_run" | "running" | "passed" | "failed" | "error";
+  message: string;
+  latest_run?: {
+    id: string;
+    agent_version?: number | null;
+    status: string;
+    total: number;
+    passed: number;
+    created_at: number;
+    completed_at?: number | null;
+  } | null;
+}
+
 export interface AgentGovernanceResponse {
   governance: AgentGovernance;
   current_revision: number;
+  eval_gate: AgentEvalGate;
   preflight?: AgentPreflightReport | null;
 }
 
@@ -2530,8 +2602,16 @@ export async function testAgentGovernance(id: string): Promise<AgentGovernanceRe
   );
 }
 
-export async function requestAgentPublish(id: string): Promise<{ governance: AgentGovernance }> {
-  return jsonOrThrow<{ governance: AgentGovernance }>(
+export async function requestAgentPublish(id: string): Promise<{
+  governance: AgentGovernance;
+  eval_gate: AgentEvalGate;
+  warnings: string[];
+}> {
+  return jsonOrThrow<{
+    governance: AgentGovernance;
+    eval_gate: AgentEvalGate;
+    warnings: string[];
+  }>(
     await req(`/api/agents/${encodeURIComponent(id)}/governance/request-publish`, { method: "POST" }),
   );
 }
@@ -2681,6 +2761,7 @@ export interface MattermostConnectRequest {
   server_url: string;
   bot_token: string;
   webhook_token: string;
+  notification_channel_id?: string;
 }
 
 export interface MattermostConnectResponse {
@@ -3106,6 +3187,12 @@ export interface AuditLog {
 export async function listAuditLogs(limit = 100): Promise<AuditLog[]> {
   const data = await jsonOrThrow<{ logs: AuditLog[] }>(await req(`/api/audit-logs?limit=${limit}`));
   return data.logs;
+}
+
+export async function listAgentAuditEvents(agentId: string, limit = 100): Promise<AuditLog[]> {
+  const path = `/api/agents/${encodeURIComponent(agentId)}/audit?limit=${limit}`;
+  const data = await jsonOrThrow<{ events: AuditLog[] }>(await req(path));
+  return data.events;
 }
 
 export async function listAgentGroupGrants(agentId: string): Promise<AgentGroupGrant[]> {

@@ -29,7 +29,7 @@ use crate::{
         ImportPreviewItem, ImportPreviewResponse, ImportProviderResponse,
     },
     proxy::{
-        auth::master_key::{authenticate, require_any_gateway_key, AuthContext},
+        auth::master_key::{require_any_gateway_key, AuthContext},
         credential_crypto,
         state::AppState,
     },
@@ -50,7 +50,7 @@ pub async fn discover(
     Path(provider_id): Path<String>,
     Json(input): Json<DiscoverAgentsRequest>,
 ) -> Result<Json<DiscoverAgentsResponse>, GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
+    super::authenticate_importer(&headers, &state).await?;
     let provider = resolve_provider(&state, &provider_id).await?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
     super::source_management::validate_connector_endpoint(&endpoint).await?;
@@ -70,7 +70,7 @@ pub async fn import(
     Path(provider_id): Path<String>,
     Json(input): Json<ImportAgentsRequest>,
 ) -> Result<(StatusCode, Json<ImportAgentsResponse>), GatewayError> {
-    let auth = authenticate(&headers, &state).await?;
+    let auth = super::authenticate_importer(&headers, &state).await?;
     if input.agents.is_empty() {
         return Err(GatewayError::InvalidJsonMessage(
             "at least one agent is required".to_owned(),
@@ -150,7 +150,7 @@ pub async fn import(
                 raw: agent.raw.clone().unwrap_or_else(|| json!({})),
             };
             let snapshot = super::source_management::record_drift_candidate(
-                pool,
+                &state,
                 &row,
                 provider,
                 &source,
@@ -316,7 +316,7 @@ pub async fn preview(
     Path(provider_id): Path<String>,
     Json(input): Json<ImportAgentsRequest>,
 ) -> Result<Json<ImportPreviewResponse>, GatewayError> {
-    authenticate(&headers, &state).await?;
+    super::authenticate_importer(&headers, &state).await?;
     let provider = resolve_provider(&state, &provider_id).await?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
     super::source_management::validate_connector_endpoint(&endpoint).await?;

@@ -15,6 +15,7 @@ import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { ToolApprovalPanel } from "@/components/tool-approval-panel";
+import { RevisionDiffPanel } from "./revision-diff-panel";
 import {
   acceptApproval,
   listInbox,
@@ -494,6 +495,8 @@ function InboxInner() {
                       </div>
                     </div>
                   </div>
+
+                  <RevisionDiffPanel item={selected} />
 
                   {isApprovalKind(selected.kind) && selected.status === "pending" && (
                     <ToolApprovalPanel

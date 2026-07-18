@@ -71,6 +71,7 @@ fn import_owner_defaults_to_authenticated_user() {
     let auth = AuthContext {
         user_id: "alice".to_owned(),
         is_admin: false,
+        role: "importer".to_owned(),
     };
 
     assert_eq!(owner_id_for_import(&input, &auth), "alice");
@@ -88,6 +89,7 @@ fn non_admin_import_cannot_claim_owner() {
     let auth = AuthContext {
         user_id: "alice".to_owned(),
         is_admin: false,
+        role: "importer".to_owned(),
     };
 
     assert_eq!(owner_id_for_import(&input, &auth), "alice");
@@ -105,6 +107,7 @@ fn admin_import_can_claim_owner() {
     let auth = AuthContext {
         user_id: "admin".to_owned(),
         is_admin: true,
+        role: "admin".to_owned(),
     };
 
     assert_eq!(owner_id_for_import(&input, &auth), "bob");
@@ -115,6 +118,7 @@ fn non_admin_import_cannot_save_shared_credentials() {
     let auth = AuthContext {
         user_id: "alice".to_owned(),
         is_admin: false,
+        role: "importer".to_owned(),
     };
 
     assert!(matches!(
@@ -128,6 +132,7 @@ fn non_admin_import_can_use_byo_credentials() {
     let auth = AuthContext {
         user_id: "alice".to_owned(),
         is_admin: false,
+        role: "importer".to_owned(),
     };
 
     assert!(validate_credential_mode(&CredentialMode::Byo, &auth).is_ok());
@@ -138,6 +143,7 @@ fn admin_import_can_save_shared_credentials() {
     let auth = AuthContext {
         user_id: "admin".to_owned(),
         is_admin: true,
+        role: "admin".to_owned(),
     };
 
     assert!(validate_credential_mode(&CredentialMode::Shared, &auth).is_ok());

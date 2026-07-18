@@ -21,10 +21,7 @@ use crate::{
     },
     errors::GatewayError,
     object_storage::ObjectStorageClient,
-    proxy::{
-        auth::master_key::{authenticate, AuthContext},
-        state::AppState,
-    },
+    proxy::{auth::master_key::AuthContext, state::AppState},
 };
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +48,7 @@ pub async fn import_opencode_files(
     headers: HeaderMap,
     Json(input): Json<ImportOpencodeFilesRequest>,
 ) -> Result<(StatusCode, Json<ImportOpencodeFilesResponse>), GatewayError> {
-    let auth = authenticate(&headers, &state).await?;
+    let auth = super::authenticate_importer(&headers, &state).await?;
     if input.files.is_empty() {
         return Err(GatewayError::InvalidJsonMessage(
             "at least one file is required".to_owned(),
@@ -220,7 +217,7 @@ pub async fn import_agent_bundle(
 ) -> Result<(StatusCode, Json<ImportBundleResponse>), GatewayError> {
     use base64::Engine as _;
 
-    let auth = authenticate(&headers, &state).await?;
+    let auth = super::authenticate_importer(&headers, &state).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let owner_id = if auth.is_admin {
         input

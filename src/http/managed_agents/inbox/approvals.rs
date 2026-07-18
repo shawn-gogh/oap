@@ -57,6 +57,7 @@ async fn owned_approval(
     let item = repository::get(pool, item_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("approval not found".to_owned()))?;
+    super::separation::assert_not_blocked(pool, auth, &item).await?;
     if can_decide(pool, auth, &item).await? {
         return Ok(item);
     }
@@ -68,34 +69,21 @@ pub async fn can_decide(
     auth: &crate::proxy::auth::master_key::AuthContext,
     item: &InboxItemRow,
 ) -> Result<bool, GatewayError> {
+    if super::separation::blocked(pool, auth, item).await? {
+        return Ok(false);
+    }
     if auth.is_admin {
         return Ok(true);
     }
-    if role_allows(pool, auth, item, &item.required_role).await? {
+    if super::separation::role_allows(pool, auth, item, &item.required_role).await? {
         return Ok(true);
     }
     if item.escalated_at.is_some() {
         if let Some(role) = item.escalation_role.as_deref() {
-            return role_allows(pool, auth, item, role).await;
+            return super::separation::role_allows(pool, auth, item, role).await;
         }
     }
     Ok(false)
-}
-
-async fn role_allows(
-    pool: &sqlx::PgPool,
-    auth: &crate::proxy::auth::master_key::AuthContext,
-    item: &InboxItemRow,
-    role: &str,
-) -> Result<bool, GatewayError> {
-    match role {
-        "admin" | "security" => Ok(false),
-        "group_admin" => {
-            crate::db::managed_agents::groups::members::is_any_group_admin(pool, &auth.user_id)
-                .await
-        }
-        _ => repository::approval_scope_owned_by(pool, item, &auth.user_id).await,
-    }
 }
 
 pub async fn accept(

@@ -1,3 +1,4 @@
+pub mod audit_timeline;
 pub mod byo_credentials;
 pub mod eval_runs;
 pub mod evolution;
@@ -11,12 +12,16 @@ pub mod improvements;
 pub mod inbox;
 pub mod mattermost;
 pub mod memory;
+pub mod metrics;
+mod publish_gate;
+pub(crate) mod quota_enforcement;
 pub mod registry;
 pub mod routes;
 pub mod routines;
 pub mod rules;
 pub mod runs;
 pub mod skills;
+mod source_alerts;
 pub mod source_management;
 pub mod source_scheduler;
 pub mod tasks;
@@ -53,6 +58,23 @@ pub(crate) fn assert_agent_access(
     } else {
         Err(GatewayError::NotFound(format!("agent {}", agent.id)))
     }
+}
+
+pub(crate) fn require_importer(auth: &AuthContext) -> Result<(), GatewayError> {
+    if auth.can_import() {
+        Ok(())
+    } else {
+        Err(GatewayError::Forbidden)
+    }
+}
+
+pub(crate) async fn authenticate_importer(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
+    let auth = crate::proxy::auth::master_key::authenticate(headers, state).await?;
+    require_importer(&auth)?;
+    Ok(auth)
 }
 
 /// Like `assert_agent_access` but also satisfied by an 'edit' grant.

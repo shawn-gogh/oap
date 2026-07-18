@@ -37,5 +37,6 @@ pub async fn authenticate_request(
     Ok(AuthContext {
         user_id: session.owner_id.unwrap_or_else(|| "system".to_owned()),
         is_admin: false,
+        role: "user".to_owned(),
     })
 }

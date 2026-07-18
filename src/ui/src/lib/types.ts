@@ -366,5 +366,54 @@ export interface SpendLog {
   messages: unknown;
   response: unknown;
   session_id: string | null;
+  agent_id: string | null;
+  invocation_id: string | null;
+  purpose: string;
   status: string | null;
+}
+
+export interface AgentMeteringCoverage {
+  gateway_metered: number;
+  provider_reported: number;
+  unmetered: number;
+}
+
+export interface AgentUsageMetrics {
+  model_calls: number;
+  invocations: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  average_latency_ms: number | null;
+  success_rate: number | null;
+}
+
+export interface AgentDailyUsageMetrics extends AgentUsageMetrics {
+  date: string;
+  coverage: AgentMeteringCoverage;
+}
+
+export interface AgentQuotaConfig {
+  budget_usd_monthly: number | null;
+  max_concurrent_sessions: number | null;
+  rate_per_minute: number | null;
+}
+
+export interface AgentQuotaStatus {
+  config: AgentQuotaConfig;
+  month_cost_usd: number;
+  month_remaining_usd: number | null;
+  month_reset_at: number;
+  active_sessions: number;
+  requests_this_minute: number;
+  minute_reset_at: number;
+}
+
+export interface AgentMetrics {
+  agent_id: string;
+  days: number;
+  timezone: "UTC";
+  totals: AgentUsageMetrics;
+  coverage: AgentMeteringCoverage;
+  quota: AgentQuotaStatus;
+  daily: AgentDailyUsageMetrics[];
 }

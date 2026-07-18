@@ -48,7 +48,15 @@ export async function restartOpencode(handle, opts) {
 // or openai) so no runtime npm install is triggered - the npm field is omitted
 // intentionally. Models are addressed as "<id>/<model>".
 // Merges into any existing config (preserves mcp). No-op if baseURL/apiKey unset.
-export function writeProviderConfig(cwd, { id = "openai", name = "LiteLLM", baseURL, apiKey, models = [], defaultModel = null }) {
+export function writeProviderConfig(cwd, {
+  id = "openai",
+  name = "LiteLLM",
+  baseURL,
+  apiKey,
+  models = [],
+  defaultModel = null,
+  sessionId = null,
+}) {
   if (!baseURL || !apiKey) return Promise.resolve();
   return withJsonLock(async () => {
     const file = path.join(cwd, "opencode.json");
@@ -64,7 +72,11 @@ export function writeProviderConfig(cwd, { id = "openai", name = "LiteLLM", base
     const existing = obj.provider[id]?.models || {};
     obj.provider[id] = {
       // No "npm" field: use opencode's built-in provider (no runtime npm install).
-      options: { baseURL, apiKey },
+      options: {
+        baseURL,
+        apiKey,
+        ...(sessionId ? { headers: { "x-lap-session-id": sessionId } } : {}),
+      },
       models: { ...existing, ...Object.fromEntries(models.map((m) => [m, {}])) },
     };
     // Set global default so opencode uses a known-good model for ALL internal

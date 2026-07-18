@@ -1,0 +1,194 @@
+use sqlx::PgPool;
+use tracing::warn;
+
+use crate::{
+    db::managed_agents::registry::schema::ManagedAgentRow, errors::GatewayError,
+    proxy::state::AppState,
+};
+
+use super::{
+    config::{bot_token_key, load_secret, mattermost_config},
+    web_api,
+};
+
+pub(crate) enum GovernanceNotification<'a> {
+    PublishRequested {
+        approval_id: &'a str,
+        base_revision: i32,
+        revision: i32,
+    },
+    HealthDegraded {
+        consecutive_failures: i64,
+        detail: &'a str,
+    },
+    HighRiskDrift {
+        snapshot_id: &'a str,
+        highest_risk: &'a str,
+        changed_fields: &'a [String],
+    },
+}
+
+pub(crate) async fn notify_governance_event(
+    state: &AppState,
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+    event: GovernanceNotification<'_>,
+) {
+    if let Err(error) = deliver_governance_event(state, pool, agent, event).await {
+        warn!(agent_id = %agent.id, %error, "mattermost governance notification failed");
+    }
+}
+
+async fn deliver_governance_event(
+    state: &AppState,
+    _pool: &PgPool,
+    agent: &ManagedAgentRow,
+    event: GovernanceNotification<'_>,
+) -> Result<(), GatewayError> {
+    let config = mattermost_config(agent)?;
+    if config.status.as_deref() != Some("connected") {
+        return Ok(());
+    }
+    let Some(server_url) = non_empty(config.server_url.as_deref()) else {
+        return Ok(());
+    };
+    let Some(channel_id) = non_empty(config.notification_channel_id.as_deref()) else {
+        return Ok(());
+    };
+    let bot_token = load_secret(state, &bot_token_key(&agent.id, &config)).await?;
+    let public_base_url = state
+        .config
+        .general_settings
+        .public_base_url
+        .clone()
+        .or_else(|| state.resolved_mcp_proxy_base_url());
+    let text = notification_text(public_base_url.as_deref(), &agent.id, &agent.name, event);
+    web_api::create_channel_post(&state.http, server_url, &bot_token, channel_id, &text).await?;
+    Ok(())
+}
+
+fn notification_text(
+    public_base_url: Option<&str>,
+    agent_id: &str,
+    agent_name: &str,
+    event: GovernanceNotification<'_>,
+) -> String {
+    let agent_link = link(
+        public_base_url,
+        &format!("/agents/detail/?id={agent_id}"),
+        "查看智能体",
+    );
+    match event {
+        GovernanceNotification::PublishRequested {
+            approval_id,
+            base_revision,
+            revision,
+        } => {
+            let approval_link = link(public_base_url, "/inbox/", "前往审批");
+            format!(
+                "### 待审批：智能体发布\n**{}** 申请从 v{} 发布到 v{}。\n审批 ID：`{}`\n{} · {}",
+                agent_name,
+                base_revision,
+                revision,
+                approval_id,
+                approval_link,
+                agent_link
+            )
+        }
+        GovernanceNotification::HealthDegraded {
+            consecutive_failures,
+            detail,
+        } => format!(
+            "### 健康告警：智能体已自动暂停\n**{}** 连续 {} 次健康检查未通过，新工作已暂停。\n{}\n{}",
+            agent_name, consecutive_failures, detail, agent_link
+        ),
+        GovernanceNotification::HighRiskDrift {
+            snapshot_id,
+            highest_risk,
+            changed_fields,
+        } => {
+            let fields = changed_fields
+                .iter()
+                .take(8)
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join("、");
+            format!(
+                "### 高风险漂移：智能体已自动暂停\n**{}** 检测到 {} 风险来源变更，新工作已暂停。\n变更字段：{}\n快照 ID：`{}`\n{}",
+                agent_name, highest_risk, fields, snapshot_id, agent_link
+            )
+        }
+    }
+}
+
+fn link(public_base_url: Option<&str>, path: &str, label: &str) -> String {
+    match public_base_url {
+        Some(base) => format!("[{label}]({}{path})", base.trim_end_matches('/')),
+        None => label.to_owned(),
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{notification_text, GovernanceNotification};
+
+    #[test]
+    fn publish_notification_contains_revisions_and_direct_links() {
+        let text = notification_text(
+            Some("https://lap.example.com/"),
+            "agent-1",
+            "发布助手",
+            GovernanceNotification::PublishRequested {
+                approval_id: "approval-1",
+                base_revision: 2,
+                revision: 3,
+            },
+        );
+
+        assert!(text.contains("从 v2 发布到 v3"));
+        assert!(text.contains("`approval-1`"));
+        assert!(text.contains("[前往审批](https://lap.example.com/inbox/)"));
+        assert!(text.contains("[查看智能体](https://lap.example.com/agents/detail/?id=agent-1)"));
+    }
+
+    #[test]
+    fn health_notification_contains_pause_reason() {
+        let text = notification_text(
+            None,
+            "agent-1",
+            "巡检助手",
+            GovernanceNotification::HealthDegraded {
+                consecutive_failures: 3,
+                detail: "MCP 连接失败。",
+            },
+        );
+
+        assert!(text.contains("连续 3 次健康检查未通过"));
+        assert!(text.contains("MCP 连接失败。"));
+        assert!(text.contains("查看智能体"));
+        assert!(!text.contains("]("));
+    }
+
+    #[test]
+    fn drift_notification_lists_only_supplied_risk_fields() {
+        let fields = vec!["tools".to_owned(), "config.runtime".to_owned()];
+        let text = notification_text(
+            Some("https://lap.example.com"),
+            "agent-1",
+            "同步助手",
+            GovernanceNotification::HighRiskDrift {
+                snapshot_id: "snapshot-1",
+                highest_risk: "critical",
+                changed_fields: &fields,
+            },
+        );
+
+        assert!(text.contains("critical 风险"));
+        assert!(text.contains("`tools`、`config.runtime`"));
+        assert!(text.contains("`snapshot-1`"));
+    }
+}

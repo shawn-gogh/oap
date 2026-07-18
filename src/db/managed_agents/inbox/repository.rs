@@ -27,7 +27,7 @@ fn approval_policy(kind: &str) -> ApprovalPolicy {
         "unlisted_data_egress" | "data_egress" => ApprovalPolicy {
             enforcement_owner: "runtime",
             effect_handler: "runtime_permission",
-            required_role: "admin",
+            required_role: "approver",
             ttl_ms: 15 * 60 * 1000,
             escalation_role: None,
         },
@@ -47,7 +47,7 @@ fn approval_policy(kind: &str) -> ApprovalPolicy {
         "agent_publish" => ApprovalPolicy {
             enforcement_owner: "platform",
             effect_handler: "agent_publish",
-            required_role: "admin",
+            required_role: "approver",
             ttl_ms: 7 * 24 * 60 * 60 * 1000,
             escalation_role: None,
         },
@@ -61,7 +61,7 @@ fn approval_policy(kind: &str) -> ApprovalPolicy {
         "platform_action" => ApprovalPolicy {
             enforcement_owner: "platform",
             effect_handler: "platform_action",
-            required_role: "group_admin",
+            required_role: "operator",
             ttl_ms: 24 * 60 * 60 * 1000,
             escalation_role: Some("admin"),
         },
@@ -501,18 +501,18 @@ mod tests {
     }
 
     #[test]
-    fn data_egress_requires_an_administrator() {
+    fn data_egress_requires_an_approver() {
         let policy = approval_policy("data_egress");
         assert_eq!(policy.enforcement_owner, "runtime");
         assert_eq!(policy.effect_handler, "runtime_permission");
-        assert_eq!(policy.required_role, "admin");
+        assert_eq!(policy.required_role, "approver");
     }
 
     #[test]
     fn typed_governance_approvals_use_platform_handlers() {
         let publish = approval_policy("agent_publish");
         assert_eq!(publish.effect_handler, "agent_publish");
-        assert_eq!(publish.required_role, "admin");
+        assert_eq!(publish.required_role, "approver");
 
         let change = approval_policy("agent_change");
         assert_eq!(change.effect_handler, "agent_change");

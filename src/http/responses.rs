@@ -4,10 +4,17 @@ use axum::{body::Bytes, extract::State, http::HeaderMap, response::Response};
 use serde_json::Value;
 
 use crate::{
-    callbacks::standard_logging::{error_information, StandardLoggingPayload},
+    callbacks::{
+        request_attribution::RequestAttribution,
+        standard_logging::{error_information, StandardLoggingPayload},
+    },
     errors::GatewayError,
-    http::{credential_overrides, llm},
-    proxy::{auth::master_key::require_master_key, state::AppState},
+    http::{credential_overrides, llm, model_request_attribution},
+    proxy::{
+        auth::master_key::{require_master_key, AuthContext},
+        state::AppState,
+    },
+    sdk::routing::Route,
 };
 
 pub async fn responses(
@@ -19,6 +26,8 @@ pub async fn responses(
         &headers,
         state.config.general_settings.master_key.as_deref(),
     )?;
+    let attribution =
+        model_request_attribution::resolve(&state, &AuthContext::admin(), &headers).await?;
 
     let body: Value = serde_json::from_slice(&body).map_err(GatewayError::InvalidJson)?;
     tracing::info!(
@@ -31,7 +40,17 @@ pub async fn responses(
         .ok_or(GatewayError::MissingModel)?
         .to_owned();
     let route = credential_overrides::apply(&state, state.router.resolve(&model)?).await?;
+    send_responses_request(state, headers, body, model, route, attribution).await
+}
 
+async fn send_responses_request(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    body: Value,
+    model: String,
+    route: Route,
+    attribution: RequestAttribution,
+) -> Result<Response, GatewayError> {
     let prepared = route
         .handler
         .transform_request(body.clone(), &route.deployment, &headers)?;
@@ -43,8 +62,19 @@ pub async fn responses(
         &model,
         &route.deployment,
         &headers,
+        attribution,
     );
 
+    let upstream = send_upstream(&state, &route, prepared, &mut payload).await?;
+    build_responses_response(state, route, upstream, stream, payload).await
+}
+
+async fn send_upstream(
+    state: &AppState,
+    route: &Route,
+    prepared: crate::sdk::providers::ProviderRequest,
+    payload: &mut StandardLoggingPayload,
+) -> Result<reqwest::Response, GatewayError> {
     let upstream = match llm::send_request(
         &state.http,
         route.handler.responses_url(&route.deployment),
@@ -58,10 +88,20 @@ pub async fn responses(
                 "upstream_request_error",
                 error.to_string(),
             ));
-            state.callbacks.on_error(payload);
+            state.callbacks.on_error(payload.clone());
             return Err(error);
         }
     };
+    Ok(upstream)
+}
+
+async fn build_responses_response(
+    state: Arc<AppState>,
+    route: Route,
+    upstream: reqwest::Response,
+    stream: bool,
+    payload: StandardLoggingPayload,
+) -> Result<Response, GatewayError> {
     let response_headers = route
         .handler
         .transform_response_headers(upstream.headers(), stream);

@@ -30,6 +30,26 @@ test("ensureProviderModel adds newly requested LiteLLM models", async () => {
   }
 });
 
+test("writeProviderConfig attaches the managed session attribution header", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "opencode-provider-"));
+  try {
+    await writeProviderConfig(cwd, {
+      id: "litellm",
+      baseURL: "https://gateway.example/v1",
+      apiKey: "test-key",
+      sessionId: "ses-managed",
+    });
+
+    const config = JSON.parse(await readFile(path.join(cwd, "opencode.json"), "utf8"));
+    assert.equal(
+      config.provider.litellm.options.headers["x-lap-session-id"],
+      "ses-managed"
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("ensureProviderModel registers gpt-5.5 while preserving existing models", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "opencode-provider-"));
   try {

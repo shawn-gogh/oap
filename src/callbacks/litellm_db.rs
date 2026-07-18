@@ -147,14 +147,16 @@ async fn insert_payload(
           completion_tokens, "startTime", "endTime", request_duration_ms,
           model, model_id, model_group, custom_llm_provider, api_base, "user",
           metadata, cache_hit, cache_key, request_tags, end_user,
-          requester_ip_address, messages, response, status
+          requester_ip_address, messages, response, status,
+          session_id, agent_id, invocation_id, purpose
         )
         VALUES (
           $1, $2, $3, $4, $5, $6,
           $7, to_timestamp($8::DOUBLE PRECISION), to_timestamp($9::DOUBLE PRECISION), $10,
           $11, $12, $13, $14, $15, '',
           $16, $17, $18, $19, $20,
-          $21, $22, $23, $24
+          $21, $22, $23, $24,
+          $25, $26, $27, $28
         )
         ON CONFLICT (request_id) DO UPDATE SET
           spend = EXCLUDED.spend,
@@ -166,7 +168,11 @@ async fn insert_payload(
           metadata = EXCLUDED.metadata,
           messages = EXCLUDED.messages,
           response = EXCLUDED.response,
-          status = EXCLUDED.status
+          status = EXCLUDED.status,
+          session_id = EXCLUDED.session_id,
+          agent_id = EXCLUDED.agent_id,
+          invocation_id = EXCLUDED.invocation_id,
+          purpose = EXCLUDED.purpose
         "#,
     )
     .bind(payload.id)
@@ -200,6 +206,10 @@ async fn insert_payload(
     .bind(messages)
     .bind(response)
     .bind(payload.status.as_str())
+    .bind(payload.session_id)
+    .bind(payload.agent_id)
+    .bind(payload.invocation_id)
+    .bind(payload.purpose)
     .execute(pool)
     .await?;
     Ok(())

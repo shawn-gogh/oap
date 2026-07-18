@@ -576,7 +576,15 @@ function LogDetail({
 
 function TagList({ log }: { log: SpendLog }) {
   const rawTags = Array.isArray(log.request_tags) ? log.request_tags : [];
-  const tags = rawTags.length > 0 ? rawTags : [`call_type: ${log.call_type}`, `provider: ${log.custom_llm_provider ?? "-"}`];
+  const tags = rawTags.length > 0
+    ? rawTags
+    : [
+        `call_type: ${log.call_type}`,
+        `provider: ${log.custom_llm_provider ?? "-"}`,
+        `purpose: ${log.purpose}`,
+        ...(log.agent_id ? [`agent: ${log.agent_id}`] : []),
+        ...(log.session_id ? [`session: ${log.session_id}`] : []),
+      ];
   return (
     <div className="flex flex-wrap gap-2">
       {tags.map((tag, index) => (

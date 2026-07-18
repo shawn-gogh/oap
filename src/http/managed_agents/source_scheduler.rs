@@ -45,10 +45,7 @@ pub async fn run_due_once(state: Arc<AppState>) -> Result<usize, GatewayError> {
             sources::mark_sync_state(&pool, &source.id, "sync_error", source.missing_count).await?;
             continue;
         };
-        let auth = AuthContext {
-            user_id: governance.owner_id.clone(),
-            is_admin: false,
-        };
+        let auth = AuthContext::operator(governance.owner_id.clone());
         let run = sources::start_sync_run(&pool, &source, "scheduled").await?;
         match super::source_management::reconcile_source(
             &state,

@@ -29,6 +29,8 @@ pub async fn get(
     let row = repository::get(pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
-    super::super::assert_agent_use(&auth, &row, pool).await?;
+    if !auth.can_operate() {
+        super::super::assert_agent_use(&auth, &row, pool).await?;
+    }
     Ok(Json(serde_json::to_value(row)?))
 }

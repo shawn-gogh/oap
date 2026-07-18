@@ -44,8 +44,6 @@ use super::{
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const SYNC_LEASE_MS: i64 = 60_000;
 const MISSING_THRESHOLD: i32 = 3;
-/// Consecutive failed health-check runs required before an active agent is
-/// auto-paused (mirrors MISSING_THRESHOLD's rationale for source sync).
 const HEALTH_PAUSE_THRESHOLD: i64 = 3;
 
 #[derive(Debug, Deserialize)]
@@ -524,8 +522,6 @@ pub(crate) async fn run_health_check(
         )
         .await?;
     }
-    // A per-run summary record, so consecutive-failure counting has a single
-    // stable check kind to look at (per-check kinds vary between runs).
     sources::record_health(
         pool,
         &agent.id,
@@ -540,9 +536,7 @@ pub(crate) async fn run_health_check(
         Some(latency),
     )
     .await?;
-    // Auto-pause only after HEALTH_PAUSE_THRESHOLD consecutive failed runs:
-    // a single failure is often transient (flaky MCP smoke test, network
-    // blip) and shouldn't take a production agent offline by itself.
+    // Consecutive failures avoid pausing production work on a transient probe error.
     if !report.can_activate && agent.status == "active" {
         let recent =
             sources::recent_health_statuses(pool, &agent.id, "preflight", HEALTH_PAUSE_THRESHOLD)
@@ -550,15 +544,13 @@ pub(crate) async fn run_health_check(
         let consecutive_failures = recent.len() as i64 >= HEALTH_PAUSE_THRESHOLD
             && recent.iter().all(|status| status == "unhealthy");
         if consecutive_failures {
-            repository::set_status(pool, &agent.id, "paused").await?;
-            if governance::get(pool, &agent.id).await?.is_some() {
-                governance::suspend(
-                    pool,
-                    &agent.id,
-                    &format!("连续 {HEALTH_PAUSE_THRESHOLD} 次健康检查发现阻断项，运行已暂停。"),
-                )
-                .await?;
-            }
+            super::source_alerts::pause_for_health_failures(
+                state,
+                pool,
+                agent,
+                HEALTH_PAUSE_THRESHOLD,
+            )
+            .await?;
         }
     }
     Ok((report, latency))
@@ -730,7 +722,7 @@ pub(crate) async fn reconcile_source(
         return Ok(false);
     }
     record_drift_candidate(
-        pool,
+        state,
         agent,
         provider,
         source,
@@ -742,13 +734,9 @@ pub(crate) async fn reconcile_source(
     Ok(true)
 }
 
-/// Records a candidate snapshot plus field-level drift findings for a changed
-/// remote definition, pausing the agent on high-risk drift. The single entry
-/// point for "the source changed" — used by scheduled/manual sync *and* by
-/// re-import, so a changed source always lands in drift review instead of
-/// being applied directly.
+/// Stores source changes for review and pauses new work on high-risk drift.
 pub(crate) async fn record_drift_candidate(
-    pool: &sqlx::PgPool,
+    state: &AppState,
     agent: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
     provider: &dyn ImportAgentsProvider,
     source: &ManagedAgentSourceRow,
@@ -756,6 +744,7 @@ pub(crate) async fn record_drift_candidate(
     digest: &str,
     actor: &str,
 ) -> Result<AgentSourceSnapshotRow, GatewayError> {
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     let candidate = candidate_agent(agent, provider, remote);
     let snapshot = sources::record_candidate_snapshot(
         pool,
@@ -776,8 +765,14 @@ pub(crate) async fn record_drift_candidate(
         .any(|(_, risk, _, _)| matches!(risk.as_str(), "high" | "critical"));
     sources::replace_drift_findings(pool, &source.id, &snapshot.id, &findings).await?;
     if high_risk {
-        repository::set_status(pool, &agent.id, "paused").await?;
-        governance::suspend(pool, &agent.id, "检测到高风险来源漂移，已暂停新工作。").await?;
+        super::source_alerts::pause_for_high_risk_drift(
+            state,
+            pool,
+            agent,
+            &snapshot.id,
+            &findings,
+        )
+        .await?;
     }
     Ok(snapshot)
 }
@@ -1218,7 +1213,9 @@ async fn editable_agent(
     let agent = repository::get(&pool, agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
-    super::assert_agent_edit(&auth, &agent, &pool).await?;
+    if !auth.can_operate() {
+        super::assert_agent_edit(&auth, &agent, &pool).await?;
+    }
     Ok((pool, auth, agent))
 }
 

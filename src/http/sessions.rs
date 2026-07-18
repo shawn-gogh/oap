@@ -21,6 +21,7 @@ mod control_events_api;
 mod execution;
 pub(crate) mod external_bridge;
 mod generic_chat;
+mod quotas;
 pub mod recovery;
 mod runtime;
 mod runtime_events_api;
@@ -49,7 +50,7 @@ pub(crate) use runtime_events_api::runtime_event_stream_for_session;
 pub use runtime_events_api::{runtime_event_list, runtime_events};
 pub(crate) use runtime_sdk::lap_from_credential;
 use runtime_sdk::{register_runtime_session, runtime_sdk_client};
-use storage::{auth_db, db, owned_session, persist_message, resolve_session_request, session};
+use storage::{auth_db, db, owned_session, persist_message, session};
 pub use types::{CreateSessionRequest, MessageResponse, PromptRequest, SessionResponse};
 pub use workspace_api::{
     batch_delete_files, batch_transfer_files, browse_files, copy_files, create_folder,
@@ -128,21 +129,21 @@ pub async fn create(
         };
     }
     let session_task_id = input.task_id.clone();
-    let resolved = resolve_session_request(&state, &pool, input).await?;
-    let row = sessions::repository::create(
-        &pool,
-        &resolved.harness,
-        resolved.agent_id.as_deref(),
-        &resolved.title,
-        resolved.timezone.as_deref(),
-        Some(&auth.user_id),
-        session_task_id.as_deref(),
-    )
-    .await?;
-    if let Some(task_id) = session_task_id.as_deref() {
-        crate::db::managed_agents::tasks::repository::mark_waiting_input(&pool, task_id).await?;
-    }
-    state.agent_runs.track_run(&resolved.harness, &row.id);
+    let (resolved, quota) = quotas::resolve_non_runtime_session(&state, &pool, input).await?;
+    let row = {
+        let _quota = quota;
+        sessions::repository::create(
+            &pool,
+            &resolved.harness,
+            resolved.agent_id.as_deref(),
+            &resolved.title,
+            resolved.timezone.as_deref(),
+            Some(&auth.user_id),
+            session_task_id.as_deref(),
+        )
+        .await?
+    };
+    quotas::finish_non_runtime(&state, &pool, &resolved, &row, session_task_id.as_deref()).await?;
     Ok(Json(SessionResponse::from(row)))
 }
 
@@ -526,34 +527,26 @@ async fn enqueue_prompt_text_with_runtime_model(
 ) -> Result<(), GatewayError> {
     let session_id = session_id.to_owned();
     let row = session(&pool, &session_id).await?;
-
-    // Every prompt entry point funnels through here — the single choke point
-    // where retired / emergency-stopped agents are refused new interaction.
-    if let Some(agent_id) = row.agent_id.as_deref() {
-        if let Some(agent) =
-            crate::db::managed_agents::registry::repository::get(&pool, agent_id).await?
-        {
-            crate::http::managed_agents::assert_agent_interactive(&pool, &agent).await?;
-        }
-    }
-
     let descriptor = crate::http::runtime_resolution::describe_session_runtime(&pool, &row).await?;
-    let created_turn = session_control::repository::create_or_get(
-        &pool,
-        session_control::repository::NewTurn {
-            session_id: &row.id,
-            request_id: &request_id,
-            model: Some(&model),
-            agent_id: row.agent_id.as_deref(),
-            runtime: row.runtime.as_deref(),
-            protocol: &descriptor.protocol,
-            protocol_version: &descriptor.protocol_version,
-            adapter_id: &descriptor.adapter_id,
-            traceparent: traceparent.as_deref(),
-            tracestate: tracestate.as_deref(),
-        },
-    )
-    .await?;
+    let created_turn = {
+        let _quota = quotas::prompt(&state, &pool, &row).await?;
+        session_control::repository::create_or_get(
+            &pool,
+            session_control::repository::NewTurn {
+                session_id: &row.id,
+                request_id: &request_id,
+                model: Some(&model),
+                agent_id: row.agent_id.as_deref(),
+                runtime: row.runtime.as_deref(),
+                protocol: &descriptor.protocol,
+                protocol_version: &descriptor.protocol_version,
+                adapter_id: &descriptor.adapter_id,
+                traceparent: traceparent.as_deref(),
+                tracestate: tracestate.as_deref(),
+            },
+        )
+        .await?
+    };
     if !created_turn.created {
         return Ok(());
     }

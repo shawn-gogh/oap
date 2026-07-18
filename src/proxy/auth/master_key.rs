@@ -11,6 +11,8 @@ use axum::http::{
 
 use crate::{errors::GatewayError, proxy::state::AppState};
 
+pub use super::context::AuthContext;
+
 /// TTL cache of key-validation results: value None caches a rejection.
 type KeyValidationCache = Mutex<Option<HashMap<String, (Instant, Option<AuthContext>)>>>;
 
@@ -20,23 +22,6 @@ static LITELLM_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 static GATEWAY_KEY_CACHE: KeyValidationCache = Mutex::new(None);
 const CACHE_TTL: Duration = Duration::from_secs(60);
 pub const WEB_SESSION_COOKIE: &str = "lap_session";
-
-/// Identity derived from the presented key. `user_id` is the ownership
-/// boundary for sessions/agents/workspaces; admins bypass it.
-#[derive(Debug, Clone)]
-pub struct AuthContext {
-    pub user_id: String,
-    pub is_admin: bool,
-}
-
-impl AuthContext {
-    pub fn admin() -> Self {
-        Self {
-            user_id: "admin".to_owned(),
-            is_admin: true,
-        }
-    }
-}
 
 pub fn require_master_key(
     headers: &HeaderMap,
@@ -152,10 +137,7 @@ async fn authenticate_key(
                             .await
                             .ok()
                             .filter(|user| user.is_active())
-                            .map(|_| AuthContext {
-                                is_admin: row.is_admin(),
-                                user_id: row.user_id,
-                            })
+                            .map(|_| AuthContext::with_role(row.user_id, row.role))
                     }
                     None => None,
                 };
@@ -168,10 +150,7 @@ async fn authenticate_key(
 
     // Legacy in-memory API keys (kept for DB-less deployments).
     if state.api_keys.accepts(key) {
-        return Ok(AuthContext {
-            user_id: format!("key:{}", short_hash(key)),
-            is_admin: false,
-        });
+        return Ok(AuthContext::user(format!("key:{}", short_hash(key))));
     }
 
     // Slow path: validate against litellm if configured. Never admin.
@@ -259,10 +238,7 @@ async fn validate_with_litellm(
                 })
                 .filter(|u| !u.is_empty())
                 .unwrap_or_else(|| format!("litellm:{}", short_hash(key)));
-            Some(AuthContext {
-                user_id,
-                is_admin: false,
-            })
+            Some(AuthContext::user(user_id))
         }
         _ => None,
     };

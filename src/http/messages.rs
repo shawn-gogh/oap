@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::{
     callbacks::standard_logging::{error_information, StandardLoggingPayload},
     errors::GatewayError,
-    http::{credential_overrides, llm},
-    proxy::{auth::master_key::require_any_gateway_key, state::AppState},
+    http::{credential_overrides, llm, model_request_attribution},
+    proxy::{auth::master_key::authenticate, state::AppState},
     sdk::routing::Route,
 };
 
@@ -16,7 +16,8 @@ pub async fn messages(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
+    let auth = authenticate(&headers, &state).await?;
+    let attribution = model_request_attribution::resolve(&state, &auth, &headers).await?;
 
     let body: Value = serde_json::from_slice(&body).map_err(GatewayError::InvalidJson)?;
     let model = body
@@ -25,7 +26,7 @@ pub async fn messages(
         .ok_or(GatewayError::MissingModel)?
         .to_owned();
     let route = credential_overrides::apply(&state, state.router.resolve(&model)?).await?;
-    send_messages_request(state, headers, body, model, route).await
+    send_messages_request(state, headers, body, model, route, attribution).await
 }
 
 async fn send_messages_request(
@@ -34,6 +35,7 @@ async fn send_messages_request(
     body: Value,
     model: String,
     route: Route,
+    attribution: crate::callbacks::request_attribution::RequestAttribution,
 ) -> Result<Response, GatewayError> {
     let prepared =
         route
@@ -47,6 +49,7 @@ async fn send_messages_request(
         &model,
         &route.deployment,
         &headers,
+        attribution,
     );
 
     let upstream = send_upstream(&state, &route, prepared, &mut payload).await?;

@@ -13,6 +13,7 @@ const SESSION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 struct WebSessionRow {
     user_id: String,
     is_admin: bool,
+    role: String,
 }
 
 pub struct CreatedSession {
@@ -35,14 +36,15 @@ pub async fn create(pool: &PgPool, auth: &AuthContext) -> Result<CreatedSession,
     sqlx::query(
         r#"
         INSERT INTO "LiteLLM_WebSessionsTable"
-          (id, token_hash, user_id, is_admin, created_at, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+          (id, token_hash, user_id, is_admin, role, created_at, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
     )
     .bind(id("web_session"))
     .bind(hash_token(&token))
     .bind(&auth.user_id)
     .bind(auth.is_admin)
+    .bind(&auth.role)
     .bind(now)
     .bind(expires_at)
     .execute(pool)
@@ -54,7 +56,7 @@ pub async fn create(pool: &PgPool, auth: &AuthContext) -> Result<CreatedSession,
 pub async fn authenticate(pool: &PgPool, token: &str) -> Result<Option<AuthContext>, GatewayError> {
     let row = sqlx::query_as::<_, WebSessionRow>(
         r#"
-        SELECT user_id, is_admin
+        SELECT user_id, is_admin, role
         FROM "LiteLLM_WebSessionsTable"
         WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > $2
           AND (
@@ -73,6 +75,7 @@ pub async fn authenticate(pool: &PgPool, token: &str) -> Result<Option<AuthConte
     Ok(row.map(|row| AuthContext {
         user_id: row.user_id,
         is_admin: row.is_admin,
+        role: row.role,
     }))
 }
 

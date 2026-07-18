@@ -11,6 +11,21 @@ use crate::{
 use super::runtime::CreatedRuntimeSession;
 use super::runtime_mcp_validation::{rewrite_registered_mcp_servers, validate_runtime_mcp_servers};
 
+pub(super) fn add_temporary_agent(environment: &mut Value, agent: &ManagedAgentRow) {
+    environment["temporary_model"] = serde_json::json!(agent.model);
+    environment["temporary_system"] = serde_json::json!(agent.system);
+}
+
+pub(super) async fn compose_system(
+    pool: &PgPool,
+    agent: &mut ManagedAgentRow,
+) -> Result<(), GatewayError> {
+    agent.system =
+        crate::db::managed_agents::skills::compose::compose_agent_system_prompt(pool, agent)
+            .await?;
+    Ok(())
+}
+
 pub(super) fn provider_system(runtime: AgentRuntime, created: &CreatedRuntimeSession) -> String {
     if runtime != AgentRuntime::Cursor {
         return created.agent.system.clone();

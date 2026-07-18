@@ -148,7 +148,7 @@ export async function ensureSessionProcess(sessionId, opts) {
   try {
     await provisionInto(mountDir, { store, agentId, defaultModelProviderID, litellmProviderID });
     if (litellmModel?.baseURL && litellmModel?.apiKey) {
-      await writeProviderConfig(mountDir, litellmModel);
+      await writeProviderConfig(mountDir, { ...litellmModel, sessionId });
     }
     const row = agentId ? store.getAgent(agentId) : null;
     if (row?.model && litellmModel?.providerID) {

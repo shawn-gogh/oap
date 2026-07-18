@@ -21,12 +21,14 @@ export interface MattermostConfig {
   status?: string;
   server_url?: string;
   bot_user_id?: string;
+  notification_channel_id?: string;
 }
 
 interface MattermostForm {
   serverUrl: string;
   botToken: string;
   webhookToken: string;
+  notificationChannelId: string;
 }
 
 function originForMattermost() {
@@ -58,7 +60,12 @@ export function mattermostActionClass(config: MattermostConfig) {
 export function useMattermostAppFlow(setAgents: Dispatch<SetStateAction<Agent[] | null>>) {
   const [open, setOpen] = useState(false);
   const [agent, setAgent] = useState<Agent | null>(null);
-  const [form, setForm] = useState<MattermostForm>({ serverUrl: "", botToken: "", webhookToken: "" });
+  const [form, setForm] = useState<MattermostForm>({
+    serverUrl: "",
+    botToken: "",
+    webhookToken: "",
+    notificationChannelId: "",
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -66,7 +73,12 @@ export function useMattermostAppFlow(setAgents: Dispatch<SetStateAction<Agent[] 
   const openMattermost = (ag: Agent) => {
     const existing = mattermostConfig(ag);
     setAgent(ag);
-    setForm({ serverUrl: existing.server_url || "", botToken: "", webhookToken: "" });
+    setForm({
+      serverUrl: existing.server_url || "",
+      botToken: "",
+      webhookToken: "",
+      notificationChannelId: existing.notification_channel_id || "",
+    });
     setError(null);
     setCopied(false);
     setOpen(true);
@@ -111,6 +123,7 @@ export function useMattermostAppFlow(setAgents: Dispatch<SetStateAction<Agent[] 
         server_url: serverUrl,
         bot_token: form.botToken.trim(),
         webhook_token: form.webhookToken.trim(),
+        notification_channel_id: form.notificationChannelId.trim(),
       });
       setAgent(result.agent);
       setAgents((prev) => prev?.map((a) => (a.id === result.agent.id ? result.agent : a)) ?? null);
@@ -235,6 +248,22 @@ export function useMattermostAppFlow(setAgents: Dispatch<SetStateAction<Agent[] 
                       onChange={(e) => setForm((f) => ({ ...f, webhookToken: e.target.value }))}
                       placeholder={connected ? "留空则保留当前 Token" : "粘贴 Outgoing Webhook 的校验 Token"}
                     />
+                  </div>
+
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="mattermost-notification-channel">治理通知频道 ID</Label>
+                    <Input
+                      id="mattermost-notification-channel"
+                      value={form.notificationChannelId}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, notificationChannelId: e.target.value }))
+                      }
+                      placeholder="留空则不主动推送治理通知"
+                      className="font-mono text-xs"
+                    />
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      配置后，发布审批、健康自动暂停和高风险漂移会主动推送到该频道。
+                    </p>
                   </div>
 
                   {connected && (
