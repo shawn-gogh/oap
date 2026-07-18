@@ -1347,6 +1347,7 @@ function AgentDetail() {
 
                 {activeSection === "governance" && governance && (
                   <ManagedGovernancePanel
+                    key={governance.governance.agent_id}
                     response={governance}
                     agentStatus={agent.status ?? "draft"}
                     grantsCount={grants.length}

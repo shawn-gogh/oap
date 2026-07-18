@@ -110,6 +110,59 @@ function driftValueFull(value: unknown): string {
 
 const HEALTH_FRESHNESS_MS = 24 * 60 * 60 * 1000;
 
+/** Compact Chinese relative-time label, e.g. "3 分钟前" / "2 小时前" / "5 天前". */
+function relativeTimeLabel(ms: number): string {
+  const diff = Math.max(0, Date.now() - ms);
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
+
+interface HealthSignal {
+  healthy: boolean;
+  checkedAt: number;
+  /** manual = someone clicked 运行检查; auto = the scheduler's periodic check. */
+  origin: "manual" | "auto";
+}
+
+/** The most recent known health outcome, manual or automatic, whichever is
+ *  newer. `governance.last_health_at` only reflects manual "运行检查" clicks
+ *  (mark_tested); the scheduler's automatic checks land in
+ *  `source.recent_health_checks` (check_kind "preflight" is the per-run
+ *  summary) without ever touching the governance row. Reading only the
+ *  governance field made the status card blind to automatic monitoring —
+ *  it could say "运行正常" hours after an automatic check had already found
+ *  a problem. */
+function latestHealthSignal(
+  governance: AgentGovernanceResponse["governance"],
+  source: AgentSourceOverview | null,
+): HealthSignal | null {
+  const manual: HealthSignal | null =
+    governance.last_health_at != null
+      ? {
+          healthy: governance.runtime_health === "healthy",
+          checkedAt: governance.last_health_at,
+          origin: "manual",
+        }
+      : null;
+  const autoChecks = (source?.recent_health_checks ?? []).filter(
+    (check) => check.check_kind === "preflight",
+  );
+  const auto: HealthSignal | null =
+    autoChecks.length > 0
+      ? (() => {
+          const latest = autoChecks.reduce((a, b) => (a.checked_at > b.checked_at ? a : b));
+          return { healthy: latest.status === "healthy", checkedAt: latest.checked_at, origin: "auto" as const };
+        })()
+      : null;
+  if (!manual) return auto;
+  if (!auto) return manual;
+  return auto.checkedAt >= manual.checkedAt ? auto : manual;
+}
+
 type GovernancePrimaryAction = "test" | "publish" | "inbox" | "activate" | "drift";
 
 interface GovernanceUx {
@@ -129,9 +182,18 @@ function deriveGovernanceUx(input: {
   currentRevision: number;
   evalGate: AgentGovernanceResponse["eval_gate"];
   hasDriftCandidate: boolean;
+  health: HealthSignal | null;
   healthFresh: boolean;
 }): GovernanceUx {
-  const { agentStatus, governance, currentRevision, evalGate, hasDriftCandidate, healthFresh } = input;
+  const {
+    agentStatus,
+    governance,
+    currentRevision,
+    evalGate,
+    hasDriftCandidate,
+    health,
+    healthFresh,
+  } = input;
   const detail = governance.health_detail?.trim() || null;
   switch (governance.lifecycle_status) {
     case "retired":
@@ -187,12 +249,25 @@ function deriveGovernanceUx(input: {
           primary: { action: "activate", label: "激活" },
         };
       }
+      if (health && !health.healthy && healthFresh) {
+        return {
+          tone: "warn",
+          status: "运行中，最近检查异常",
+          reason: `最近一次${health.origin === "manual" ? "手动" : "自动"}健康检查（${relativeTimeLabel(
+            health.checkedAt,
+          )}）未通过，建议重新运行检查确认当前状态。`,
+          primary: { action: "test", label: "重新运行检查" },
+        };
+      }
       return {
         tone: "ok",
         status: "运行中",
-        reason: healthFresh
-          ? "已发布并激活，最近 24 小时内健康检查正常。"
-          : "已发布并激活。平台会定期自动同步来源并运行健康检查。",
+        reason:
+          health && healthFresh
+            ? `已发布并激活，最近一次健康检查（${health.origin === "manual" ? "手动" : "自动"}，${relativeTimeLabel(
+                health.checkedAt,
+              )}）正常。`
+            : "已发布并激活。平台会定期自动同步来源并运行健康检查。",
         primary: null,
       };
     case "unhealthy":
@@ -475,16 +550,18 @@ export function ManagedGovernancePanel({
   };
 
   const published = ["published", "rolled_back"].includes(governance.lifecycle_status);
+  const health = latestHealthSignal(governance, source);
   const healthFresh =
+    health != null &&
     currentTime != null &&
-    governance.last_health_at != null &&
-    currentTime - governance.last_health_at < HEALTH_FRESHNESS_MS;
+    currentTime - health.checkedAt < HEALTH_FRESHNESS_MS;
   const ux = deriveGovernanceUx({
     agentStatus,
     governance,
     currentRevision: response.current_revision,
     evalGate: response.eval_gate,
     hasDriftCandidate: source?.candidate_snapshot != null,
+    health,
     healthFresh,
   });
   const stages = [
@@ -721,7 +798,14 @@ export function ManagedGovernancePanel({
               </div>
               <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
                 <span className="text-muted-foreground">最近健康记录</span>
-                <span>{source.recent_health_checks.length} 项</span>
+                <span>
+                  {source.recent_health_checks.length} 项
+                  {health && (
+                    <span className={health.healthy ? "ml-1.5 text-emerald-600 dark:text-emerald-400" : "ml-1.5 text-destructive"}>
+                      · 最新{health.healthy ? "健康" : "异常"}（{health.origin === "manual" ? "手动" : "自动"}，{relativeTimeLabel(health.checkedAt)}）
+                    </span>
+                  )}
+                </span>
               </div>
               {source.conformance && source.conformance.checks.length > 0 && (
                 <div className="rounded-md border border-border px-3 py-2">
@@ -776,7 +860,16 @@ export function ManagedGovernancePanel({
           controls never depend on an unrelated request. */}
       {error && <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
 
-      <Dialog open={driftDialogOpen} onOpenChange={setDriftDialogOpen}>
+      <Dialog
+        open={driftDialogOpen}
+        onOpenChange={(open) => {
+          setDriftDialogOpen(open);
+          // Escape/backdrop dismissal is "I don't want to decide yet", not a
+          // decision — clear the draft reason so it never leaks into the next
+          // time this dialog opens (this agent later, or a different one).
+          if (!open) setDriftReason("");
+        }}
+      >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>评审来源变更</DialogTitle>
@@ -826,7 +919,10 @@ export function ManagedGovernancePanel({
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void runSourceAction("reject")}>
+            <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => setDriftDialogOpen(false)}>
+              取消
+            </Button>
+            <Button variant="outline" size="sm" className="text-destructive" disabled={busy !== null} onClick={() => void runSourceAction("reject")}>
               {busy === "reject" ? "处理中..." : "拒绝变更"}
             </Button>
             <Button size="sm" disabled={busy !== null} onClick={() => void runSourceAction("accept")}>
