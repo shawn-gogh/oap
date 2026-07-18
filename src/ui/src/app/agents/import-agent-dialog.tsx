@@ -23,11 +23,19 @@ import {
   listRuntimeHarnesses,
   previewProviderAgents,
   type ExternalAgent,
+  type ImportItemResult,
   type ImportPreviewItem,
   type ImportProvider,
 } from "@/lib/api";
 import type { Agent, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+const IMPORT_RESULT_META: Record<string, { label: string; className: string }> = {
+  imported: { label: "已导入", className: "text-emerald-600 dark:text-emerald-400" },
+  unchanged: { label: "已是最新", className: "text-muted-foreground" },
+  drift_pending: { label: "变更待评审", className: "text-amber-600 dark:text-amber-400" },
+  blocked: { label: "已阻断", className: "text-destructive" },
+};
 
 interface ImportAgentDialogProps {
   open: boolean;
@@ -55,6 +63,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ImportPreviewItem[]>([]);
   const [previewConfirmed, setPreviewConfirmed] = useState(false);
+  const [importResults, setImportResults] = useState<ImportItemResult[] | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +114,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
     setError(null);
     setPreview([]);
     setPreviewConfirmed(false);
+    setImportResults(null);
   };
 
   const close = (nextOpen: boolean) => {
@@ -209,7 +219,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
         setError("预检发现需要人工映射和审批的高风险字段。请核对下方结果后再次点击导入。");
         return;
       }
-      const imported = await importProviderAgents({
+      const { agents: importedAgents, results } = await importProviderAgents({
         providerId,
         endpoint,
         apiKey: credentialMode === "shared" ? apiKey : undefined,
@@ -222,8 +232,20 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
           raw: agent.raw,
         })),
       });
-      onImported(imported);
-      close(false);
+      onImported(importedAgents);
+      // Anything other than a clean import/unchanged needs the user to see
+      // why: blocked items never entered the registry, drift_pending items
+      // kept their approved config and await review on the governance panel.
+      const needsAttention = results.some(
+        (result) => result.status === "blocked" || result.status === "drift_pending",
+      );
+      if (needsAttention) {
+        setImportResults(results);
+        setPreview([]);
+        setError(null);
+      } else {
+        close(false);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -584,20 +606,72 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               </div>
             </div>
           )}
+          {importResults && (
+            <div className="rounded-lg border border-border bg-muted/20 p-3">
+              <p className="text-sm font-medium">导入结果</p>
+              <div className="mt-2 max-h-56 space-y-2 overflow-y-auto">
+                {importResults.map((result) => {
+                  const meta = IMPORT_RESULT_META[result.status] ?? {
+                    label: result.status,
+                    className: "text-muted-foreground",
+                  };
+                  return (
+                    <div
+                      key={result.external_id}
+                      className="rounded-md border border-border bg-background px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="truncate font-mono">{result.external_id}</span>
+                        <span className={`shrink-0 font-medium ${meta.className}`}>{meta.label}</span>
+                      </div>
+                      {result.status === "drift_pending" && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          智能体保持已审批的配置不变；远端变更已生成候选快照，
+                          {result.agent_id ? (
+                            <a
+                              href={`/agents/detail/?id=${encodeURIComponent(result.agent_id)}`}
+                              className="underline underline-offset-2 hover:text-foreground"
+                            >
+                              前往治理面板评审
+                            </a>
+                          ) : (
+                            "请在治理面板评审"
+                          )}
+                          。
+                        </p>
+                      )}
+                      {result.status === "blocked" &&
+                        result.issues.map((issue, index) => (
+                          <p key={`${issue.code ?? index}`} className="mt-1 text-xs text-destructive">
+                            {issue.message ?? issue.code}
+                          </p>
+                        ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter className="m-0 rounded-b-xl px-6 py-4">
-          <Button variant="outline" onClick={() => close(false)} disabled={saving}>
-            取消
-          </Button>
-          <Button
-            onClick={importSelected}
-            disabled={saving || (mode === "remote" ? selectedIds.length === 0 : mode === "bundle" ? !bundle : agentFiles.length === 0)}
-          >
-            {saving
-              ? "导入中…"
-              : `${mode === "remote" && previewConfirmed ? "确认" : ""}导入${mode === "remote" ? ` ${selectedIds.length}` : mode === "bundle" ? "" : ` ${agentFiles.length}`}`}
-          </Button>
+          {importResults ? (
+            <Button onClick={() => close(false)}>完成</Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => close(false)} disabled={saving}>
+                取消
+              </Button>
+              <Button
+                onClick={importSelected}
+                disabled={saving || (mode === "remote" ? selectedIds.length === 0 : mode === "bundle" ? !bundle : agentFiles.length === 0)}
+              >
+                {saving
+                  ? "导入中…"
+                  : `${mode === "remote" && previewConfirmed ? "确认" : ""}导入${mode === "remote" ? ` ${selectedIds.length}` : mode === "bundle" ? "" : ` ${agentFiles.length}`}`}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

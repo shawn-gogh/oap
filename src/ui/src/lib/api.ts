@@ -724,6 +724,15 @@ export async function previewProviderAgents(input: {
   return data.items;
 }
 
+export interface ImportItemResult {
+  external_id: string;
+  agent_id: string | null;
+  /** imported | unchanged | drift_pending | blocked */
+  status: string;
+  snapshot_id: string | null;
+  issues: Array<{ severity?: string; code?: string; field?: string; message?: string }>;
+}
+
 export async function importProviderAgents(input: {
   providerId: string;
   endpoint: string;
@@ -737,7 +746,7 @@ export async function importProviderAgents(input: {
     model?: string | null;
     raw?: Record<string, unknown>;
   }>;
-}): Promise<Agent[]> {
+}): Promise<{ agents: Agent[]; results: ImportItemResult[] }> {
   const res = await req(`/api/agents/import/${encodeURIComponent(input.providerId)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -755,8 +764,8 @@ export async function importProviderAgents(input: {
       })),
     }),
   });
-  const data = await jsonOrThrow<{ agents: Agent[] }>(res);
-  return data.agents;
+  const data = await jsonOrThrow<{ agents: Agent[]; results?: ImportItemResult[] }>(res);
+  return { agents: data.agents, results: data.results ?? [] };
 }
 
 export async function importAgentBundle(input: {
