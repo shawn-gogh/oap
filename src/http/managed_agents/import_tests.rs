@@ -209,6 +209,18 @@ fn provider_catalog_exposes_import_capabilities() {
         .iter()
         .find(|provider| provider.id == "elastic")
         .expect("elastic provider");
+    let langgraph = providers
+        .iter()
+        .find(|provider| provider.id == "langgraph")
+        .expect("langgraph provider");
+    let crewai = providers
+        .iter()
+        .find(|provider| provider.id == "crewai")
+        .expect("crewai provider");
+    let openai = providers
+        .iter()
+        .find(|provider| provider.id == "openai_assistants")
+        .expect("openai assistants provider");
 
     assert!(opencode.capabilities.discover);
     assert!(opencode.capabilities.remote_import);
@@ -222,4 +234,11 @@ fn provider_catalog_exposes_import_capabilities() {
     assert!(!elastic.capabilities.file_import);
     assert!(!elastic.capabilities.bundle_import);
     assert!(elastic.capabilities.continuous_sync);
+
+    assert!(langgraph.capabilities.incremental_sync);
+    assert!(!langgraph.expose_runtime_harness);
+    assert!(crewai.capabilities.continuous_sync);
+    assert!(!crewai.capabilities.incremental_sync);
+    assert!(openai.capabilities.incremental_sync);
+    assert!(!openai.expose_runtime_harness);
 }

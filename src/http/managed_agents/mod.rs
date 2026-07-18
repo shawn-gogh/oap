@@ -9,6 +9,7 @@ pub mod identity_mappings;
 pub mod import;
 pub mod import_files;
 mod import_types;
+mod import_validation;
 pub mod improvements;
 pub mod inbox;
 pub mod mattermost;
