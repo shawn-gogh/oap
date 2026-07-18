@@ -14,6 +14,7 @@ import {
   FileText,
   GitPullRequest,
   KeyRound,
+  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
@@ -28,6 +29,14 @@ import {
   Users,
   X,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -1358,6 +1367,7 @@ function AgentDetail() {
                 {activeSection === "governance" && governance && (
                   <ManagedGovernancePanel
                     response={governance}
+                    agentStatus={agent.status ?? "draft"}
                     grantsCount={grants.length}
                     onChange={setGovernance}
                     onAgentChange={setAgent}
@@ -2573,18 +2583,6 @@ const PREFLIGHT_VERDICT_META: Record<string, { label: string; className: string 
   failed: { label: "失败", className: "bg-destructive/10 text-destructive" },
 };
 
-const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
-  imported: "已导入",
-  tested: "测试通过",
-  pending_approval: "等待发布审批",
-  published: "已发布",
-  unhealthy: "运行检查失败",
-  rolled_back: "已回滚",
-  mapping_failed: "映射失败",
-  suspended: "已暂停",
-  retired: "已退役",
-};
-
 const MANAGEMENT_MODE_LABELS: Record<string, string> = {
   federated: "联邦接入",
   mirrored: "镜像托管",
@@ -2623,21 +2621,139 @@ function driftValuePreview(value: unknown): string {
 
 const HEALTH_FRESHNESS_MS = 24 * 60 * 60 * 1000;
 
+type GovernancePrimaryAction = "test" | "publish" | "inbox" | "activate" | "drift";
+
+interface GovernanceUx {
+  tone: "ok" | "warn" | "error" | "muted";
+  status: string;
+  reason: string;
+  primary: { action: GovernancePrimaryAction; label: string } | null;
+}
+
+/** Collapses the four raw state machines (agent status × lifecycle × health ×
+ *  sync) into one plain-language status plus the single next action the user
+ *  should take. The pipeline stays visible in the stage bar; this answers
+ *  "现在能不能用？下一步做什么？" without making users decode enums. */
+function deriveGovernanceUx(input: {
+  agentStatus: string;
+  governance: AgentGovernanceResponse["governance"];
+  currentRevision: number;
+  hasDriftCandidate: boolean;
+  healthFresh: boolean;
+}): GovernanceUx {
+  const { agentStatus, governance, currentRevision, hasDriftCandidate, healthFresh } = input;
+  const detail = governance.health_detail?.trim() || null;
+  switch (governance.lifecycle_status) {
+    case "retired":
+      return {
+        tone: "muted",
+        status: "已退役",
+        reason: detail ?? "来源证据已保留，不能再进行会话或运行。",
+        primary: null,
+      };
+    case "suspended":
+      return {
+        tone: "error",
+        status: "已挂起",
+        reason: detail ?? "紧急停止或健康检查失败。修复问题后重新运行检查即可解除。",
+        primary: { action: "test", label: "重新运行检查" },
+      };
+    default:
+      break;
+  }
+  if (hasDriftCandidate) {
+    return {
+      tone: "warn",
+      status: "待评审来源变更",
+      reason: "远端定义发生了变化。接受后将进入重新发布流程，拒绝则继续运行当前版本。",
+      primary: { action: "drift", label: "评审来源变更" },
+    };
+  }
+  switch (governance.lifecycle_status) {
+    case "pending_approval":
+      return {
+        tone: "warn",
+        status: "等待发布审批",
+        reason: "审批在收件箱完成；重新运行检查可撤回本次申请。",
+        primary: { action: "inbox", label: "前往收件箱审批" },
+      };
+    case "published":
+    case "rolled_back":
+      if (agentStatus !== "active") {
+        return {
+          tone: "warn",
+          status: governance.lifecycle_status === "rolled_back" ? "已回滚，未激活" : "已发布，未激活",
+          reason:
+            governance.lifecycle_status === "rolled_back"
+              ? "配置已回滚到先前发布的版本。激活时会重新运行预检确认健康。"
+              : "发布审批已通过。激活后即可开始会话和运行。",
+          primary: { action: "activate", label: "激活" },
+        };
+      }
+      return {
+        tone: "ok",
+        status: "运行中",
+        reason: healthFresh
+          ? "已发布并激活，最近 24 小时内健康检查正常。"
+          : "已发布并激活。平台会定期自动同步来源并运行健康检查。",
+        primary: null,
+      };
+    case "unhealthy":
+      return {
+        tone: "error",
+        status: "检查未通过",
+        reason: detail ?? "最近一次运行检查存在阻断项，修复后重新检查。",
+        primary: { action: "test", label: "重新运行检查" },
+      };
+    case "tested":
+      if (governance.tested_revision === currentRevision) {
+        return {
+          tone: "ok",
+          status: "检查通过",
+          reason: "当前版本已通过运行检查，可以申请发布（需管理员审批）。",
+          primary: { action: "publish", label: "申请发布" },
+        };
+      }
+      return {
+        tone: "warn",
+        status: "配置已变更",
+        reason: "配置在上次检查之后有改动，需要对当前版本重新运行检查。",
+        primary: { action: "test", label: "重新运行检查" },
+      };
+    default:
+      return {
+        tone: "warn",
+        status: "待检查",
+        reason: "运行检查会验证来源连通性、凭据与真实执行链路，是发布前的第一步。",
+        primary: { action: "test", label: "运行检查" },
+      };
+  }
+}
+
+const GOVERNANCE_TONE_CLASS: Record<GovernanceUx["tone"], string> = {
+  ok: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  warn: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  error: "bg-destructive/10 text-destructive",
+  muted: "bg-muted text-muted-foreground",
+};
+
 function ManagedGovernancePanel({
   response,
+  agentStatus,
   grantsCount,
   onChange,
   onAgentChange,
   onReport,
 }: {
   response: AgentGovernanceResponse;
+  agentStatus: string;
   grantsCount: number;
   onChange: (response: AgentGovernanceResponse) => void;
   onAgentChange: (agent: Agent) => void;
   onReport: (report: AgentPreflightReport) => void;
 }) {
   const confirmAction = useConfirm();
-  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | "sync" | "conformance" | "health" | "accept" | "reject" | "stop" | "retire" | null>(null);
+  const [busy, setBusy] = useState<"test" | "publish" | "rollback" | "sync" | "conformance" | "health" | "accept" | "reject" | "stop" | "retire" | "activate" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<AgentSourceOverview | null>(null);
   const [byoConfigured, setByoConfigured] = useState<boolean | null>(null);
@@ -2711,6 +2827,30 @@ function ManagedGovernancePanel({
       setError(apiErrorMessage(e, "提交发布申请失败"));
     } finally {
       setBusy(null);
+    }
+  };
+
+  const activate = async () => {
+    setBusy("activate");
+    setError(null);
+    try {
+      await activateAgent(governance.agent_id);
+      onAgentChange(await getAgent(governance.agent_id));
+      toast.success("智能体已激活");
+    } catch (e) {
+      setError(apiErrorMessage(e, "激活失败"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runPrimary = (action: GovernancePrimaryAction) => {
+    if (action === "test") void runTest();
+    if (action === "publish") void requestPublish();
+    if (action === "activate") void activate();
+    if (action === "inbox") window.location.href = "/inbox/";
+    if (action === "drift") {
+      document.getElementById("drift-review")?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   };
 
@@ -2818,6 +2958,13 @@ function ManagedGovernancePanel({
   const healthFresh =
     governance.last_health_at != null &&
     Date.now() - governance.last_health_at < HEALTH_FRESHNESS_MS;
+  const ux = deriveGovernanceUx({
+    agentStatus,
+    governance,
+    currentRevision: response.current_revision,
+    hasDriftCandidate: source?.candidate_snapshot != null,
+    healthFresh,
+  });
   const stages = [
     { label: "导入", done: true },
     { label: "测试", done: testedCurrentRevision },
@@ -2849,24 +2996,90 @@ function ManagedGovernancePanel({
             </div>
           ))}
         </div>
-        <div className="grid gap-4 p-4 lg:grid-cols-[1fr_auto]">
-          <dl className="grid gap-x-5 gap-y-2 text-xs sm:grid-cols-[120px_1fr]">
-            <dt className="text-muted-foreground">纳管状态</dt>
-            <dd className="font-medium">
-              {GOVERNANCE_STATUS_LABELS[governance.lifecycle_status] ?? governance.lifecycle_status}
-              {governance.lifecycle_status === "pending_approval" && (
-                <span className="ml-2 font-normal text-muted-foreground">
-                  <a href="/inbox/" className="underline underline-offset-2 hover:text-foreground">
-                    在收件箱查看审批
-                  </a>
-                  ；重新点击"运行检查"可撤回申请并回到测试状态
+        <div className="grid gap-4 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="flex flex-wrap items-center gap-2">
+                <span className={`rounded px-2 py-0.5 text-xs font-semibold ${GOVERNANCE_TONE_CLASS[ux.tone]}`}>
+                  {ux.status}
                 </span>
+              </p>
+              <p className="mt-1.5 max-w-2xl text-xs text-muted-foreground">{ux.reason}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {ux.primary && (
+                <Button size="sm" disabled={busy !== null} onClick={() => runPrimary(ux.primary!.action)}>
+                  {busy !== null && ["test", "publish", "activate"].includes(busy)
+                    ? "处理中..."
+                    : ux.primary.label}
+                </Button>
               )}
-            </dd>
-            <dt className="text-muted-foreground">外部来源版本</dt>
-            <dd>v{governance.source_version} · 本地 revision {response.current_revision}</dd>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  disabled={busy !== null}
+                  aria-label="更多纳管操作"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium shadow-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+                >
+                  <MoreHorizontal className="size-3.5" />更多
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onSelect={() => void runTest()}>
+                    <Activity className="size-3.5" />运行检查
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!testedCurrentRevision || governance.lifecycle_status === "pending_approval"}
+                    onSelect={() => void requestPublish()}
+                  >
+                    <GitPullRequest className="size-3.5" />申请发布
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={governance.previous_published_revision == null}
+                    onSelect={() => void rollback()}
+                  >
+                    <RotateCcw className="size-3.5" />回滚版本
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[11px] text-muted-foreground">
+                    诊断（平台会定期自动执行）
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => void runSourceAction("sync")}>
+                    <RefreshCw className="size-3.5" />立即同步来源
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void runSourceAction("conformance")}>
+                    <ShieldCheck className="size-3.5" />契约检查
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void runSourceAction("health")}>
+                    <Activity className="size-3.5" />健康检查
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    disabled={governance.lifecycle_status === "retired"}
+                    onSelect={() => void stopOrRetire("stop")}
+                  >
+                    紧急停止
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    disabled={governance.lifecycle_status === "retired"}
+                    onSelect={() => void stopOrRetire("retire")}
+                  >
+                    退役智能体
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+          <dl className="grid gap-x-5 gap-y-2 border-t border-border pt-3 text-xs sm:grid-cols-[120px_1fr]">
             <dt className="text-muted-foreground">来源</dt>
-            <dd className="break-all">{governance.source_provider} · {governance.external_agent_id}</dd>
+            <dd className="break-all">
+              {governance.source_provider} · {governance.external_agent_id} · 来源 v{governance.source_version}
+            </dd>
+            <dt className="text-muted-foreground">版本</dt>
+            <dd>
+              本地 revision {response.current_revision}
+              {governance.published_revision != null && ` · 已发布 revision ${governance.published_revision}`}
+            </dd>
             <dt className="text-muted-foreground">运行凭据</dt>
             <dd>
               {governance.credential_scope === "personal" ? (
@@ -2886,25 +3099,7 @@ function ManagedGovernancePanel({
                 </span>
               )}
             </dd>
-            <dt className="text-muted-foreground">运行健康</dt>
-            <dd className={governance.runtime_health === "unhealthy" ? "text-destructive" : ""}>
-              {governance.runtime_health === "healthy" ? "健康" : governance.runtime_health === "unhealthy" ? "异常" : "尚未检查"}
-              {governance.health_detail ? ` · ${governance.health_detail}` : ""}
-            </dd>
-            <dt className="text-muted-foreground">已发布版本</dt>
-            <dd>{governance.published_revision ?? "暂无"}</dd>
           </dl>
-          <div className="flex flex-wrap content-start gap-2 lg:max-w-[190px]">
-            <Button size="sm" variant="outline" onClick={() => void runTest()} disabled={busy !== null}>
-              <Activity className="size-3.5" />{busy === "test" ? "检查中..." : "运行检查"}
-            </Button>
-            <Button size="sm" onClick={() => void requestPublish()} disabled={busy !== null || !testedCurrentRevision || governance.lifecycle_status === "pending_approval"}>
-              <GitPullRequest className="size-3.5" />{busy === "publish" ? "提交中..." : "申请发布"}
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => void rollback()} disabled={busy !== null || governance.previous_published_revision == null}>
-              <RotateCcw className="size-3.5" />{busy === "rollback" ? "回滚中..." : "回滚"}
-            </Button>
-          </div>
         </div>
       </Card>
       {lastReport && (
@@ -2954,17 +3149,12 @@ function ManagedGovernancePanel({
                 {source.current_snapshot?.version ?? "-"}
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("sync")}>
-                <RefreshCw className={`size-3.5 ${busy === "sync" ? "animate-spin" : ""}`} />同步来源
-              </Button>
-              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("conformance")}>
-                <ShieldCheck className="size-3.5" />契约检查
-              </Button>
-              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("health")}>
-                <Activity className="size-3.5" />健康检查
-              </Button>
-            </div>
+            {busy !== null && ["sync", "conformance", "health"].includes(busy) && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" />
+                执行中…
+              </span>
+            )}
           </div>
           <div className="grid gap-4 p-4 lg:grid-cols-2">
             <div className="grid gap-2 text-xs">
@@ -3004,7 +3194,7 @@ function ManagedGovernancePanel({
                 </div>
               )}
             </div>
-            <div>
+            <div id="drift-review">
               <h4 className="text-xs font-semibold">漂移发现</h4>
               {source.drift_findings.filter((finding) => finding.resolution === "open").length === 0 ? (
                 <p className="mt-2 rounded-md border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">没有待处理的来源漂移。</p>
@@ -3035,16 +3225,9 @@ function ManagedGovernancePanel({
           </div>
         </Card>
       )}
-      {/* Safety controls stay available even when the source overview fails to
-          load — emergency stop must never depend on an unrelated fetch. */}
-      <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <Button size="sm" variant="outline" className="text-destructive" disabled={busy !== null || governance.lifecycle_status === "retired"} onClick={() => void stopOrRetire("stop")}>
-          紧急停止
-        </Button>
-        <Button size="sm" variant="destructive" disabled={busy !== null || governance.lifecycle_status === "retired"} onClick={() => void stopOrRetire("retire")}>
-          退役智能体
-        </Button>
-      </div>
+      {/* Emergency stop / retire live in the "更多" menu on the status card,
+          which renders regardless of the source-overview fetch — safety
+          controls never depend on an unrelated request. */}
       {error && <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
     </section>
   );
