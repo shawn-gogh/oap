@@ -1169,6 +1169,15 @@ async fn imported_agent_governance_publish_and_rollback_against_postgres() {
     )
     .await;
 
+    // Rollback must restore configuration only — it must never re-activate a
+    // paused/stopped agent by itself (that is activate's job, with preflight).
+    litellm_rust::db::managed_agents::registry::repository::set_status(
+        &fixture.pool,
+        &agent_id,
+        "paused",
+    )
+    .await
+    .unwrap();
     let rolled_back = request_json_with_key(
         &fixture,
         &owner_key,
@@ -1180,6 +1189,226 @@ async fn imported_agent_governance_publish_and_rollback_against_postgres() {
     assert_eq!(rolled_back["governance"]["lifecycle_status"], "rolled_back");
     assert_eq!(rolled_back["restored_from_revision"], 1);
     assert_ne!(rolled_back["agent"]["description"], "第二个外部版本");
+    assert_eq!(rolled_back["agent"]["status"], "paused");
+}
+
+#[tokio::test]
+async fn governance_state_machine_gates_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping governance gate integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    // --- Emergency-stopped governed agent: resume and new interaction are
+    // both refused until it goes back through the governance pipeline.
+    let governed = create_test_agent(
+        &fixture,
+        json!({
+            "name": "gate-agent",
+            "owner_id": "gate-owner",
+            "model": "test-model",
+            "system": "gate"
+        }),
+    )
+    .await;
+    let governed_id = governed["id"].as_str().unwrap();
+    litellm_rust::db::managed_agents::governance::record_import(
+        &fixture.pool,
+        litellm_rust::db::managed_agents::governance::ImportedSource {
+            agent_id: governed_id,
+            owner_id: "gate-owner",
+            provider: "external-test",
+            endpoint: "https://runtime.example.test",
+            external_agent_id: "gate-external-1",
+            source_hash: "gate-v1",
+            credential_scope: "personal",
+            credential_name: None,
+        },
+    )
+    .await
+    .unwrap();
+    litellm_rust::db::managed_agents::registry::repository::set_status(
+        &fixture.pool,
+        governed_id,
+        "active",
+    )
+    .await
+    .unwrap();
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{governed_id}/emergency-stop"),
+        Some(json!({})),
+    )
+    .await;
+
+    let (resume_status, resume_body) = request_json_raw(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{governed_id}/resume"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(resume_status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(resume_body.contains("治理挂起"), "got: {resume_body}");
+
+    let governed_session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        Some(governed_id),
+        "gate session",
+        None,
+        Some("gate-owner"),
+        None,
+    )
+    .await
+    .unwrap();
+    let (message_status, message_body) = request_json_raw(
+        fixture.app.clone(),
+        "POST",
+        &format!("/session/{}/message", governed_session.id),
+        Some(json!({
+            "model": { "modelID": "test-model" },
+            "parts": [{ "type": "text", "text": "hi" }]
+        })),
+    )
+    .await;
+    assert_eq!(message_status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(message_body.contains("紧急停止"), "got: {message_body}");
+
+    // --- Plain paused agent (no governance): new prompts are refused while
+    // paused, and resume works because there is no governance suspension.
+    let native = create_test_agent(
+        &fixture,
+        json!({
+            "name": "native-gate-agent",
+            "owner_id": "gate-owner",
+            "model": "test-model",
+            "system": "native"
+        }),
+    )
+    .await;
+    let native_id = native["id"].as_str().unwrap();
+    litellm_rust::db::managed_agents::registry::repository::set_status(
+        &fixture.pool,
+        native_id,
+        "active",
+    )
+    .await
+    .unwrap();
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{native_id}/pause"),
+        Some(json!({})),
+    )
+    .await;
+    let native_session = litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "claude-code",
+        Some(native_id),
+        "native gate session",
+        None,
+        Some("gate-owner"),
+        None,
+    )
+    .await
+    .unwrap();
+    let (paused_status, paused_body) = request_json_raw(
+        fixture.app.clone(),
+        "POST",
+        &format!("/session/{}/message", native_session.id),
+        Some(json!({
+            "model": { "modelID": "test-model" },
+            "parts": [{ "type": "text", "text": "hi" }]
+        })),
+    )
+    .await;
+    assert_eq!(paused_status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(paused_body.contains("已暂停"), "got: {paused_body}");
+    let resumed = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{native_id}/resume"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(resumed["status"], "active");
+}
+
+#[tokio::test]
+async fn import_blocking_and_drift_review_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping import gate integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    // A blocking issue (empty identity) must reject the import outright.
+    let (blocked_status, blocked_body) = request_json_raw(
+        fixture.app.clone(),
+        "POST",
+        "/api/agents/import/elastic",
+        Some(json!({
+            "endpoint": "https://example.com",
+            "credential_mode": "byo",
+            "agents": [{ "external_id": "   " }]
+        })),
+    )
+    .await;
+    assert_eq!(blocked_status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(blocked_body.contains("无法导入"), "got: {blocked_body}");
+
+    // First import lands; re-importing a changed definition must not touch the
+    // agent — it becomes a drift candidate awaiting review.
+    let first = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/api/agents/import/elastic",
+        Some(json!({
+            "endpoint": "https://example.com",
+            "credential_mode": "byo",
+            "agents": [{ "external_id": "drift-ext-1", "name": "Drift Agent", "raw": { "a": 1 } }]
+        })),
+    )
+    .await;
+    assert_eq!(first["results"][0]["status"], "imported");
+    let imported_id = first["results"][0]["agent_id"].as_str().unwrap().to_owned();
+
+    let second = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/api/agents/import/elastic",
+        Some(json!({
+            "endpoint": "https://example.com",
+            "credential_mode": "byo",
+            "agents": [{ "external_id": "drift-ext-1", "name": "Drift Agent", "raw": { "a": 2 } }]
+        })),
+    )
+    .await;
+    assert_eq!(second["results"][0]["status"], "drift_pending");
+    assert!(second["results"][0]["snapshot_id"].as_str().is_some());
+
+    let row =
+        litellm_rust::db::managed_agents::registry::repository::get(&fixture.pool, &imported_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        row.config.pointer("/source/raw/a"),
+        Some(&json!(1)),
+        "re-import must not overwrite the approved configuration"
+    );
+    let source = litellm_rust::db::managed_agents::sources::repository::get_source_by_agent(
+        &fixture.pool,
+        &imported_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(source.sync_state, "drifted");
+    assert!(source.candidate_snapshot_id.is_some());
 }
 
 async fn request_json_with_key(
