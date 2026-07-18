@@ -31,10 +31,10 @@ async fn publish_with_review_period(fixture: &AppFixture) -> (String, i64) {
     .await;
     assert_eq!(settings["review_period_days"], 30);
 
-    let agent_id = governed_agent(&fixture).await;
-    let approval_id = request_publish(&fixture, &agent_id).await;
-    approve(&fixture, &approval_id).await;
-    let published = governance(&fixture, &agent_id).await;
+    let agent_id = governed_agent(fixture).await;
+    let approval_id = request_publish(fixture, &agent_id).await;
+    approve(fixture, &approval_id).await;
+    let published = governance(fixture, &agent_id).await;
     let published_at = published["governance"]["published_at"].as_i64().unwrap();
     assert_eq!(
         published["governance"]["review_due_at"].as_i64(),

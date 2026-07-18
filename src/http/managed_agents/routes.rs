@@ -30,6 +30,7 @@ pub fn router() -> Router<Arc<AppState>> {
 
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/agent-catalog", get(super::catalog::list))
         .route(
             "/api/identity-mappings",
             get(super::identity_mappings::list),

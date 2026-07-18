@@ -1,5 +1,6 @@
 pub mod audit_timeline;
 pub mod byo_credentials;
+pub mod catalog;
 pub mod eval_runs;
 pub mod evolution;
 pub mod governance;

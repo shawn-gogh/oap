@@ -10,11 +10,13 @@ pub(super) fn validate_create(input: &CreateManagedAgent) -> Result<(), GatewayE
             "name and owner_id required".to_owned(),
         ));
     }
-    validate_runtime(input.runtime.as_deref())
+    validate_runtime(input.runtime.as_deref())?;
+    validate_catalog_metadata(input.config.as_ref())
 }
 
 pub(super) fn validate_update(input: &UpdateManagedAgent) -> Result<(), GatewayError> {
-    validate_runtime(input.runtime.as_deref())
+    validate_runtime(input.runtime.as_deref())?;
+    validate_catalog_metadata(input.config.as_ref())
 }
 
 pub(super) fn create_config(config: Option<Value>, runtime: Option<&str>, tools: &Value) -> Value {
@@ -38,6 +40,34 @@ fn validate_runtime(runtime: Option<&str>) -> Result<(), GatewayError> {
         return Err(GatewayError::InvalidJsonMessage(
             "runtime cannot be empty".to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_catalog_metadata(config: Option<&Value>) -> Result<(), GatewayError> {
+    let Some(config) = config.and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for field in ["tags", "capabilities"] {
+        let Some(value) = config.get(field) else {
+            continue;
+        };
+        let Some(values) = value.as_array() else {
+            return Err(GatewayError::InvalidJsonMessage(format!(
+                "config.{field} must be an array of strings"
+            )));
+        };
+        if values.len() > 20
+            || values.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_none_or(|value| value.trim().is_empty() || value.chars().count() > 64)
+            })
+        {
+            return Err(GatewayError::InvalidJsonMessage(format!(
+                "config.{field} accepts at most 20 non-empty strings of 64 characters"
+            )));
+        }
     }
     Ok(())
 }

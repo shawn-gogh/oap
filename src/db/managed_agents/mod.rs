@@ -2,6 +2,7 @@ pub mod agent_grants;
 pub mod api_keys;
 pub mod artifacts;
 pub mod audit;
+pub mod catalog;
 pub mod cloud_events;
 pub mod credential_leases;
 pub mod eval_runs;

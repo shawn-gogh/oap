@@ -540,6 +540,50 @@ export async function listAgents(): Promise<Agent[]> {
   return data.agents;
 }
 
+export interface AgentCatalogConsumer {
+  agent_id: string;
+  user_id: string;
+  display_name: string;
+  last_used_at: number;
+  session_count: number;
+}
+
+export interface AgentCatalogItem {
+  id: string;
+  name: string;
+  description?: string | null;
+  owner_id?: string | null;
+  runtime: string;
+  tags: string[];
+  capabilities: string[];
+  can_use: boolean;
+  access: "admin" | "owner" | "granted" | "unavailable";
+  consumers: AgentCatalogConsumer[];
+  session_count: number;
+  last_used_at?: number | null;
+}
+
+export interface AgentCatalogResponse {
+  agents: AgentCatalogItem[];
+  tags: string[];
+  capabilities: string[];
+}
+
+export async function listAgentCatalog(filters?: {
+  q?: string;
+  tag?: string;
+  capability?: string;
+  access?: "mine";
+}): Promise<AgentCatalogResponse> {
+  const query = new URLSearchParams();
+  if (filters?.q) query.set("q", filters.q);
+  if (filters?.tag) query.set("tag", filters.tag);
+  if (filters?.capability) query.set("capability", filters.capability);
+  if (filters?.access) query.set("access", filters.access);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return jsonOrThrow<AgentCatalogResponse>(await req(`/api/agent-catalog${suffix}`));
+}
+
 export async function getAgentByoCredentialStatus(agentId: string): Promise<boolean> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/byo-credential`);
   const data = await jsonOrThrow<{ configured: boolean }>(res);
