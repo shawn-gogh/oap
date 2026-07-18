@@ -37,12 +37,21 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
@@ -2619,6 +2628,13 @@ function driftValuePreview(value: unknown): string {
   return text.length > 60 ? `${text.slice(0, 57)}…` : text;
 }
 
+/** Full (but bounded) rendering of a drift value for the review dialog. */
+function driftValueFull(value: unknown): string {
+  if (value === undefined || value === null) return "（空）";
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
+}
+
 const HEALTH_FRESHNESS_MS = 24 * 60 * 60 * 1000;
 
 type GovernancePrimaryAction = "test" | "publish" | "inbox" | "activate" | "drift";
@@ -2758,6 +2774,10 @@ function ManagedGovernancePanel({
   const [source, setSource] = useState<AgentSourceOverview | null>(null);
   const [byoConfigured, setByoConfigured] = useState<boolean | null>(null);
   const [lastReport, setLastReport] = useState<{ kind: "运行检查" | "健康检查"; report: AgentPreflightReport } | null>(null);
+  const [driftDialogOpen, setDriftDialogOpen] = useState(false);
+  const [driftReason, setDriftReason] = useState("");
+  const [byoDialogOpen, setByoDialogOpen] = useState(false);
+  const [byoKeyDraft, setByoKeyDraft] = useState("");
   const governance = response.governance;
   const testedCurrentRevision =
     governance.runtime_health === "healthy" &&
@@ -2786,12 +2806,14 @@ function ManagedGovernancePanel({
     };
   }, [governance.agent_id, governance.credential_scope]);
 
-  const configureByoKey = async () => {
-    const value = window.prompt("输入你的 API Key（仅对你的会话生效）");
-    if (!value?.trim()) return;
+  const saveByoKey = async () => {
+    const value = byoKeyDraft.trim();
+    if (!value) return;
     try {
-      await saveAgentByoCredential(governance.agent_id, value.trim());
+      await saveAgentByoCredential(governance.agent_id, value);
       setByoConfigured(true);
+      setByoDialogOpen(false);
+      setByoKeyDraft("");
       toast.success("已保存你的 BYO 密钥");
     } catch (e) {
       toast.error(apiErrorMessage(e, "保存密钥失败"));
@@ -2808,7 +2830,16 @@ function ManagedGovernancePanel({
         onReport(next.preflight);
         setLastReport({ kind: "运行检查", report: next.preflight });
       }
-      toast.success(next.governance.runtime_health === "healthy" ? "运行检查通过" : "运行检查未通过");
+      if (next.governance.runtime_health === "healthy") {
+        // Collapse the ceremonial step: the check passed, so offer the next
+        // pipeline action right in the confirmation instead of making the
+        // user find the button.
+        toast.success("运行检查通过", {
+          action: { label: "申请发布", onClick: () => void requestPublish() },
+        });
+      } else {
+        toast.error("运行检查未通过，详情见下方检查报告");
+      }
     } catch (e) {
       setError(apiErrorMessage(e, "运行检查失败"));
     } finally {
@@ -2849,9 +2880,7 @@ function ManagedGovernancePanel({
     if (action === "publish") void requestPublish();
     if (action === "activate") void activate();
     if (action === "inbox") window.location.href = "/inbox/";
-    if (action === "drift") {
-      document.getElementById("drift-review")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (action === "drift") setDriftDialogOpen(true);
   };
 
   const rollback = async () => {
@@ -2887,22 +2916,19 @@ function ManagedGovernancePanel({
   const runSourceAction = async (
     action: "sync" | "conformance" | "health" | "accept" | "reject",
   ) => {
-    let reason: string | undefined;
-    if (action === "accept" || action === "reject") {
-      const input = window.prompt(
-        action === "accept"
-          ? "接受候选版本的原因（写入审计记录）"
-          : "拒绝候选版本的原因（写入审计记录）",
-      );
-      if (input === null) return;
-      reason = input.trim() || undefined;
-    }
+    const reason =
+      action === "accept" || action === "reject" ? driftReason.trim() || undefined : undefined;
     setBusy(action);
     setError(null);
     try {
       if (action === "sync") setSource(await syncAgentSource(governance.agent_id));
       if (action === "accept") setSource(await resolveAgentDrift(governance.agent_id, "accept", reason));
       if (action === "reject") setSource(await resolveAgentDrift(governance.agent_id, "reject", reason));
+      if (action === "accept" || action === "reject") {
+        setDriftDialogOpen(false);
+        setDriftReason("");
+        onChange(await getAgentGovernance(governance.agent_id));
+      }
       if (action === "conformance") {
         await checkAgentConformance(governance.agent_id);
         await refreshSource();
@@ -3091,7 +3117,7 @@ function ManagedGovernancePanel({
                   {byoConfigured === false && <Badge variant="destructive">你未配置</Badge>}
                   <button
                     type="button"
-                    onClick={() => void configureByoKey()}
+                    onClick={() => setByoDialogOpen(true)}
                     className="underline underline-offset-2 text-muted-foreground hover:text-foreground"
                   >
                     {byoConfigured ? "更新我的密钥" : "配置我的密钥"}
@@ -3216,9 +3242,10 @@ function ManagedGovernancePanel({
                 </div>
               )}
               {source.candidate_snapshot && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" disabled={busy !== null} onClick={() => void runSourceAction("accept")}>接受候选版本</Button>
-                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void runSourceAction("reject")}>拒绝候选版本</Button>
+                <div className="mt-3">
+                  <Button size="sm" disabled={busy !== null} onClick={() => setDriftDialogOpen(true)}>
+                    评审变更
+                  </Button>
                 </div>
               )}
             </div>
@@ -3229,6 +3256,106 @@ function ManagedGovernancePanel({
           which renders regardless of the source-overview fetch — safety
           controls never depend on an unrelated request. */}
       {error && <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
+
+      <Dialog open={driftDialogOpen} onOpenChange={setDriftDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>评审来源变更</DialogTitle>
+            <DialogDescription>
+              远端定义与当前运行版本存在以下差异。接受后配置将更新并回到草稿状态，需重新走检查与发布流程；拒绝则继续运行当前版本。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid max-h-[50vh] gap-2 overflow-y-auto py-1">
+            {(source?.drift_findings ?? [])
+              .filter((finding) => finding.resolution === "open")
+              .map((finding) => (
+                <div key={finding.id} className="rounded-md border border-border p-3 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono font-medium">{finding.field_path}</span>
+                    <Badge variant={finding.risk === "critical" || finding.risk === "high" ? "destructive" : "outline"}>
+                      {DRIFT_RISK_LABELS[finding.risk] ?? finding.risk}风险
+                    </Badge>
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-[11px] text-muted-foreground">当前版本</p>
+                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px]">{driftValueFull(finding.previous_value)}</pre>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-[11px] text-muted-foreground">远端候选</p>
+                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px]">{driftValueFull(finding.candidate_value)}</pre>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            {(source?.drift_findings ?? []).filter((finding) => finding.resolution === "open").length === 0 && (
+              <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+                没有字段级差异明细，可在下方直接决定是否采纳候选快照。
+              </p>
+            )}
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="drift-reason" className="text-xs">
+              决定原因（可选，写入审计记录）
+            </Label>
+            <Textarea
+              id="drift-reason"
+              rows={2}
+              value={driftReason}
+              onChange={(event) => setDriftReason(event.target.value)}
+              placeholder="例如：远端只更新了提示词措辞，已确认无风险。"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void runSourceAction("reject")}>
+              {busy === "reject" ? "处理中..." : "拒绝变更"}
+            </Button>
+            <Button size="sm" disabled={busy !== null} onClick={() => void runSourceAction("accept")}>
+              {busy === "accept" ? "处理中..." : "接受并重新发布"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={byoDialogOpen}
+        onOpenChange={(open) => {
+          setByoDialogOpen(open);
+          if (!open) setByoKeyDraft("");
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{byoConfigured ? "更新我的密钥" : "配置我的密钥"}</DialogTitle>
+            <DialogDescription>
+              该智能体使用 BYO 凭据模式：密钥只对你自己的会话生效，加密存储，其他用户需各自配置。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5 py-1">
+            <Label htmlFor="byo-key" className="text-xs">
+              API Key
+            </Label>
+            <Input
+              id="byo-key"
+              type="password"
+              autoComplete="new-password"
+              value={byoKeyDraft}
+              onChange={(event) => setByoKeyDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void saveByoKey();
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setByoDialogOpen(false)}>
+              取消
+            </Button>
+            <Button size="sm" disabled={!byoKeyDraft.trim()} onClick={() => void saveByoKey()}>
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
