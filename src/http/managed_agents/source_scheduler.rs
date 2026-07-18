@@ -31,8 +31,9 @@ pub async fn run_due_once(state: Arc<AppState>) -> Result<usize, GatewayError> {
     let Some(pool) = state.db.as_ref().cloned() else {
         return Ok(0);
     };
+    let mut completed =
+        expire_due_reviews_once(state.clone(), crate::db::managed_agents::now_ms()).await?;
     let due = sources::list_due_sources(&pool, 25).await?;
-    let mut completed = 0;
     for source in due {
         if !sources::acquire_sync_lease(&pool, &source.id, "source-scheduler", LEASE_MS).await? {
             continue;
@@ -92,4 +93,41 @@ pub async fn run_due_once(state: Arc<AppState>) -> Result<usize, GatewayError> {
         }
     }
     Ok(completed)
+}
+
+pub async fn expire_due_reviews_once(
+    state: Arc<AppState>,
+    now: i64,
+) -> Result<usize, GatewayError> {
+    let Some(pool) = state.db.as_ref().cloned() else {
+        return Ok(0);
+    };
+    let due = governance::mark_due_for_review(&pool, now, 25).await?;
+    for review in &due {
+        let Some(agent) = repository::get(&pool, &review.agent_id).await? else {
+            continue;
+        };
+        audit::record(
+            &pool,
+            "source-scheduler",
+            "agent.governance.review_due",
+            "agent",
+            &agent.id,
+            json!({
+                "published_at": review.published_at,
+                "review_due_at": review.review_due_at,
+            }),
+        )
+        .await?;
+        super::mattermost::notify_governance_event(
+            &state,
+            &pool,
+            &agent,
+            super::mattermost::GovernanceNotification::ReviewDue {
+                review_due_at: review.review_due_at.unwrap_or(now),
+            },
+        )
+        .await;
+    }
+    Ok(due.len())
 }

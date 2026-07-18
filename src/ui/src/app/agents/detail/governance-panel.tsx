@@ -160,6 +160,13 @@ function deriveGovernanceUx(input: {
     };
   }
   switch (governance.lifecycle_status) {
+    case "review_due":
+      return {
+        tone: "warn",
+        status: "发布已到期，待复审",
+        reason: "新工作已暂停。重新运行治理检查，通过后申请发布复审。",
+        primary: { action: "test", label: "开始复审检查" },
+      };
     case "pending_approval":
       return {
         tone: "warn",
@@ -599,6 +606,12 @@ export function ManagedGovernancePanel({
             <dd>
               本地 revision {response.current_revision}
               {governance.published_revision != null && ` · 已发布 revision ${governance.published_revision}`}
+            </dd>
+            <dt className="text-muted-foreground">发布有效期</dt>
+            <dd>
+              {governance.review_due_at != null
+                ? `截至 ${new Date(governance.review_due_at).toLocaleString()}`
+                : "下次发布后开始计算"}
             </dd>
             <dt className="text-muted-foreground">黄金回归</dt>
             <dd>

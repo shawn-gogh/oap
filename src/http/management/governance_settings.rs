@@ -12,11 +12,13 @@ use crate::{
 #[derive(Debug, Serialize)]
 pub struct GovernanceSettings {
     separation_of_duties: bool,
+    review_period_days: i32,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateGovernanceSettings {
     separation_of_duties: bool,
+    review_period_days: Option<i32>,
 }
 
 pub async fn get(
@@ -30,6 +32,7 @@ pub async fn get(
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
     Ok(Json(GovernanceSettings {
         separation_of_duties: repository::enforce_separation_of_duties(pool).await?,
+        review_period_days: repository::review_period_days(pool).await?,
     }))
 }
 
@@ -46,16 +49,24 @@ pub async fn update(
     let enabled =
         repository::set_separation_of_duties(pool, input.separation_of_duties, &auth.user_id)
             .await?;
+    let review_period_days = match input.review_period_days {
+        Some(days) => repository::set_review_period_days(pool, days, &auth.user_id).await?,
+        None => repository::review_period_days(pool).await?,
+    };
     crate::db::managed_agents::audit::record(
         pool,
         &auth.user_id,
         "governance.settings.updated",
         "gateway",
         "separation_of_duties",
-        serde_json::json!({ "enabled": enabled }),
+        serde_json::json!({
+            "separation_of_duties": enabled,
+            "review_period_days": review_period_days,
+        }),
     )
     .await?;
     Ok(Json(GovernanceSettings {
         separation_of_duties: enabled,
+        review_period_days,
     }))
 }

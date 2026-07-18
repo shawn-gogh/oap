@@ -123,6 +123,12 @@ pub(crate) fn assert_agent_runnable(agent: &ManagedAgentRow) -> Result<(), Gatew
             agent.id
         )));
     }
+    if agent.status == "paused" {
+        return Err(GatewayError::BadRequest(format!(
+            "agent {} 已暂停，恢复运行后才能创建新任务",
+            agent.id
+        )));
+    }
     Ok(())
 }
 
@@ -156,6 +162,12 @@ pub(crate) async fn assert_agent_interactive(
             "suspended" => {
                 return Err(GatewayError::BadRequest(format!(
                     "智能体 {} 处于暂停状态（紧急停止或健康检查失败）：请先通过治理面板的\"运行检查\"确认健康后再继续会话。",
+                    agent.id
+                )));
+            }
+            "review_due" => {
+                return Err(GatewayError::BadRequest(format!(
+                    "智能体 {} 的发布有效期已到：请重新运行治理检查并完成发布复审。",
                     agent.id
                 )));
             }

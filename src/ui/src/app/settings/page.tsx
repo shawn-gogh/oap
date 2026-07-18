@@ -32,6 +32,7 @@ export default function SettingsPage() {
     text: string;
   } | null>(null);
   const [separationOfDuties, setSeparationOfDuties] = useState(true);
+  const [reviewPeriodDays, setReviewPeriodDays] = useState(90);
   const [governanceSaving, setGovernanceSaving] = useState(false);
   const [governanceStatus, setGovernanceStatus] = useState<string | null>(null);
 
@@ -41,7 +42,10 @@ export default function SettingsPage() {
     setSavedHarnessUrl(url);
     setHarnessKey(getHarnessServerKey());
     void getGovernanceSettings()
-      .then((settings) => setSeparationOfDuties(settings.separation_of_duties))
+      .then((settings) => {
+        setSeparationOfDuties(settings.separation_of_duties);
+        setReviewPeriodDays(settings.review_period_days);
+      })
       .catch(() => setGovernanceStatus("无法读取治理设置；仅管理员可以修改。"));
   }, []);
 
@@ -49,8 +53,9 @@ export default function SettingsPage() {
     setGovernanceSaving(true);
     setGovernanceStatus(null);
     try {
-      const saved = await saveGovernanceSettings(separationOfDuties);
+      const saved = await saveGovernanceSettings(separationOfDuties, reviewPeriodDays);
       setSeparationOfDuties(saved.separation_of_duties);
+      setReviewPeriodDays(saved.review_period_days);
       setGovernanceStatus("治理职责分离设置已保存。");
     } catch (error) {
       setGovernanceStatus(error instanceof Error ? error.message : String(error));
@@ -194,7 +199,6 @@ export default function SettingsPage() {
                     )}
                   </div>
                 </div>
-
                 {harnessStatus && (
                   <p
                     className={`mt-4 text-xs ${
@@ -253,6 +257,20 @@ export default function SettingsPage() {
                     />
                     {separationOfDuties ? "已启用" : "已停用"}
                   </label>
+                </div>
+                <div className="mt-4 grid max-w-xs gap-2">
+                  <Label htmlFor="review-period-days">发布复审周期（天）</Label>
+                  <Input
+                    id="review-period-days"
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={reviewPeriodDays}
+                    onChange={(event) => setReviewPeriodDays(Number(event.target.value))}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    新发布或复审通过的智能体按此周期计算有效期；到期后自动暂停新工作。
+                  </p>
                 </div>
                 {governanceStatus && (
                   <p className="mt-3 text-xs text-muted-foreground">{governanceStatus}</p>

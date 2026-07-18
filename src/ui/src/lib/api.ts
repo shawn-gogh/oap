@@ -950,6 +950,7 @@ export interface GatewayApiKey {
 
 export interface GovernanceSettings {
   separation_of_duties: boolean;
+  review_period_days: number;
 }
 
 export async function getGovernanceSettings(): Promise<GovernanceSettings> {
@@ -958,12 +959,16 @@ export async function getGovernanceSettings(): Promise<GovernanceSettings> {
 
 export async function saveGovernanceSettings(
   separationOfDuties: boolean,
+  reviewPeriodDays: number,
 ): Promise<GovernanceSettings> {
   return jsonOrThrow<GovernanceSettings>(
     await req("/api/governance/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ separation_of_duties: separationOfDuties }),
+      body: JSON.stringify({
+        separation_of_duties: separationOfDuties,
+        review_period_days: reviewPeriodDays,
+      }),
     }),
   );
 }
@@ -2553,7 +2558,7 @@ export interface AgentGovernance {
   source_endpoint: string;
   external_agent_id: string;
   source_version: number;
-  lifecycle_status: "imported" | "tested" | "pending_approval" | "published" | "unhealthy" | "rolled_back" | "mapping_failed" | "suspended" | "retired";
+  lifecycle_status: "imported" | "tested" | "pending_approval" | "published" | "unhealthy" | "rolled_back" | "mapping_failed" | "suspended" | "retired" | "review_due";
   runtime_health: "unknown" | "healthy" | "degraded" | "unhealthy" | "unreachable";
   health_detail?: string | null;
   credential_scope: "personal" | "byo";
@@ -2563,6 +2568,8 @@ export interface AgentGovernance {
   previous_published_revision?: number | null;
   publish_approval_id?: string | null;
   last_health_at?: number | null;
+  published_at?: number | null;
+  review_due_at?: number | null;
   created_at: number;
   updated_at: number;
 }

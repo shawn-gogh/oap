@@ -26,6 +26,9 @@ pub(crate) enum GovernanceNotification<'a> {
         highest_risk: &'a str,
         changed_fields: &'a [String],
     },
+    ReviewDue {
+        review_due_at: i64,
+    },
 }
 
 pub(crate) async fn notify_governance_event(
@@ -118,7 +121,32 @@ fn notification_text(
                 agent_name, highest_risk, fields, snapshot_id, agent_link
             )
         }
+        GovernanceNotification::ReviewDue { review_due_at } => {
+            review_due_text(public_base_url, agent_name, review_due_at, &agent_link)
+        }
     }
+}
+
+fn review_due_text(
+    public_base_url: Option<&str>,
+    agent_name: &str,
+    review_due_at: i64,
+    agent_link: &str,
+) -> String {
+    let approval_link = link(public_base_url, "/inbox/", "复审通过后前往审批");
+    format!(
+        "### 定期复审：智能体发布已到期\n**{}** 的发布有效期已于 {} 到期，新工作已暂停。\n请重新运行治理检查并申请发布复审。\n{} · {}",
+        agent_name,
+        format_timestamp(review_due_at),
+        approval_link,
+        agent_link
+    )
+}
+
+fn format_timestamp(timestamp_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(timestamp_ms)
+        .map(|value| value.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| timestamp_ms.to_string())
 }
 
 fn link(public_base_url: Option<&str>, path: &str, label: &str) -> String {
@@ -190,5 +218,21 @@ mod tests {
         assert!(text.contains("critical 风险"));
         assert!(text.contains("`tools`、`config.runtime`"));
         assert!(text.contains("`snapshot-1`"));
+    }
+
+    #[test]
+    fn review_notification_explains_pause_and_next_steps() {
+        let text = notification_text(
+            Some("https://lap.example.com"),
+            "agent-1",
+            "复审助手",
+            GovernanceNotification::ReviewDue {
+                review_due_at: 1_767_225_600_000,
+            },
+        );
+
+        assert!(text.contains("发布有效期已于 2026-01-01 00:00 UTC 到期"));
+        assert!(text.contains("新工作已暂停"));
+        assert!(text.contains("重新运行治理检查"));
     }
 }

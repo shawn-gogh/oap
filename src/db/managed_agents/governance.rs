@@ -6,6 +6,9 @@ use crate::{
     errors::GatewayError,
 };
 
+mod reviews;
+pub use reviews::{mark_due_for_review, publish};
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct AgentGovernanceRow {
     pub agent_id: String,
@@ -25,6 +28,8 @@ pub struct AgentGovernanceRow {
     pub previous_published_revision: Option<i32>,
     pub publish_approval_id: Option<String>,
     pub last_health_at: Option<i64>,
+    pub published_at: Option<i64>,
+    pub review_due_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -308,34 +313,6 @@ pub async fn reject_publish(
     .fetch_one(pool)
     .await
     .map_err(GatewayError::Database)
-}
-
-pub async fn publish(
-    pool: &PgPool,
-    agent_id: &str,
-    revision: i32,
-) -> Result<AgentGovernanceRow, GatewayError> {
-    sqlx::query_as::<_, AgentGovernanceRow>(
-        r#"
-        UPDATE "LiteLLM_ManagedAgentGovernanceTable"
-        SET lifecycle_status = 'published', runtime_health = 'healthy',
-            previous_published_revision = published_revision,
-            published_revision = $2, publish_approval_id = NULL, updated_at = $3
-        WHERE agent_id = $1 AND lifecycle_status = 'pending_approval'
-        RETURNING *
-        "#,
-    )
-    .bind(agent_id)
-    .bind(revision)
-    .bind(now_ms())
-    .fetch_optional(pool)
-    .await
-    .map_err(GatewayError::Database)?
-    .ok_or_else(|| {
-        GatewayError::BadRequest(
-            "该智能体当前不处于待审批状态，发布审批可能已过期或被撤销。".to_owned(),
-        )
-    })
 }
 
 pub async fn mark_rolled_back(
