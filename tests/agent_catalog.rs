@@ -31,6 +31,9 @@ async fn catalog_searches_safe_metadata_and_reports_real_consumers() {
         json!(["read"]),
     )
     .await;
+    // Someone else already uses the unavailable agent. The consumer caller has
+    // no grant to it, so this roster must NOT be disclosed to them.
+    record_use(&fixture, &unavailable_id, "catalog-owner").await;
     create_hidden_agents(&fixture).await;
 
     let response = catalog(&fixture, &consumer_key, "/api/agent-catalog").await;
@@ -122,6 +125,20 @@ async fn grant_and_record_use(fixture: &AppFixture, agent_id: &str) {
     .unwrap();
 }
 
+async fn record_use(fixture: &AppFixture, agent_id: &str, owner_id: &str) {
+    litellm_rust::db::managed_agents::sessions::repository::create(
+        &fixture.pool,
+        "opencode",
+        Some(agent_id),
+        "他人消费会话",
+        Some("UTC"),
+        Some(owner_id),
+        None,
+    )
+    .await
+    .unwrap();
+}
+
 async fn create_hidden_agents(fixture: &AppFixture) {
     let governed = create_catalog_agent(
         fixture,
@@ -184,6 +201,11 @@ fn assert_catalog_visibility(catalog: &Value, visible_id: &str, unavailable_id: 
         .find(|agent| agent["id"] == unavailable_id)
         .unwrap();
     assert_eq!(unavailable["can_use"], false);
+    // The unavailable agent has a real consumer, but the caller has no grant to
+    // it: its roster and usage aggregates must not leak to them.
+    assert_eq!(unavailable["consumers"].as_array().unwrap().len(), 0);
+    assert_eq!(unavailable["session_count"], 0);
+    assert!(unavailable["last_used_at"].is_null());
 }
 
 async fn assert_invalid_tags_are_rejected(fixture: &AppFixture, agent_id: &str) {

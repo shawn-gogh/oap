@@ -35,7 +35,9 @@ pub async fn get(
         .await?
         .ok_or_else(|| GatewayError::NotFound(format!("agent {agent_id}")))?;
     super::assert_agent_access(&auth, &agent)?;
-    let events =
-        audit::list_for_target(pool, "agent", &agent_id, query.limit.unwrap_or(100)).await?;
+    // Clamp the caller-supplied limit so a single request can't force an
+    // unbounded audit dump (and repeated calls can't amplify it).
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let events = audit::list_for_target(pool, "agent", &agent_id, limit).await?;
     Ok(Json(TimelineResponse { events }))
 }

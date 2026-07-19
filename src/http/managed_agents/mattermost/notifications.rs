@@ -81,6 +81,10 @@ fn notification_text(
         &format!("/agents/detail/?id={agent_id}"),
         "查看智能体",
     );
+    // The agent name is owner-controlled free text that lands in a shared
+    // operator channel; neutralize Markdown / @mentions before interpolating.
+    let agent_name = sanitize_markdown(agent_name);
+    let agent_name = agent_name.as_str();
     match event {
         GovernanceNotification::PublishRequested {
             approval_id,
@@ -141,6 +145,31 @@ fn review_due_text(
         approval_link,
         agent_link
     )
+}
+
+/// Neutralizes owner-controlled text before it is interpolated into the
+/// Markdown notification body posted to a shared operator channel. Collapses
+/// whitespace to a single line, backslash-escapes Markdown punctuation, and
+/// breaks `@` mention tokens with a zero-width space so a crafted agent name
+/// can't inject formatting or ping the whole channel (`@channel`/`@here`).
+fn sanitize_markdown(value: &str) -> String {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::with_capacity(collapsed.len() + 8);
+    for ch in collapsed.chars() {
+        match ch {
+            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '.'
+            | '!' | '|' | '>' | '~' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '@' => {
+                out.push('@');
+                out.push('\u{200b}');
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn format_timestamp(timestamp_ms: i64) -> String {
@@ -218,6 +247,27 @@ mod tests {
         assert!(text.contains("critical 风险"));
         assert!(text.contains("`tools`、`config.runtime`"));
         assert!(text.contains("`snapshot-1`"));
+    }
+
+    #[test]
+    fn agent_name_markdown_and_mentions_are_neutralized() {
+        let text = notification_text(
+            None,
+            "agent-1",
+            "@channel **紧急**",
+            GovernanceNotification::HealthDegraded {
+                consecutive_failures: 1,
+                detail: "x",
+            },
+        );
+
+        // The raw mention token and bold markers must not survive verbatim.
+        assert!(!text.contains("@channel"));
+        assert!(!text.contains("**紧急**"));
+        // The @ still renders but is broken by a zero-width space, and the
+        // asterisks are backslash-escaped.
+        assert!(text.contains("@\u{200b}channel"));
+        assert!(text.contains("\\*\\*紧急\\*\\*"));
     }
 
     #[test]

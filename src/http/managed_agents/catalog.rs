@@ -71,7 +71,18 @@ pub async fn list(
                 || source.owner_id.as_deref() == Some(auth.user_id.as_str())
                 || granted.iter().any(|id| id == &source.id);
             let access = access_label(&auth.user_id, auth.is_admin, &source, can_use);
-            let agent_consumers = consumers.get(&source.id).cloned().unwrap_or_default();
+            // The consumer roster (who uses this agent, how often, when last)
+            // is only disclosed for agents the caller may actually use.
+            // Attaching it to agents the caller has no grant to would leak,
+            // tenant-wide, which users consume which agents — a cross-owner
+            // privacy disclosure. Unavailable agents still surface their
+            // public metadata (name/description/capabilities) for discovery,
+            // just without the roster and usage aggregates.
+            let agent_consumers = if can_use {
+                consumers.get(&source.id).cloned().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             catalog_agent(source, &skills, agent_consumers, can_use, access)
         })
         .collect::<Vec<_>>();

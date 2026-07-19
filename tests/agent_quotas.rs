@@ -19,6 +19,7 @@ async fn agent_budget_rate_and_concurrency_are_enforced_against_postgres() {
     assert_rate_rejected(&fixture, &agent_id, &session_id).await;
     seed_monthly_spend(&fixture, &agent_id).await;
     assert_budget_rejected(&fixture, &agent_id, &session_id).await;
+    assert_budget_rejected_via_proxy(&fixture, &session_id).await;
     assert_metrics_and_audit(&fixture, &agent_id).await;
 }
 
@@ -118,6 +119,33 @@ async fn assert_budget_rejected(fixture: &AppFixture, agent_id: &str, session_id
     assert_eq!(response.0, StatusCode::TOO_MANY_REQUESTS);
     assert!(response.1.contains("monthly_budget"));
     assert!(response.1.contains("重置时间"));
+}
+
+/// Regression: the monthly budget must also gate the raw model-proxy path
+/// (`/v1/messages`), which attributes spend to the agent via `x-lap-session-id`.
+/// Before this was enforced, a caller could bypass `budget_usd_monthly` entirely
+/// by calling the proxy directly instead of going through the session/prompt
+/// flow. The budget check runs before model routing, so no upstream model is
+/// needed for this assertion.
+async fn assert_budget_rejected_via_proxy(fixture: &AppFixture, session_id: &str) {
+    let body = support::request_with_headers(
+        fixture.app.clone(),
+        "POST",
+        "/v1/messages",
+        json!({
+            "model": "test-model",
+            "messages": [{ "role": "user", "content": "hi" }],
+        })
+        .to_string(),
+        "application/json",
+        &[("x-lap-session-id", session_id.to_owned())],
+        StatusCode::TOO_MANY_REQUESTS,
+    )
+    .await;
+    assert!(
+        body.contains("monthly_budget"),
+        "proxy path must enforce the agent monthly budget, got: {body}"
+    );
 }
 
 async fn assert_metrics_and_audit(fixture: &AppFixture, agent_id: &str) {

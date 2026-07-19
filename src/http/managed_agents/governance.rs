@@ -223,6 +223,7 @@ pub async fn apply_publish_approval(
     {
         return Err(GatewayError::BadRequest("发布审批已过期。".to_owned()));
     }
+    // SoD note: owner==importer only holds while owner_id is immutable post-import.
     if current.owner_id == actor
         && crate::db::managed_agents::settings::repository::enforce_separation_of_duties(pool)
             .await?
