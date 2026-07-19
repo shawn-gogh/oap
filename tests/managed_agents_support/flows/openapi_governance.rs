@@ -55,8 +55,13 @@ pub async fn exercise_openapi_governance(fixture: &AppFixture) {
     assert_eq!(agent["status"], "draft");
     assert_eq!(agent["config"]["source"]["provider"], "openapi");
 
-    // Governance test passes: openapi_rest is conformant and every other check
-    // is non-failing (byo credential is exists_only, source is in sync).
+    assert_governance_passes(fixture, &agent_id).await;
+    publish_and_activate(fixture, &agent_id).await;
+}
+
+/// The governance test must pass: openapi_rest is conformant and every other
+/// check is non-failing (byo credential is exists_only, source is in sync).
+async fn assert_governance_passes(fixture: &AppFixture, agent_id: &str) {
     let tested = request_json(
         fixture.app.clone(),
         "POST",
@@ -80,8 +85,6 @@ pub async fn exercise_openapi_governance(fixture: &AppFixture) {
     );
     // Execution-smoke is A2A-only; OpenAPI must not fabricate one.
     assert!(checks.iter().all(|c| c["id"] != "execution_smoke"));
-
-    publish_and_activate(fixture, &agent_id).await;
 }
 
 /// Request publish, approve, and activate a tested agent. Separation of duties
