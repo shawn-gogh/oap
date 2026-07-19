@@ -116,8 +116,10 @@ Dify 与 OpenAPI 均有端到端治理流程测试(discover→import→治理→
      + 确认的输入/输出映射),端到端测试含真实执行往返。
    - **CrewAI(已完成)**：`invoke_crewai` 异步 `POST /kickoff` + 轮询 `GET /status/{id}`
      至终态(带取消/60s 超时),端到端测试含真实 kickoff/轮询往返。
-   - **OpenAI Assistants / ACP(暂只做 UX 诚实)**：前者处于迁移期、后者实现差异大;
-     它们保持 `partial`、不可发布,由 `federated_adapter_governance.rs` 锁定该行为。
+   - **OpenAI Assistants / ACP(已做 UX 诚实)**：前者处于迁移期、后者实现差异大,暂不建桥;
+     它们保持 `partial`、不可发布。导入建议与治理测试失败详情现明确告知"仅可编目发现、
+     暂不支持平台托管执行",不再误导用户以为确认映射即可执行;由
+     `federated_adapter_governance.rs` 锁定该行为。
 
 ### 尚未处理（技术债/后续）
 

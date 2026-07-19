@@ -50,6 +50,15 @@ async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
         previewed["items"][0]["can_import"], true,
         "{provider} preview must allow import: {previewed}"
     );
+    // The preview advisory must be honest that this adapter is catalog-only.
+    let issues = previewed["items"][0]["issues"].as_array().unwrap();
+    assert!(
+        issues.iter().any(|issue| issue["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("仅可编目发现")),
+        "{provider} preview must flag catalog-only: {issues:?}"
+    );
 
     let imported = import(fixture, provider, &server, &external_agent).await;
     assert_eq!(imported["results"][0]["status"], "imported", "{provider}");
@@ -96,9 +105,14 @@ async fn assert_governance_gate_blocks(fixture: &AppFixture, provider: &str, age
         .find(|c| c["id"] == "runtime_contract")
         .unwrap();
     assert_eq!(contract["verdict"], "failed", "{provider}: {contract}");
+    // The failure must be honest about *why*: no execution bridge, catalog-only
+    // — not a cryptic contract status.
     assert!(
-        contract["detail"].as_str().unwrap().contains("partial"),
-        "{provider}: {contract}"
+        contract["detail"]
+            .as_str()
+            .unwrap()
+            .contains("暂不支持平台托管执行"),
+        "{provider} must explain catalog-only: {contract}"
     );
     // Execution-smoke is A2A-only; a partial adapter must not fabricate one.
     assert!(

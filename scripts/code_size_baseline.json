@@ -15,7 +15,7 @@
     "src/http/managed_agents/import.rs": 794,
     "src/http/managed_agents/import_files.rs": 772,
     "src/http/managed_agents/inbox/approvals.rs": 461,
-    "src/http/managed_agents/registry/preflight.rs": 939,
+    "src/http/managed_agents/registry/preflight.rs": 956,
     "src/http/managed_agents/routes.rs": 366,
     "src/http/managed_agents/source_management.rs": 1314,
     "src/http/managed_agents/tasks/mod.rs": 697,
