@@ -57,7 +57,7 @@ pub struct AppFixture {
 
 impl AppFixture {
     pub async fn new() -> Option<Self> {
-        let database_url = test_database_url()?;
+        let database_url = isolated_database_url().await?;
         let pool = managed_agents_pool::connect(&database_url).await.unwrap();
         managed_agents_pool::migrate(&pool).await.unwrap();
         reset_tables(&pool).await;
@@ -73,7 +73,7 @@ impl AppFixture {
     }
 
     pub async fn new_with_litellm_key_info() -> Option<Self> {
-        let database_url = test_database_url()?;
+        let database_url = isolated_database_url().await?;
         let pool = managed_agents_pool::connect(&database_url).await.unwrap();
         managed_agents_pool::migrate(&pool).await.unwrap();
         reset_tables(&pool).await;
@@ -102,16 +102,84 @@ fn test_database_url() -> Option<String> {
     let database_url = std::env::var("TEST_DATABASE_URL")
         .ok()
         .filter(|url| !url.trim().is_empty())?;
-    let database_name = database_url
-        .split('?')
-        .next()
-        .and_then(|url| url.rsplit('/').next())
-        .unwrap_or_default();
+    let database_name = database_name(&database_url);
     assert!(
         database_name.ends_with("_test"),
         "TEST_DATABASE_URL must reference a database whose name ends with _test"
     );
     Some(database_url)
+}
+
+fn database_name(url: &str) -> &str {
+    url.split('?')
+        .next()
+        .and_then(|url| url.rsplit('/').next())
+        .unwrap_or_default()
+}
+
+/// Resolves the database this test binary should use. `cargo test` runs test
+/// binaries in parallel against one `TEST_DATABASE_URL`, and `DB_TEST_LOCK` +
+/// `reset_tables` only serialize/clean *within* a binary — so a `reset_tables`
+/// in one binary can truncate another binary's tables mid-test. To isolate,
+/// each binary provisions its own fresh database (named from the binary's
+/// identity) once per process. If the test role can't `CREATE DATABASE` (e.g.
+/// a locked-down local setup), this falls back to the shared base database —
+/// no worse than before.
+async fn isolated_database_url() -> Option<String> {
+    let base = test_database_url()?;
+    static PER_BINARY: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+    let resolved = PER_BINARY
+        .get_or_init(|| async { provision_per_binary_db(&base).await })
+        .await;
+    Some(resolved.clone().unwrap_or(base))
+}
+
+async fn provision_per_binary_db(base: &str) -> Option<String> {
+    use sqlx::Connection;
+    let base_db = database_name(base);
+    let name = per_binary_db_name(base_db);
+    if name == base_db {
+        return None;
+    }
+    let mut conn = sqlx::PgConnection::connect(base).await.ok()?;
+    // Best-effort drop so re-runs start clean; ignore failure (may not exist).
+    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
+        .execute(&mut conn)
+        .await;
+    let created = sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+        .execute(&mut conn)
+        .await
+        .is_ok();
+    let _ = conn.close().await;
+    created.then(|| replace_database_name(base, base_db, &name))
+}
+
+fn per_binary_db_name(base_db: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let exe = std::env::current_exe().ok();
+    let stem = exe
+        .as_ref()
+        .and_then(|path| path.file_stem())
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("bin");
+    // Strip cargo's per-build hash suffix so the name is stable across builds.
+    let target = stem.rsplit_once('-').map_or(stem, |(name, _)| name);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    target.hash(&mut hasher);
+    format!("{base_db}_{:08x}", hasher.finish() as u32)
+}
+
+fn replace_database_name(base: &str, base_db: &str, new_db: &str) -> String {
+    let (head, query) = match base.split_once('?') {
+        Some((head, query)) => (head, Some(query)),
+        None => (base, None),
+    };
+    let prefix = head.rsplit_once('/').map_or(head, |(prefix, _)| prefix);
+    debug_assert_eq!(database_name(head), base_db);
+    match query {
+        Some(query) => format!("{prefix}/{new_db}?{query}"),
+        None => format!("{prefix}/{new_db}"),
+    }
 }
 
 fn build_state(

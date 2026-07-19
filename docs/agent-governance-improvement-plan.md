@@ -124,8 +124,11 @@ Dify 与 OpenAPI 均有端到端治理流程测试(discover→import→治理→
 ### 尚未处理（技术债/后续）
 
 - 预算彻底闭合需"调用前成本预估 + 在途预留"两段式(当前仅逐次复检收敛)。
-- 测试隔离：共享测试库 + 全局治理设置(如 `separation_of_duties`)在测试间会污染，
-  已两次引发 CI 假阳性；应每个 fixture 显式重置治理设置。
+- **测试隔离(已完成)**：`cargo test` 并行跑各测试二进制、共享一个 `TEST_DATABASE_URL`,
+  而 `DB_TEST_LOCK` + `reset_tables` 只隔离二进制内部,导致跨二进制 `reset_tables` 会截断
+  他人表(曾多次引发假阳性)。现每个测试二进制按自身身份派生并创建独立数据库
+  (`AppFixture` 的 `isolated_database_url`),角色无 CREATEDB 权限时回退共享库;
+  已用 8 个二进制并发跑验证互不污染。
 - 前端面板(`metrics-panel`/`quota-panel`/`catalog/page`/`revision-diff-panel`)
   仅审过后端 authz，前端交互未深查。
 - 巨型文件(`managed_agents_api.rs` 2854、`preflight.rs` 939、`source_management.rs`
