@@ -76,6 +76,7 @@ pub async fn me(
     Ok(Json(json!({
         "id": auth.user_id,
         "is_admin": auth.is_admin,
+        "role": auth.role,
         "can_manage_groups": can_manage_groups,
         "display_name": display_name,
         "email": user.and_then(|row| row.email),

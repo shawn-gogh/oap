@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import subprocess
 import sys
@@ -13,6 +15,7 @@ from pathlib import Path
 MAX_FILE_LINES = 300
 MAX_FUNCTION_LOC = 50
 FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+DEFAULT_BASELINE = Path(__file__).with_name("code_size_baseline.json")
 
 
 @dataclass
@@ -21,6 +24,12 @@ class Function:
     start_line: int
     end_line: int
     loc: int
+
+
+@dataclass
+class Baseline:
+    files: dict[str, int]
+    functions: dict[str, int]
 
 
 def tracked_rust_files() -> list[Path]:
@@ -180,30 +189,101 @@ def functions_in_file(path: Path) -> list[Function]:
     return functions
 
 
+def function_entries(path: Path) -> list[tuple[str, Function]]:
+    occurrences: dict[str, int] = {}
+    entries = []
+    for function in functions_in_file(path):
+        occurrence = occurrences.get(function.name, 0) + 1
+        occurrences[function.name] = occurrence
+        entries.append((f"{path}::{function.name}::{occurrence}", function))
+    return entries
+
+
+def current_baseline() -> Baseline:
+    files = {}
+    functions = {}
+    for path in tracked_rust_files():
+        line_count = len(path.read_text().splitlines())
+        if line_count > MAX_FILE_LINES:
+            files[str(path)] = line_count
+        for key, function in function_entries(path):
+            if function.loc > MAX_FUNCTION_LOC:
+                functions[key] = function.loc
+    return Baseline(files=files, functions=functions)
+
+
+def load_baseline(path: Path) -> Baseline:
+    if not path.exists():
+        return Baseline(files={}, functions={})
+    value = json.loads(path.read_text())
+    if value.get("version") != 1:
+        raise ValueError(f"unsupported code-size baseline version in {path}")
+    return Baseline(
+        files={str(key): int(limit) for key, limit in value.get("files", {}).items()},
+        functions={
+            str(key): int(limit) for key, limit in value.get("functions", {}).items()
+        },
+    )
+
+
+def write_baseline(path: Path, baseline: Baseline) -> None:
+    value = {
+        "version": 1,
+        "files": dict(sorted(baseline.files.items())),
+        "functions": dict(sorted(baseline.functions.items())),
+    }
+    path.write_text(json.dumps(value, indent=2, sort_keys=False) + "\n")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
+    parser.add_argument("--write-baseline", action="store_true")
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
+    current = current_baseline()
+    if args.write_baseline:
+        write_baseline(args.baseline, current)
+        print(
+            f"Wrote {args.baseline} with {len(current.files)} file and "
+            f"{len(current.functions)} function exceptions."
+        )
+        return 0
+
+    try:
+        baseline = load_baseline(args.baseline)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"Code size baseline error: {error}")
+        return 1
+
     failures: list[str] = []
 
     for path in tracked_rust_files():
         line_count = len(path.read_text().splitlines())
-        if line_count > MAX_FILE_LINES:
-            failures.append(f"{path}: {line_count} lines exceeds {MAX_FILE_LINES}")
+        allowed_lines = baseline.files.get(str(path), MAX_FILE_LINES)
+        if line_count > allowed_lines:
+            failures.append(f"{path}: {line_count} lines exceeds allowed {allowed_lines}")
 
-        for function in functions_in_file(path):
-            if function.loc > MAX_FUNCTION_LOC:
+        for key, function in function_entries(path):
+            allowed_loc = baseline.functions.get(key, MAX_FUNCTION_LOC)
+            if function.loc > allowed_loc:
                 failures.append(
                     f"{path}:{function.start_line} {function.name} has "
-                    f"{function.loc} LOC exceeds {MAX_FUNCTION_LOC}"
+                    f"{function.loc} LOC exceeds allowed {allowed_loc}"
                 )
 
     if failures:
-        print("Code size limits failed:")
+        print("Code size limits failed with new or increased violations:")
         for failure in failures:
             print(f"  - {failure}")
         return 1
 
     print(
-        "Code size limits passed: "
-        f"Rust files <= {MAX_FILE_LINES} lines and functions <= {MAX_FUNCTION_LOC} LOC."
+        f"Code size limits passed with {len(current.files)} file and "
+        f"{len(current.functions)} function baseline exceptions."
     )
     return 0
 

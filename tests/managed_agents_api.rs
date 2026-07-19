@@ -1095,7 +1095,7 @@ async fn imported_agent_governance_publish_and_rollback_against_postgres() {
         "POST",
         &format!("/api/approvals/{approval_id}/accept"),
         Some(json!({ "arguments": null })),
-        axum::http::StatusCode::NOT_FOUND,
+        axum::http::StatusCode::BAD_REQUEST,
     )
     .await;
     request_json(
@@ -2579,17 +2579,14 @@ async fn egress_whitelist_and_unlisted_egress_flow_against_postgres() {
     assert_eq!(approvals2.len(), 1);
     assert_eq!(approvals2[0]["id"], approval_id);
     assert_eq!(approvals2[0]["kind"], "data_egress");
-    assert_eq!(approvals2[0]["required_role"], "admin");
+    assert_eq!(approvals2[0]["required_role"], "approver");
 
     let egress_item =
         litellm_rust::db::managed_agents::inbox::repository::get(&fixture.pool, approval_id)
             .await
             .unwrap()
             .unwrap();
-    let non_admin = litellm_rust::proxy::auth::master_key::AuthContext {
-        user_id: "admin".to_owned(),
-        is_admin: false,
-    };
+    let non_admin = litellm_rust::proxy::auth::master_key::AuthContext::user("admin");
     assert!(
         !litellm_rust::http::managed_agents::inbox::approvals::can_decide(
             &fixture.pool,

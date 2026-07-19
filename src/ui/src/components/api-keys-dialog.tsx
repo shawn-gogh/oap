@@ -251,9 +251,15 @@ export function ApiKeysPanel() {
                 onChange={(event) => setRole(event.target.value)}
                 className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
               >
-                <option value="user">user</option>
-                <option value="admin">admin</option>
+                <option value="user">普通使用者</option>
+                <option value="importer">导入者</option>
+                <option value="approver">审批者</option>
+                <option value="operator">运维者</option>
+                <option value="admin">系统管理员</option>
               </select>
+              <p className="text-xs text-muted-foreground">
+                导入者负责接入外部智能体；审批者负责发布和数据外发审批；运维者负责健康检查、暂停和退役。
+              </p>
               {formError && (
                 <p className="text-sm text-destructive">{formError}</p>
               )}

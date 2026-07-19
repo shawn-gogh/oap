@@ -10,6 +10,7 @@ import {
   FileText,
   Inbox,
   KeyRound,
+  Library,
   MessageCircle,
   PanelLeft,
   PanelLeftClose,
@@ -292,6 +293,13 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           icon: Inbox,
           active: (path) => path.startsWith("/inbox"),
           badge: inboxCount,
+          group: "工作台",
+        },
+        {
+          label: "智能体目录",
+          href: "/catalog/",
+          icon: Library,
+          active: (path) => path.startsWith("/catalog"),
           group: "工作台",
         },
         {

@@ -27,6 +27,9 @@ pub async fn create(
     if !auth.is_admin || input.owner_id.trim().is_empty() {
         input.owner_id = auth.user_id.clone();
     }
+    if let Some(config) = input.config.as_ref() {
+        crate::db::managed_agents::quotas::schema::AgentQuotaConfig::from_config(config)?;
+    }
     let row = repository::create(pool, input).await?;
     // Best-effort: a failed snapshot must not fail the create itself.
     let _ = crate::db::managed_agents::registry::revisions::record(pool, &row, Some(&auth.user_id))

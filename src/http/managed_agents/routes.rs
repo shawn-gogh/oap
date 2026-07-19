@@ -8,6 +8,8 @@ use axum::{
 
 use crate::{channels::webhook, proxy::state::AppState};
 
+mod agent_observability;
+
 // Bundle/opencode-files imports carry a base64-encoded zip in the JSON body,
 // which inflates the payload ~33% over the raw file size (plus the
 // MAX_BUNDLE_BYTES uncompressed-size guard in import_files.rs already caps
@@ -28,6 +30,7 @@ pub fn router() -> Router<Arc<AppState>> {
 
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/agent-catalog", get(super::catalog::list))
         .route(
             "/api/identity-mappings",
             get(super::identity_mappings::list),
@@ -153,10 +156,7 @@ fn agent_routes() -> Router<Arc<AppState>> {
             "/api/agents/{agent_id}/tasks/{task_id}/cancel",
             post(super::tasks::cancel),
         )
-        .route(
-            "/api/agents/{agent_id}/revisions",
-            get(super::registry::revisions::list),
-        )
+        .merge(agent_observability::routes())
         .route(
             "/api/agents/{agent_id}/governance",
             get(super::governance::get),

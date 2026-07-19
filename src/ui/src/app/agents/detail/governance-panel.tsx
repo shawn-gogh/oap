@@ -55,6 +55,7 @@ import {
   type AgentPreflightReport,
   type AgentSourceOverview,
 } from "@/lib/api";
+import { useCurrentTime } from "@/lib/use-current-time";
 import type { Agent } from "@/lib/types";
 
 const PREFLIGHT_VERDICT_META: Record<string, { label: string; className: string }> = {
@@ -126,10 +127,11 @@ function deriveGovernanceUx(input: {
   agentStatus: string;
   governance: AgentGovernanceResponse["governance"];
   currentRevision: number;
+  evalGate: AgentGovernanceResponse["eval_gate"];
   hasDriftCandidate: boolean;
   healthFresh: boolean;
 }): GovernanceUx {
-  const { agentStatus, governance, currentRevision, hasDriftCandidate, healthFresh } = input;
+  const { agentStatus, governance, currentRevision, evalGate, hasDriftCandidate, healthFresh } = input;
   const detail = governance.health_detail?.trim() || null;
   switch (governance.lifecycle_status) {
     case "retired":
@@ -158,6 +160,13 @@ function deriveGovernanceUx(input: {
     };
   }
   switch (governance.lifecycle_status) {
+    case "review_due":
+      return {
+        tone: "warn",
+        status: "发布已到期，待复审",
+        reason: "新工作已暂停。重新运行治理检查，通过后申请发布复审。",
+        primary: { action: "test", label: "开始复审检查" },
+      };
     case "pending_approval":
       return {
         tone: "warn",
@@ -195,10 +204,20 @@ function deriveGovernanceUx(input: {
       };
     case "tested":
       if (governance.tested_revision === currentRevision) {
+        if (!evalGate.passed) {
+          return {
+            tone: "warn",
+            status: "待黄金评估",
+            reason: evalGate.message,
+            primary: null,
+          };
+        }
         return {
           tone: "ok",
           status: "检查通过",
-          reason: "当前版本已通过运行检查，可以申请发布（需管理员审批）。",
+          reason: evalGate.required
+            ? "当前版本已通过运行检查和黄金用例回归，可以申请发布（需管理员审批）。"
+            : "当前版本已通过运行检查；尚未定义黄金用例，申请发布时会给出提示。",
           primary: { action: "publish", label: "申请发布" },
         };
       }
@@ -240,6 +259,7 @@ export function ManagedGovernancePanel({
   onAgentChange: (agent: Agent) => void;
   onReport: (report: AgentPreflightReport) => void;
 }) {
+  const currentTime = useCurrentTime();
   const confirmAction = useConfirm();
   const [busy, setBusy] = useState<"test" | "publish" | "rollback" | "sync" | "conformance" | "health" | "accept" | "reject" | "stop" | "retire" | "activate" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -324,8 +344,13 @@ export function ManagedGovernancePanel({
     setError(null);
     try {
       const next = await requestAgentPublish(governance.agent_id);
-      onChange({ ...response, governance: next.governance });
+      onChange({
+        ...response,
+        governance: next.governance,
+        eval_gate: next.eval_gate,
+      });
       toast.success("发布申请已提交，等待管理员审批");
+      if (next.warnings[0]) toast.warning(next.warnings[0]);
     } catch (e) {
       setError(apiErrorMessage(e, "提交发布申请失败"));
     } finally {
@@ -367,10 +392,7 @@ export function ManagedGovernancePanel({
     try {
       const next = await rollbackAgent(governance.agent_id);
       onAgentChange(next.agent);
-      onChange({
-        governance: next.governance,
-        current_revision: next.governance.published_revision ?? response.current_revision,
-      });
+      onChange(await getAgentGovernance(governance.agent_id));
       toast.success("智能体已回滚到上一个已发布版本");
     } catch (e) {
       setError(apiErrorMessage(e, "回滚失败"));
@@ -454,18 +476,21 @@ export function ManagedGovernancePanel({
 
   const published = ["published", "rolled_back"].includes(governance.lifecycle_status);
   const healthFresh =
+    currentTime != null &&
     governance.last_health_at != null &&
-    Date.now() - governance.last_health_at < HEALTH_FRESHNESS_MS;
+    currentTime - governance.last_health_at < HEALTH_FRESHNESS_MS;
   const ux = deriveGovernanceUx({
     agentStatus,
     governance,
     currentRevision: response.current_revision,
+    evalGate: response.eval_gate,
     hasDriftCandidate: source?.candidate_snapshot != null,
     healthFresh,
   });
   const stages = [
     { label: "导入", done: true },
     { label: "测试", done: testedCurrentRevision },
+    { label: "回归", done: response.eval_gate.passed },
     { label: "发布", done: published },
     // Authorized means someone actually holds a grant — publishing alone
     // grants nobody anything.
@@ -484,7 +509,7 @@ export function ManagedGovernancePanel({
         <p className="mt-1 text-xs text-muted-foreground">导入、测试、审批发布、授权和运行监控使用同一版本链路。</p>
       </div>
       <Card className="overflow-hidden">
-        <div className="grid grid-cols-5 border-b border-border bg-muted/20">
+        <div className="grid grid-cols-6 border-b border-border bg-muted/20">
           {stages.map((stage, index) => (
             <div key={stage.label} className="relative px-2 py-3 text-center">
               <div className={`mx-auto mb-1 flex size-6 items-center justify-center rounded-full text-xs font-semibold ${stage.done ? "bg-emerald-500 text-white" : "bg-muted text-muted-foreground"}`}>
@@ -525,7 +550,11 @@ export function ManagedGovernancePanel({
                     <Activity className="size-3.5" />运行检查
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    disabled={!testedCurrentRevision || governance.lifecycle_status === "pending_approval"}
+                    disabled={
+                      !testedCurrentRevision ||
+                      !response.eval_gate.passed ||
+                      governance.lifecycle_status === "pending_approval"
+                    }
                     onSelect={() => void requestPublish()}
                   >
                     <GitPullRequest className="size-3.5" />申请发布
@@ -577,6 +606,24 @@ export function ManagedGovernancePanel({
             <dd>
               本地 revision {response.current_revision}
               {governance.published_revision != null && ` · 已发布 revision ${governance.published_revision}`}
+            </dd>
+            <dt className="text-muted-foreground">发布有效期</dt>
+            <dd>
+              {governance.review_due_at != null
+                ? `截至 ${new Date(governance.review_due_at).toLocaleString()}`
+                : "下次发布后开始计算"}
+            </dd>
+            <dt className="text-muted-foreground">黄金回归</dt>
+            <dd>
+              <span
+                className={
+                  response.eval_gate.passed
+                    ? "text-emerald-700 dark:text-emerald-400"
+                    : "text-amber-700 dark:text-amber-400"
+                }
+              >
+                {response.eval_gate.message}
+              </span>
             </dd>
             <dt className="text-muted-foreground">运行凭据</dt>
             <dd>

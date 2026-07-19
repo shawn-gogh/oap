@@ -43,6 +43,58 @@ pub async fn set_outbound_domain_whitelist(
 }
 
 pub const GUARDIAN_MODEL_KEY: &str = "guardian_model";
+pub const SEPARATION_OF_DUTIES_KEY: &str = "governance_separation_of_duties";
+pub const REVIEW_PERIOD_DAYS_KEY: &str = "governance_review_period_days";
+pub const DEFAULT_REVIEW_PERIOD_DAYS: i32 = 90;
+
+pub async fn enforce_separation_of_duties(pool: &PgPool) -> Result<bool, GatewayError> {
+    Ok(get_value(pool, SEPARATION_OF_DUTIES_KEY)
+        .await?
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "false" | "0" | "off"
+            )
+        })
+        .unwrap_or(true))
+}
+
+pub async fn set_separation_of_duties(
+    pool: &PgPool,
+    enabled: bool,
+    actor: &str,
+) -> Result<bool, GatewayError> {
+    upsert_value(
+        pool,
+        SEPARATION_OF_DUTIES_KEY,
+        if enabled { "true" } else { "false" },
+        actor,
+    )
+    .await?;
+    Ok(enabled)
+}
+
+pub async fn review_period_days(pool: &PgPool) -> Result<i32, GatewayError> {
+    Ok(get_value(pool, REVIEW_PERIOD_DAYS_KEY)
+        .await?
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|days| (1..=3650).contains(days))
+        .unwrap_or(DEFAULT_REVIEW_PERIOD_DAYS))
+}
+
+pub async fn set_review_period_days(
+    pool: &PgPool,
+    days: i32,
+    actor: &str,
+) -> Result<i32, GatewayError> {
+    if !(1..=3650).contains(&days) {
+        return Err(GatewayError::BadRequest(
+            "复审周期必须在 1 到 3650 天之间。".to_owned(),
+        ));
+    }
+    upsert_value(pool, REVIEW_PERIOD_DAYS_KEY, &days.to_string(), actor).await?;
+    Ok(days)
+}
 
 /// Model used for the Guardian reviewer's LLM calls. Falls back to the
 /// acting session's own agent model when unset (see src/guardian/mod.rs) —

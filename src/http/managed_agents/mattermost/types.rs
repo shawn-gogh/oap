@@ -19,6 +19,7 @@ pub(crate) struct MattermostAgentConfig {
     /// the bot's own posts — otherwise a reply would re-trigger the
     /// outgoing webhook and the agent would talk to itself forever.
     pub bot_user_id: Option<String>,
+    pub notification_channel_id: Option<String>,
     pub status: Option<String>,
     pub connected_at: Option<i64>,
 }

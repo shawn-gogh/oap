@@ -1,4 +1,6 @@
+pub mod audit_timeline;
 pub mod byo_credentials;
+pub mod catalog;
 pub mod eval_runs;
 pub mod evolution;
 pub mod governance;
@@ -7,16 +9,21 @@ pub mod identity_mappings;
 pub mod import;
 pub mod import_files;
 mod import_types;
+mod import_validation;
 pub mod improvements;
 pub mod inbox;
 pub mod mattermost;
 pub mod memory;
+pub mod metrics;
+mod publish_gate;
+pub(crate) mod quota_enforcement;
 pub mod registry;
 pub mod routes;
 pub mod routines;
 pub mod rules;
 pub mod runs;
 pub mod skills;
+mod source_alerts;
 pub mod source_management;
 pub mod source_scheduler;
 pub mod tasks;
@@ -53,6 +60,23 @@ pub(crate) fn assert_agent_access(
     } else {
         Err(GatewayError::NotFound(format!("agent {}", agent.id)))
     }
+}
+
+pub(crate) fn require_importer(auth: &AuthContext) -> Result<(), GatewayError> {
+    if auth.can_import() {
+        Ok(())
+    } else {
+        Err(GatewayError::Forbidden)
+    }
+}
+
+pub(crate) async fn authenticate_importer(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthContext, GatewayError> {
+    let auth = crate::proxy::auth::master_key::authenticate(headers, state).await?;
+    require_importer(&auth)?;
+    Ok(auth)
 }
 
 /// Like `assert_agent_access` but also satisfied by an 'edit' grant.
@@ -101,6 +125,12 @@ pub(crate) fn assert_agent_runnable(agent: &ManagedAgentRow) -> Result<(), Gatew
             agent.id
         )));
     }
+    if agent.status == "paused" {
+        return Err(GatewayError::BadRequest(format!(
+            "agent {} 已暂停，恢复运行后才能创建新任务",
+            agent.id
+        )));
+    }
     Ok(())
 }
 
@@ -134,6 +164,12 @@ pub(crate) async fn assert_agent_interactive(
             "suspended" => {
                 return Err(GatewayError::BadRequest(format!(
                     "智能体 {} 处于暂停状态（紧急停止或健康检查失败）：请先通过治理面板的\"运行检查\"确认健康后再继续会话。",
+                    agent.id
+                )));
+            }
+            "review_due" => {
+                return Err(GatewayError::BadRequest(format!(
+                    "智能体 {} 的发布有效期已到：请重新运行治理检查并完成发布复审。",
                     agent.id
                 )));
             }

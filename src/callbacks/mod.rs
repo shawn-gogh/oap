@@ -1,6 +1,8 @@
 pub mod base;
 pub mod events;
 pub mod litellm_db;
+pub mod logging_error;
+pub mod request_attribution;
 pub mod standard_logging;
 
 use std::sync::Arc;

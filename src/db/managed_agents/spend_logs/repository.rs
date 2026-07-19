@@ -23,7 +23,7 @@ pub async fn list(
           "endTime"::TEXT AS "endTime", request_duration_ms, model, model_id,
           model_group, custom_llm_provider, api_base, "user", metadata,
           cache_hit, cache_key, request_tags, end_user, requester_ip_address,
-          messages, response, session_id, status
+          messages, response, session_id, agent_id, invocation_id, purpose, status
         FROM "LiteLLM_SpendLogs"
         WHERE ($1::TEXT IS NULL OR request_id ILIKE '%' || $1 || '%' OR model ILIKE '%' || $1 || '%')
           AND ($2::TEXT IS NULL OR status = $2)
@@ -51,7 +51,7 @@ pub async fn get(pool: &PgPool, request_id: &str) -> Result<Option<SpendLogRow>,
           "endTime"::TEXT AS "endTime", request_duration_ms, model, model_id,
           model_group, custom_llm_provider, api_base, "user", metadata,
           cache_hit, cache_key, request_tags, end_user, requester_ip_address,
-          messages, response, session_id, status
+          messages, response, session_id, agent_id, invocation_id, purpose, status
         FROM "LiteLLM_SpendLogs"
         WHERE request_id = $1
         "#,

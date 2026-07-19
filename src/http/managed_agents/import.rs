@@ -8,6 +8,7 @@ use axum::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use super::import_validation::import_issues;
 use crate::db::managed_agents::harnesses;
 use crate::{
     db::{
@@ -29,16 +30,19 @@ use crate::{
         ImportPreviewItem, ImportPreviewResponse, ImportProviderResponse,
     },
     proxy::{
-        auth::master_key::{authenticate, require_any_gateway_key, AuthContext},
+        auth::master_key::{require_any_gateway_key, AuthContext},
         credential_crypto,
         state::AppState,
     },
     sdk::providers::{
         a2a_import_agents::A2A_IMPORT_AGENTS,
         acp_import_agents::ACP_IMPORT_AGENTS,
+        crewai_import_agents::CREWAI_IMPORT_AGENTS,
         dify_import_agents::DIFY_IMPORT_AGENTS,
         elastic::import_agents::ELASTIC_IMPORT_AGENTS,
         import_agents::{ImportAgentsProvider, ImportedAgent},
+        langgraph_import_agents::LANGGRAPH_IMPORT_AGENTS,
+        openai_assistants_import_agents::OPENAI_ASSISTANTS_IMPORT_AGENTS,
         openapi_import_agents::OPENAPI_IMPORT_AGENTS,
         opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
@@ -50,7 +54,7 @@ pub async fn discover(
     Path(provider_id): Path<String>,
     Json(input): Json<DiscoverAgentsRequest>,
 ) -> Result<Json<DiscoverAgentsResponse>, GatewayError> {
-    require_any_gateway_key(&headers, &state).await?;
+    super::authenticate_importer(&headers, &state).await?;
     let provider = resolve_provider(&state, &provider_id).await?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
     super::source_management::validate_connector_endpoint(&endpoint).await?;
@@ -70,7 +74,7 @@ pub async fn import(
     Path(provider_id): Path<String>,
     Json(input): Json<ImportAgentsRequest>,
 ) -> Result<(StatusCode, Json<ImportAgentsResponse>), GatewayError> {
-    let auth = authenticate(&headers, &state).await?;
+    let auth = super::authenticate_importer(&headers, &state).await?;
     if input.agents.is_empty() {
         return Err(GatewayError::InvalidJsonMessage(
             "at least one agent is required".to_owned(),
@@ -150,7 +154,7 @@ pub async fn import(
                 raw: agent.raw.clone().unwrap_or_else(|| json!({})),
             };
             let snapshot = super::source_management::record_drift_candidate(
-                pool,
+                &state,
                 &row,
                 provider,
                 &source,
@@ -316,7 +320,7 @@ pub async fn preview(
     Path(provider_id): Path<String>,
     Json(input): Json<ImportAgentsRequest>,
 ) -> Result<Json<ImportPreviewResponse>, GatewayError> {
-    authenticate(&headers, &state).await?;
+    super::authenticate_importer(&headers, &state).await?;
     let provider = resolve_provider(&state, &provider_id).await?;
     let endpoint = normalize_endpoint(&input.endpoint)?;
     super::source_management::validate_connector_endpoint(&endpoint).await?;
@@ -326,85 +330,6 @@ pub async fn preview(
         .map(|agent| preview_item(provider, &endpoint, agent))
         .collect();
     Ok(Json(ImportPreviewResponse { items }))
-}
-
-/// Issue detection shared by `preview` and `import`: the same rules that mark
-/// a preview item non-importable must also be enforced at import time —
-/// otherwise calling `import` directly (skipping preview) smuggles in agents
-/// with a broken identity or an unusable execution contract.
-fn import_issues(provider: &dyn ImportAgentsProvider, agent: &ImportAgent) -> Vec<Value> {
-    let mut issues = Vec::new();
-    if agent.external_id.trim().is_empty() {
-        issues.push(json!({
-            "severity": "blocking",
-            "code": "identity_missing",
-            "field": "identity.external_agent_id",
-            "message": "来源智能体缺少稳定身份。"
-        }));
-    }
-    if let Some(raw) = agent.raw.as_ref().and_then(Value::as_object) {
-        for field in [
-            "credentials",
-            "secrets",
-            "permissions",
-            "network",
-            "filesystem",
-            "side_effects",
-            "data_egress",
-            "subagents",
-        ] {
-            if raw.contains_key(field) {
-                issues.push(json!({
-                    "severity": "approval_required",
-                    "code": "unmapped_high_risk_field",
-                    "field": format!("source.raw.{field}"),
-                    "message": "高风险来源字段需要人工映射与审批。"
-                }));
-            }
-        }
-    }
-    let raw = agent.raw.as_ref().cloned().unwrap_or(Value::Null);
-    match provider.id() {
-        "a2a" if raw.get("url").and_then(Value::as_str).is_none() => {
-            issues.push(json!({
-                "severity": "blocking",
-                "code": "a2a_runtime_url_missing",
-                "field": "source.raw.url",
-                "message": "A2A Agent Card 缺少运行端点 URL。"
-            }));
-        }
-        "dify"
-            if raw
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| mode.contains("workflow")) =>
-        {
-            issues.push(json!({
-                "severity": "approval_required",
-                "code": "dify_workflow_mapping_required",
-                "field": "execution.input_mapping",
-                "message": "Dify 工作流必须确认输入映射后才能执行。"
-            }));
-        }
-        "openapi" if raw.get("x-lap-runtime").is_none() => {
-            issues.push(json!({
-                "severity": "approval_required",
-                "code": "openapi_runtime_mapping_required",
-                "field": "source.raw.x-lap-runtime",
-                "message": "OpenAPI 来源可进入资产清单，但执行前必须确认请求和响应映射。"
-            }));
-        }
-        "acp" => {
-            issues.push(json!({
-                "severity": "approval_required",
-                "code": "acp_profile_pin_required",
-                "field": "execution.compatibility_profile",
-                "message": "ACP 实现差异较大，执行前必须固定兼容配置并通过一致性测试。"
-            }));
-        }
-        _ => {}
-    }
-    issues
 }
 
 fn blocking_issues(issues: &[Value]) -> Vec<&Value> {
@@ -507,7 +432,10 @@ fn provider_registry() -> Vec<&'static dyn ImportAgentsProvider> {
     vec![
         &A2A_IMPORT_AGENTS,
         &ACP_IMPORT_AGENTS,
+        &CREWAI_IMPORT_AGENTS,
         &DIFY_IMPORT_AGENTS,
+        &LANGGRAPH_IMPORT_AGENTS,
+        &OPENAI_ASSISTANTS_IMPORT_AGENTS,
         &OPENAPI_IMPORT_AGENTS,
         &ELASTIC_IMPORT_AGENTS,
         &OPENCODE_IMPORT_AGENTS,

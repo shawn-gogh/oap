@@ -99,3 +99,23 @@ pub async fn list(
     .await
     .map_err(GatewayError::Database)
 }
+
+pub async fn latest_for_revision(
+    pool: &PgPool,
+    agent_id: &str,
+    agent_version: i32,
+) -> Result<Option<EvalRunRow>, GatewayError> {
+    sqlx::query_as::<_, EvalRunRow>(
+        r#"
+        SELECT * FROM "LiteLLM_AgentEvalRunsTable"
+        WHERE agent_id = $1 AND agent_version = $2
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(agent_version)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}

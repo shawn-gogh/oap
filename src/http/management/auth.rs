@@ -49,13 +49,14 @@ pub async fn login(
         &session.expires_at.to_string(),
         json!({
             "is_admin": auth.is_admin,
+            "role": auth.role,
         }),
     )
     .await?;
     Ok((
         StatusCode::OK,
         cookie_header(&session.token, COOKIE_MAX_AGE_SECONDS)?,
-        Json(json!({ "id": auth.user_id, "is_admin": auth.is_admin })),
+        Json(json!({ "id": auth.user_id, "is_admin": auth.is_admin, "role": auth.role })),
     ))
 }
 

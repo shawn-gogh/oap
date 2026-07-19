@@ -1,6 +1,9 @@
 use axum::http::{HeaderMap, HeaderValue};
 use litellm_rust::{
-    callbacks::standard_logging::{error_information, StandardLoggingPayload},
+    callbacks::{
+        request_attribution::RequestAttribution,
+        standard_logging::{error_information, StandardLoggingPayload},
+    },
     proxy::config::GeneralSettings,
     sdk::routing::Deployment,
 };
@@ -29,6 +32,12 @@ fn standard_logging_payload_records_success_and_error_metadata() {
         "claude",
         &deployment(),
         &headers,
+        RequestAttribution {
+            session_id: Some("ses-test".to_owned()),
+            agent_id: Some("agent-test".to_owned()),
+            invocation_id: Some("inv-test".to_owned()),
+            purpose: "production".to_owned(),
+        },
     );
 
     payload.finish_success(
@@ -39,6 +48,10 @@ fn standard_logging_payload_records_success_and_error_metadata() {
     assert_eq!(payload.id, "req-test");
     assert_eq!(payload.usage.total_tokens, 5);
     assert_eq!(payload.response_cost, 0.0);
+    assert_eq!(payload.session_id.as_deref(), Some("ses-test"));
+    assert_eq!(payload.agent_id.as_deref(), Some("agent-test"));
+    assert_eq!(payload.invocation_id.as_deref(), Some("inv-test"));
+    assert_eq!(payload.purpose, "production");
 
     payload.finish_error(error_information(
         "upstream_http_error",

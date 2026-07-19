@@ -5,7 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{model_prices::ModelCostMap, sdk::routing::Deployment};
+use crate::{
+    callbacks::request_attribution::RequestAttribution, model_prices::ModelCostMap,
+    sdk::routing::Deployment,
+};
+
+pub use crate::callbacks::logging_error::{error_information, ErrorInformation};
 
 const MAX_BODY_CAPTURE_BYTES: usize = 1_000_000;
 
@@ -32,13 +37,6 @@ pub struct Usage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorInformation {
-    pub error_type: String,
-    pub message: String,
-    pub trace: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StandardLoggingPayload {
     pub id: String,
     pub call_type: String,
@@ -62,6 +60,10 @@ pub struct StandardLoggingPayload {
     pub request_tags: Value,
     pub end_user: Option<String>,
     pub requester_ip_address: Option<String>,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub invocation_id: Option<String>,
+    pub purpose: String,
     pub error_information: Option<ErrorInformation>,
 }
 
@@ -73,6 +75,7 @@ impl StandardLoggingPayload {
         requested_model: &str,
         deployment: &Deployment,
         headers: &HeaderMap,
+        attribution: RequestAttribution,
     ) -> Self {
         let start_time = now_seconds();
         Self {
@@ -98,6 +101,10 @@ impl StandardLoggingPayload {
             request_tags: json!([]),
             end_user: None,
             requester_ip_address: header_string(headers, "x-forwarded-for"),
+            session_id: attribution.session_id,
+            agent_id: attribution.agent_id,
+            invocation_id: attribution.invocation_id,
+            purpose: attribution.purpose,
             error_information: None,
         }
     }
@@ -129,14 +136,6 @@ pub fn response_value(bytes: &[u8], content_type: Option<&str>) -> Value {
         serde_json::from_slice(&body).unwrap_or_else(|_| json!(String::from_utf8_lossy(&body)))
     } else {
         json!(String::from_utf8_lossy(&body).to_string())
-    }
-}
-
-pub fn error_information(error_type: &str, message: String) -> ErrorInformation {
-    ErrorInformation {
-        error_type: error_type.to_owned(),
-        message,
-        trace: std::backtrace::Backtrace::force_capture().to_string(),
     }
 }
 

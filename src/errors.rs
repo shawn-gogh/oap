@@ -69,6 +69,9 @@ pub enum GatewayError {
     #[error("forbidden")]
     Forbidden,
 
+    #[error("quota exceeded: {0}")]
+    QuotaExceeded(String),
+
     #[error("upstream request failed: {0}")]
     Upstream(reqwest::Error),
 
@@ -104,6 +107,7 @@ impl GatewayError {
             | Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::Upstream(_)
             | Self::Sandbox(_)
             | Self::SandboxError(_)

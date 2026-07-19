@@ -31,5 +31,8 @@ pub struct SpendLogRow {
     pub messages: Option<Value>,
     pub response: Option<Value>,
     pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub invocation_id: Option<String>,
+    pub purpose: String,
     pub status: Option<String>,
 }

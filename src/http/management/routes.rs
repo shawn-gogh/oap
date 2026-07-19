@@ -17,6 +17,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/auth/login", post(super::auth::login))
         .route("/api/auth/logout", post(super::auth::logout))
         .route("/api/audit-logs", get(super::audit::list))
+        .route(
+            "/api/governance/settings",
+            get(super::governance_settings::get).put(super::governance_settings::update),
+        )
         .route("/api/auth/me", get(super::users::me))
         .route(
             "/api/users",

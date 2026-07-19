@@ -19,7 +19,10 @@ pub mod import_agents;
 // does not auto-wire it); opt-in via http/managed_agents/import.rs.
 pub mod a2a_import_agents;
 pub mod acp_import_agents;
+pub mod crewai_import_agents;
 pub mod dify_import_agents;
+pub mod langgraph_import_agents;
+pub mod openai_assistants_import_agents;
 pub mod openapi_import_agents;
 pub mod opencode_import_agents;
 

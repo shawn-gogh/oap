@@ -54,6 +54,8 @@ import { cn } from "@/lib/utils";
 interface FormState {
   name: string;
   description: string;
+  tags: string;
+  capabilities: string;
   prompt: string;
   model: string;
   runtime: AgentRuntimeId;
@@ -75,6 +77,25 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function metadataValues(config: Record<string, unknown>, field: string): string[] {
+  const value = config[field];
+  return Array.isArray(value)
+    ? uniqueStrings(value.filter((entry): entry is string => typeof entry === "string"))
+    : [];
+}
+
+function configWithCatalogMetadata(
+  config: Record<string, unknown>,
+  tags: string,
+  capabilities: string,
+): Record<string, unknown> {
+  return {
+    ...config,
+    tags: uniqueStrings(tags.split(",")),
+    capabilities: uniqueStrings(capabilities.split(",")),
+  };
 }
 
 function subAgentIdsFromConfig(config: Record<string, unknown>): string[] {
@@ -243,6 +264,8 @@ function AgentEdit() {
   const [form, setForm] = useState<FormState>({
     name: "",
     description: "",
+    tags: "",
+    capabilities: "",
     prompt: "",
     model: "",
     runtime: "local-opencode",
@@ -288,6 +311,8 @@ function AgentEdit() {
         setForm({
           name: ag.name ?? "",
           description: ag.description ?? "",
+          tags: metadataValues(config, "tags").join(", "),
+          capabilities: metadataValues(config, "capabilities").join(", "),
           prompt: ag.prompt ?? "",
           model: ag.model ?? "",
           runtime: runtimeFromAgent(ag),
@@ -427,11 +452,15 @@ function AgentEdit() {
         cron: cron || null,
         timezone: form.timezone.trim() || "UTC",
         vault_keys: form.vault_keys,
-        config: configWithAgentLinks(
-          form.config,
-          form.subAgentIds,
-          form.mcpServerIds,
-          mcpIntegrations,
+        config: configWithCatalogMetadata(
+          configWithAgentLinks(
+            form.config,
+            form.subAgentIds,
+            form.mcpServerIds,
+            mcpIntegrations,
+          ),
+          form.tags,
+          form.capabilities,
         ),
       });
       router.push(`/agents/detail/?id=${encodeURIComponent(id)}`);
@@ -488,6 +517,26 @@ function AgentEdit() {
                   <div className="grid gap-1.5">
                     <Label htmlFor="ag-desc">Description</Label>
                     <Input id="ag-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="What this agent does" />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ag-tags">目录标签</Label>
+                    <Input
+                      id="ag-tags"
+                      value={form.tags}
+                      onChange={(e) => setForm({ ...form, tags: e.target.value })}
+                      placeholder="研发, 数据分析, 客服"
+                    />
+                    <p className="text-xs text-muted-foreground">使用逗号分隔，帮助用户按业务场景筛选。</p>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ag-capabilities">目录能力</Label>
+                    <Input
+                      id="ag-capabilities"
+                      value={form.capabilities}
+                      onChange={(e) => setForm({ ...form, capabilities: e.target.value })}
+                      placeholder="代码审查, 报表生成, 知识检索"
+                    />
+                    <p className="text-xs text-muted-foreground">显式能力会与工具、技能和 MCP 能力合并展示。</p>
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Model</Label>

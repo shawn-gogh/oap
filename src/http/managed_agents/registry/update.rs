@@ -27,6 +27,9 @@ pub async fn update(
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
     super::super::assert_agent_edit(&auth, &existing, pool).await?;
+    if let Some(config) = input.config.as_ref() {
+        crate::db::managed_agents::quotas::schema::AgentQuotaConfig::from_config(config)?;
+    }
     let mut row = repository::update(pool, &agent_id, input)
         .await?
         .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
