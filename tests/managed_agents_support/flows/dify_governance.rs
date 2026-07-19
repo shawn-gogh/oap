@@ -8,24 +8,18 @@ use super::super::{request_json, request_json_raw, start_reachable_mock_server, 
 
 /// Governance pipeline through the real Dify adapter: discover a live
 /// (mocked) Dify app, preview it (including the workflow-mode mapping
-/// warning), import it, and drive drift detection + emergency stop.
+/// warning), import, run the governance test, publish + activate, then drive
+/// drift detection + emergency stop.
 ///
-/// Unlike the A2A flow, this does **not** reach published/active — and that
-/// is itself the finding this test locks in. `inspect_runtime_contract`
-/// only grants full runtime-contract capability to `a2a_v1` and the
-/// managed-protocol runtimes (claude_managed_agents/cursor/gemini_antigravity/
-/// elastic_agent_builder); every other federated bridge — Dify, OpenAPI, ACP
-/// — is hardcoded to "partial" conformance
-/// (`src/sdk/agents/conformance.rs::runtime_contract_capabilities`), and
-/// `check_source_contract` fails the `runtime_contract` preflight check
-/// unless status is exactly "conformant". The practical consequence: a
-/// governance test on a Dify-imported agent can never pass, so
-/// request-publish is permanently refused and the agent can never leave
-/// draft through the intended pipeline — regardless of how healthy the
-/// remote Dify app actually is. This test asserts that behavior explicitly
-/// so a future change to either side (the contract gate, or Dify bridge
-/// capabilities) has to touch this test, not silently change behavior no
-/// test was watching.
+/// Chat-mode Dify has a real synchronous execution bridge
+/// (`sessions::external_bridge::invoke_dify`), so `dify_app` is a "conformant"
+/// runtime contract (`conformance::runtime_contract_capabilities`) and a
+/// chat-mode Dify agent passes the governance test and publishes — the same as
+/// A2A, just without an execution-smoke round trip (that check is A2A-only).
+/// Contrast the federated adapters that have no execution bridge
+/// (LangGraph/CrewAI/OpenAI Assistants/ACP): they stay "partial" and can never
+/// publish — locked in by federated_adapter_governance.rs. Any change to the
+/// contract gate has to touch both tests, not silently flip behavior.
 pub async fn exercise_dify_governance(fixture: &AppFixture) {
     let dify = start_reachable_mock_server().await;
     mount_dify_info(
@@ -102,9 +96,8 @@ pub async fn exercise_dify_governance(fixture: &AppFixture) {
         "approval_required must not block import"
     );
 
-    // --- Governance test: the runtime_contract gate blocks Dify permanently.
-    // This is real, current behavior (see the module doc comment) — not a
-    // fixture problem, so the test asserts it rather than working around it.
+    // --- Governance test: a chat-mode Dify agent has a real execution bridge,
+    // so the runtime_contract gate passes and the agent becomes testable.
     let tested = request_json(
         fixture.app.clone(),
         "POST",
@@ -112,48 +105,34 @@ pub async fn exercise_dify_governance(fixture: &AppFixture) {
         Some(json!({})),
     )
     .await;
-    assert_eq!(tested["governance"]["lifecycle_status"], "unhealthy");
-    assert_eq!(tested["governance"]["runtime_health"], "unhealthy");
+    assert_eq!(tested["governance"]["lifecycle_status"], "tested");
+    assert_eq!(tested["governance"]["runtime_health"], "healthy");
     let checks = tested["preflight"]["checks"].as_array().unwrap();
     let runtime_check = checks
         .iter()
         .find(|check| check["id"] == "runtime")
         .unwrap();
-    assert_eq!(
-        runtime_check["verdict"], "verified",
-        "the discover-based reachability probe itself must still pass"
-    );
+    assert_eq!(runtime_check["verdict"], "verified");
     let contract_check = checks
         .iter()
         .find(|check| check["id"] == "runtime_contract")
         .unwrap();
-    assert_eq!(contract_check["verdict"], "failed");
+    assert_eq!(
+        contract_check["verdict"], "verified",
+        "got: {contract_check:?}"
+    );
     assert!(
         contract_check["detail"]
             .as_str()
             .unwrap()
-            .contains("partial"),
+            .contains("conformant"),
         "got: {contract_check:?}"
     );
-    // Dify has no execution-smoke support: unlike A2A, no "execution_smoke"
-    // check should appear even though this call passed smoke_user via the
-    // authenticated caller — the check is gated on api_spec == "a2a_v1".
+    // Dify has no execution-smoke: unlike A2A, no "execution_smoke" check
+    // appears — it is gated on api_spec == "a2a_v1".
     assert!(checks.iter().all(|check| check["id"] != "execution_smoke"));
 
-    // Publish must be refused: the current revision was tested and failed,
-    // so it is not eligible.
-    let (publish_status, publish_body) = request_json_raw(
-        fixture.app.clone(),
-        "POST",
-        &format!("/api/agents/{agent_id}/governance/request-publish"),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(publish_status, axum::http::StatusCode::BAD_REQUEST);
-    assert!(
-        publish_body.contains("尚未通过运行测试"),
-        "got: {publish_body}"
-    );
+    publish_and_activate(fixture, &agent_id).await;
 
     // --- Drift detection still works on a never-activated governed agent:
     // sync/accept doesn't depend on lifecycle_status or agent.status.
@@ -205,7 +184,6 @@ pub async fn exercise_dify_governance(fixture: &AppFixture) {
         None,
     )
     .await;
-    assert_eq!(post_accept_agent["status"], "draft");
     assert_eq!(
         post_accept_agent["config"]["source"]["raw"]["description"],
         "Now covers dark-web sources too"
@@ -252,6 +230,42 @@ async fn discover(fixture: &AppFixture, dify: &MockServer) -> Value {
         Some(json!({ "endpoint": dify.uri(), "api_key": "dify-test-key" })),
     )
     .await
+}
+
+/// Request publish, approve, and activate a tested agent. Separation of duties
+/// defaults on; this single-actor pipeline disables it (dedicated coverage
+/// lives in agent_governance_roles.rs).
+async fn publish_and_activate(fixture: &AppFixture, agent_id: &str) {
+    request_json(
+        fixture.app.clone(),
+        "PUT",
+        "/api/governance/settings",
+        Some(json!({ "separation_of_duties": false })),
+    )
+    .await;
+    let requested = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/governance/request-publish"),
+        Some(json!({})),
+    )
+    .await;
+    let approval_id = requested["approval"]["id"].as_str().unwrap().to_owned();
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/approvals/{approval_id}/accept"),
+        Some(json!({ "arguments": null })),
+    )
+    .await;
+    let activated = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/agents/{agent_id}/activate"),
+        None,
+    )
+    .await;
+    assert_eq!(activated["status"], "active");
 }
 
 /// Mirrors what the import dialog actually sends: the exact `ExternalAgent`

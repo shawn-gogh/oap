@@ -2842,3 +2842,13 @@ async fn federated_adapter_governance_pipeline_against_postgres() {
     };
     flows::exercise_federated_adapter_governance(&fixture).await;
 }
+
+#[tokio::test]
+async fn openapi_agent_governance_pipeline_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping OpenAPI governance integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    flows::exercise_openapi_governance(&fixture).await;
+}
