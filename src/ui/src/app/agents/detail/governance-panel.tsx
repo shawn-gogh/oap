@@ -451,7 +451,7 @@ export function ManagedGovernancePanel({
     if (action === "test") void runTest();
     if (action === "publish") void requestPublish();
     if (action === "activate") void activate();
-    if (action === "inbox") window.location.href = "/inbox/";
+    if (action === "inbox") window.location.assign("/inbox/");
     if (action === "drift") setDriftDialogOpen(true);
   };
 

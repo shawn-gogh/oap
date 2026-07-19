@@ -93,8 +93,7 @@ pub(crate) async fn enforce_attributed_budget(
     pool: &PgPool,
     agent_id: &str,
 ) -> Result<(), GatewayError> {
-    let Some(agent) =
-        crate::db::managed_agents::registry::repository::get(pool, agent_id).await?
+    let Some(agent) = crate::db::managed_agents::registry::repository::get(pool, agent_id).await?
     else {
         return Ok(());
     };

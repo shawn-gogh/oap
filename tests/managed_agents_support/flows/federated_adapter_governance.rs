@@ -38,7 +38,13 @@ pub async fn exercise_federated_adapter_governance(fixture: &AppFixture) {
 /// shared across every partial-conformance federated adapter.
 async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
     let server = start_reachable_mock_server().await;
-    mount_discover(&server, provider, "Research Assistant", "Summarizes OSINT feeds").await;
+    mount_discover(
+        &server,
+        provider,
+        "Research Assistant",
+        "Summarizes OSINT feeds",
+    )
+    .await;
 
     let discovered = discover(fixture, provider, &server).await;
     let agents = discovered["agents"].as_array().unwrap();
@@ -69,6 +75,12 @@ async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
     assert_eq!(agent["status"], "draft", "{provider}");
     assert_eq!(agent["config"]["source"]["provider"], provider);
 
+    assert_governance_gate_blocks(fixture, provider, &agent_id).await;
+}
+
+/// The governance test must fail on the runtime_contract gate (partial
+/// conformance) and request-publish must therefore be refused.
+async fn assert_governance_gate_blocks(fixture: &AppFixture, provider: &str, agent_id: &str) {
     let tested = request_json(
         fixture.app.clone(),
         "POST",
@@ -76,7 +88,10 @@ async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
         Some(json!({})),
     )
     .await;
-    assert_eq!(tested["governance"]["runtime_health"], "unhealthy", "{provider}");
+    assert_eq!(
+        tested["governance"]["runtime_health"], "unhealthy",
+        "{provider}"
+    );
     let checks = tested["preflight"]["checks"].as_array().unwrap();
     let runtime = checks.iter().find(|c| c["id"] == "runtime").unwrap();
     assert_eq!(
@@ -93,7 +108,10 @@ async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
         "{provider}: {contract}"
     );
     // Execution-smoke is A2A-only; a partial adapter must not fabricate one.
-    assert!(checks.iter().all(|c| c["id"] != "execution_smoke"), "{provider}");
+    assert!(
+        checks.iter().all(|c| c["id"] != "execution_smoke"),
+        "{provider}"
+    );
 
     let (publish_status, publish_body) = request_json_raw(
         fixture.app.clone(),
@@ -117,7 +135,13 @@ async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
 /// sync flags drift and accept re-baselines the source snapshot.
 async fn run_drift_flow(fixture: &AppFixture) {
     let server = start_reachable_mock_server().await;
-    mount_discover(&server, "langgraph", "Sync Assistant", "Original definition").await;
+    mount_discover(
+        &server,
+        "langgraph",
+        "Sync Assistant",
+        "Original definition",
+    )
+    .await;
     let discovered = discover(fixture, "langgraph", &server).await;
     let external_agent = discovered["agents"][0].clone();
     let imported = import(fixture, "langgraph", &server, &external_agent).await;
