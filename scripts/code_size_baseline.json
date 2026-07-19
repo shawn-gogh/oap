@@ -39,8 +39,8 @@
     "src/sdk/agents/client.rs": 359,
     "src/sdk/providers/deepseek/anthropic_messages/responses.rs": 508,
     "src/sdk/providers/deepseek/anthropic_messages/translation.rs": 516,
-    "tests/managed_agents_api.rs": 2844,
-    "tests/managed_agents_support/flows.rs": 341,
+    "tests/managed_agents_api.rs": 2854,
+    "tests/managed_agents_support/flows.rs": 343,
     "tests/managed_agents_support/flows/dify_governance.rs": 321,
     "tests/managed_agents_support/mod.rs": 370
   },
