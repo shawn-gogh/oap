@@ -46,6 +46,11 @@ pub async fn resume(
                     "智能体已退役，不能恢复运行。".to_owned(),
                 ));
             }
+            "review_due" => {
+                return Err(GatewayError::BadRequest(format!(
+                    "智能体发布有效期已到，需完成发布复审后才能恢复：请先在治理面板运行检查，通过后重新申请发布（POST /api/agents/{agent_id}/governance/test）"
+                )));
+            }
             _ => {}
         }
     }

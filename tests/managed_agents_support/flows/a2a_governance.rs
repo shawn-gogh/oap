@@ -59,6 +59,18 @@ pub async fn exercise_a2a_governance(fixture: &AppFixture) {
         "smoke test never called message/send"
     );
 
+    // Separation of duties defaults to on. This pipeline test intentionally
+    // drives import → request-publish → approve as a single admin actor to
+    // exercise the governance mechanics, so disable the self-approval block for
+    // this fixture (dedicated coverage lives in agent_governance_roles.rs).
+    request_json(
+        fixture.app.clone(),
+        "PUT",
+        "/api/governance/settings",
+        Some(json!({ "separation_of_duties": false })),
+    )
+    .await;
+
     let requested = request_json(
         fixture.app.clone(),
         "POST",

@@ -18,6 +18,11 @@ pub async fn messages(
 ) -> Result<Response, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let attribution = model_request_attribution::resolve(&state, &auth, &headers).await?;
+    if let Some(agent_id) = attribution.agent_id.as_deref() {
+        let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+        crate::http::managed_agents::quota_enforcement::enforce_attributed_budget(pool, agent_id)
+            .await?;
+    }
 
     let body: Value = serde_json::from_slice(&body).map_err(GatewayError::InvalidJson)?;
     let model = body

@@ -72,6 +72,50 @@ pub(crate) async fn lock_session_creation(
     Ok(Some(lock))
 }
 
+/// Budget-only enforcement for the raw model-proxy paths (`/v1/messages`,
+/// `/v1/responses`). Those requests carry `x-lap-session-id` and attribute
+/// their spend to an agent, so the monthly budget cap must gate here too —
+/// otherwise the cap is trivially bypassed by calling the proxy directly
+/// instead of going through the session/prompt flow.
+///
+/// Deliberately does NOT touch `rate_per_minute` or `max_concurrent_sessions`:
+/// a single user turn fans out into many model calls on this path (tool-call
+/// round-trips, title/summary generation), so per-call rate consumption would
+/// break multi-step agents and double-count against the turn-level limit that
+/// `enforce_prompt` already applies at enqueue time. The budget check is a SUM
+/// over committed SpendLogs, so evaluating it on every proxy call is idempotent
+/// and does not double-count.
+///
+/// Attribution is best-effort: an unknown/unresolvable agent id is treated as
+/// "nothing to enforce" rather than an error, so this never turns a normal
+/// model request into a hard failure on its own.
+pub(crate) async fn enforce_attributed_budget(
+    pool: &PgPool,
+    agent_id: &str,
+) -> Result<(), GatewayError> {
+    let Some(agent) =
+        crate::db::managed_agents::registry::repository::get(pool, agent_id).await?
+    else {
+        return Ok(());
+    };
+    let Some(limit) = config(&agent)?.budget_usd_monthly else {
+        return Ok(());
+    };
+    let current = repository::current_month_cost(pool, &agent.id).await?;
+    if current >= limit {
+        return reject(
+            pool,
+            &agent,
+            "monthly_budget",
+            current,
+            limit,
+            monthly_reset_at(),
+        )
+        .await;
+    }
+    Ok(())
+}
+
 pub(crate) async fn enforce_prompt(
     pool: &PgPool,
     agent: &ManagedAgentRow,

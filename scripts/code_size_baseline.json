@@ -39,9 +39,10 @@
     "src/sdk/agents/client.rs": 359,
     "src/sdk/providers/deepseek/anthropic_messages/responses.rs": 508,
     "src/sdk/providers/deepseek/anthropic_messages/translation.rs": 516,
-    "tests/managed_agents_api.rs": 2815,
-    "tests/managed_agents_support/flows.rs": 335,
-    "tests/managed_agents_support/mod.rs": 352
+    "tests/managed_agents_api.rs": 2832,
+    "tests/managed_agents_support/flows.rs": 339,
+    "tests/managed_agents_support/flows/dify_governance.rs": 307,
+    "tests/managed_agents_support/mod.rs": 370
   },
   "functions": {
     "src/db/managed_agents/inbox/repository.rs::approval_policy::1": 51,
@@ -134,6 +135,8 @@
     "tests/managed_agents_api.rs::task_retry_isolation_and_sandbox_cancel_against_postgres::1": 230,
     "tests/managed_agents_api.rs::task_timeout_sweep_seals_attempt_and_refreshes_deadline_on_retry_against_postgres::1": 133,
     "tests/managed_agents_support/flows.rs::exercise_runs::1": 151,
+    "tests/managed_agents_support/flows/a2a_governance.rs::exercise_a2a_governance::1": 123,
+    "tests/managed_agents_support/flows/dify_governance.rs::exercise_dify_governance::1": 170,
     "tests/sdk_structure.rs::sdk_tree_matches_provider_endpoint_contract::1": 53,
     "tests/telemetry_otlp.rs::exports_invocation_trace_and_metrics_over_otlp_http::1": 55
   }
