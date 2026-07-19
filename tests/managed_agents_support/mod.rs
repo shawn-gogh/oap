@@ -29,6 +29,24 @@ pub mod flows;
 
 use db::reset_tables;
 
+/// Starts a wiremock server bound to this host's outbound-routable address
+/// instead of loopback. The agent-import SSRF guard
+/// (`validate_connector_endpoint`) rejects 127.0.0.1/localhost by design —
+/// real import-provider flows (discover/import/sync against Dify, A2A, etc.)
+/// must exercise that same guard, so tests that need a live, reachable mock
+/// endpoint bind here rather than to `MockServer::start()`'s default loopback
+/// listener. The address is discovered via a UDP "connect" (no packets are
+/// actually sent — it's a local routing-table lookup), the same trick used to
+/// find a host's own LAN IP without hardcoding one.
+pub async fn start_reachable_mock_server() -> MockServer {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").expect("bind probe socket");
+    probe.connect("8.8.8.8:80").expect("resolve local route");
+    let local_ip = probe.local_addr().expect("read local addr").ip();
+    let listener =
+        std::net::TcpListener::bind((local_ip, 0)).expect("bind mock server to routable address");
+    MockServer::builder().listener(listener).start().await
+}
+
 pub struct AppFixture {
     pub app: axum::Router,
     pub state: Arc<AppState>,

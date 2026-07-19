@@ -2810,3 +2810,23 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
             .unwrap();
     assert!(deleted_agent.is_none());
 }
+
+#[tokio::test]
+async fn dify_agent_governance_pipeline_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping Dify governance integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    flows::exercise_dify_governance(&fixture).await;
+}
+
+#[tokio::test]
+async fn a2a_agent_governance_pipeline_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping A2A governance integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    flows::exercise_a2a_governance(&fixture).await;
+}
