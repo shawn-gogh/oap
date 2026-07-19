@@ -42,7 +42,7 @@
     "tests/managed_agents_api.rs": 2874,
     "tests/managed_agents_support/flows.rs": 347,
     "tests/managed_agents_support/flows/dify_governance.rs": 321,
-    "tests/managed_agents_support/mod.rs": 370
+    "tests/managed_agents_support/mod.rs": 438
   },
   "functions": {
     "src/db/managed_agents/inbox/repository.rs::approval_policy::1": 51,
