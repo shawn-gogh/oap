@@ -2852,3 +2852,13 @@ async fn openapi_agent_governance_pipeline_against_postgres() {
     };
     flows::exercise_openapi_governance(&fixture).await;
 }
+
+#[tokio::test]
+async fn langgraph_agent_governance_pipeline_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping LangGraph governance integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    flows::exercise_langgraph_governance(&fixture).await;
+}

@@ -13,10 +13,14 @@ use super::{runtime_lifecycle, storage::persist_message};
 const A2A_SPEC: &str = "a2a_v1";
 const DIFY_SPEC: &str = "dify_app";
 const OPENAPI_SPEC: &str = "openapi_rest";
+const LANGGRAPH_SPEC: &str = "langgraph_assistant";
 const ACP_SPEC: &str = "acp_legacy";
 
 pub(crate) fn supports(runtime: &str) -> bool {
-    matches!(runtime, A2A_SPEC | DIFY_SPEC | OPENAPI_SPEC | ACP_SPEC)
+    matches!(
+        runtime,
+        A2A_SPEC | DIFY_SPEC | OPENAPI_SPEC | LANGGRAPH_SPEC | ACP_SPEC
+    )
 }
 
 pub(super) async fn execute_prompt(
@@ -90,6 +94,9 @@ pub(super) async fn execute_prompt(
             .await
             .map(Some),
         OPENAPI_SPEC => invoke_openapi(&state, source, &credential, prompt, &trace)
+            .await
+            .map(Some),
+        LANGGRAPH_SPEC => invoke_langgraph(&state, source, &credential, prompt, &trace)
             .await
             .map(Some),
         ACP_SPEC => Err(GatewayError::InvalidConfig(
@@ -791,6 +798,69 @@ async fn invoke_openapi(
         })
 }
 
+/// Synchronous LangGraph run: POST {base}/runs/wait with the confirmed
+/// assistant id and an operator-mapped input, returning the graph's final
+/// state. The prompt is wrapped under the mapped input field, and the answer
+/// is read from the mapped output pointer — the same operator-confirms-the-
+/// mapping contract as the OpenAPI bridge, because a LangGraph graph's I/O
+/// schema is graph-specific. `runs/wait` blocks until the run terminates, so
+/// this always resolves to a single completed/failed turn.
+async fn invoke_langgraph(
+    state: &AppState,
+    source: &Value,
+    credential: &crate::http::agent_runtimes::RuntimeCredential,
+    prompt: &str,
+    trace: &TraceHeaders,
+) -> Result<String, GatewayError> {
+    let assistant_id = source
+        .get("external_agent_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            GatewayError::InvalidConfig("LangGraph 来源缺少 assistant_id。".to_owned())
+        })?;
+    let mapping = source.pointer("/raw/x-lap-runtime").ok_or_else(|| {
+        GatewayError::InvalidConfig(
+            "LangGraph 来源必须提供经过确认的输入/输出映射后才能执行。".to_owned(),
+        )
+    })?;
+    let input_field = mapping
+        .get("input_field")
+        .and_then(Value::as_str)
+        .unwrap_or("input");
+    let output_path = mapping
+        .get("output_path")
+        .and_then(Value::as_str)
+        .unwrap_or("/output");
+    let base = validated_endpoint(langgraph_runtime_base(source, &credential.api_base)).await?;
+    let response = trace
+        .apply(
+            state
+                .http
+                .post(format!("{}/runs/wait", base.trim_end_matches('/')))
+                .bearer_auth(&credential.api_key)
+                .header("x-api-key", &credential.api_key)
+                .json(&json!({
+                    "assistant_id": assistant_id,
+                    "input": { input_field: prompt }
+                })),
+        )
+        .send()
+        .await
+        .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
+    let payload = ensure_success(response).await?;
+    payload
+        .pointer(output_path)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            GatewayError::SandboxError(format!(
+                "LangGraph response did not contain mapped field {output_path}"
+            ))
+        })
+}
+
 #[derive(Default)]
 struct TraceHeaders {
     traceparent: Option<String>,
@@ -846,6 +916,15 @@ fn openapi_runtime_base<'a>(source: &'a Value, fallback: &'a str) -> &'a str {
     source
         .pointer("/raw/x-lap-runtime/base_url")
         .or_else(|| source.pointer("/raw/servers/0/url"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+}
+
+fn langgraph_runtime_base<'a>(source: &'a Value, fallback: &'a str) -> &'a str {
+    source
+        .pointer("/raw/x-lap-runtime/base_url")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

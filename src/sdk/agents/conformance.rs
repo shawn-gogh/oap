@@ -51,21 +51,24 @@ fn runtime_contract_capabilities(
             event_recovery: true,
         };
     }
-    if matches!(runtime, Some("a2a_v1" | "dify_app" | "openapi_rest")) {
+    if matches!(
+        runtime,
+        Some("a2a_v1" | "dify_app" | "openapi_rest" | "langgraph_assistant")
+    ) {
         // Bridges that sessions::external_bridge actually executes:
         // - a2a_v1: poll_a2a_task maps completed/failed/cancelled/rejected to
         //   terminal events; cancel() sends tasks/cancel; resolve_continuation
         //   resumes or cancels a task paused on input/auth-required, so an
         //   approval rejection converges to a terminal turn state.
-        // - dify_app / openapi_rest: invoke_dify (blocking chat) and
-        //   invoke_openapi issue one synchronous request per prompt and return
-        //   a terminal answer or a failure — the platform owns the HTTP call
-        //   lifecycle so it can force-abort, and neither ever parks a session
-        //   on an unresolved approval, so approval_terminal_result holds
-        //   vacuously.
+        // - dify_app / openapi_rest / langgraph_assistant: invoke_dify
+        //   (blocking chat), invoke_openapi, and invoke_langgraph (runs/wait)
+        //   issue one synchronous request per prompt and return a terminal
+        //   answer or a failure — the platform owns the HTTP call lifecycle so
+        //   it can force-abort, and none ever parks a session on an unresolved
+        //   approval, so approval_terminal_result holds vacuously.
         // Only A2A has resumable polling, and even that is not a replayable
-        // event stream, so event_recovery stays false for all three — it's
-        // optional and does not block `conformant`.
+        // event stream, so event_recovery stays false for all — it's optional
+        // and does not block `conformant`.
         return RuntimeContractCapabilities {
             terminal_events: true,
             interrupt_or_abort: true,
@@ -226,7 +229,7 @@ mod tests {
         // Dify (blocking chat) and OpenAPI both have real synchronous execution
         // bridges in sessions::external_bridge, so they earn the same terminal
         // guarantees as A2A and must be publishable through governance.
-        for runtime in ["dify_app", "openapi_rest"] {
+        for runtime in ["dify_app", "openapi_rest", "langgraph_assistant"] {
             assert_eq!(
                 inspect_runtime_contract(&agent(Some(runtime))).status,
                 "conformant",
@@ -240,7 +243,7 @@ mod tests {
         // No execution bridge exists for these specs (they hit "unsupported
         // external bridge" or an explicit unsupported error), so they must not
         // be publishable.
-        for runtime in ["langgraph_assistant", "crewai_crew", "acp_legacy"] {
+        for runtime in ["crewai_crew", "openai_assistant", "acp_legacy"] {
             assert_eq!(
                 inspect_runtime_contract(&agent(Some(runtime))).status,
                 "partial",

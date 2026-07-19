@@ -84,10 +84,10 @@ fn provider_issue(provider_id: &str, raw: Option<&Value>) -> Option<Value> {
             "field": "execution.compatibility_profile",
             "message": "ACP 实现差异较大，执行前必须固定兼容配置并通过一致性测试。"
         })),
-        "langgraph" => Some(json!({
+        "langgraph" if raw.get("x-lap-runtime").is_none() => Some(json!({
             "severity": "approval_required",
             "code": "langgraph_input_mapping_required",
-            "field": "execution.input_mapping",
+            "field": "source.raw.x-lap-runtime",
             "message": "LangGraph 来源可进入资产清单，但执行前必须确认输入与状态映射。"
         })),
         "crewai" => Some(json!({
