@@ -4,9 +4,11 @@ use sqlx::PgPool;
 
 use super::{read_events_until_completed, request_json, request_raw, AppFixture};
 
+mod a2a_governance;
 mod claude_mcp_vault;
 mod claude_runtime;
 mod cursor_runtime;
+mod dify_governance;
 mod gemini_runtime;
 mod platform_approvals;
 mod platform_mcps;
@@ -16,9 +18,11 @@ mod rules;
 mod runtime_catalog;
 mod sessions;
 
+pub use a2a_governance::exercise_a2a_governance;
 pub use claude_mcp_vault::exercise_claude_gateway_mcp_vault;
 pub use claude_runtime::exercise_claude_runtime_session_storage;
 pub use cursor_runtime::exercise_cursor_runtime_stream;
+pub use dify_governance::exercise_dify_governance;
 pub use gemini_runtime::exercise_gemini_runtime_session;
 pub use platform_mcps::exercise_platform_mcps;
 pub use platform_skill_mcp::assert_agent_skill_edit;
