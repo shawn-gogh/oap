@@ -80,27 +80,27 @@ fn provider_issue(provider_id: &str, raw: Option<&Value>) -> Option<Value> {
         })),
         "acp" => Some(json!({
             "severity": "approval_required",
-            "code": "acp_profile_pin_required",
+            "code": "acp_catalog_only",
             "field": "execution.compatibility_profile",
-            "message": "ACP 实现差异较大，执行前必须固定兼容配置并通过一致性测试。"
+            "message": "ACP 实现差异较大，平台暂未提供托管执行桥：导入后仅可编目发现，不能通过治理测试或发布运行。"
         })),
-        "langgraph" => Some(json!({
+        "langgraph" if raw.get("x-lap-runtime").is_none() => Some(json!({
             "severity": "approval_required",
             "code": "langgraph_input_mapping_required",
-            "field": "execution.input_mapping",
+            "field": "source.raw.x-lap-runtime",
             "message": "LangGraph 来源可进入资产清单，但执行前必须确认输入与状态映射。"
         })),
-        "crewai" => Some(json!({
+        "crewai" if raw.get("x-lap-runtime").is_none() => Some(json!({
             "severity": "approval_required",
             "code": "crewai_kickoff_mapping_required",
-            "field": "execution.input_mapping",
+            "field": "source.raw.x-lap-runtime",
             "message": "CrewAI 来源可进入资产清单，但执行前必须确认 kickoff 输入映射。"
         })),
         "openai_assistants" => Some(json!({
             "severity": "approval_required",
-            "code": "openai_assistants_migration_required",
+            "code": "openai_assistants_catalog_only",
             "field": "execution.compatibility_profile",
-            "message": "OpenAI Assistants 已进入迁移期，执行前必须确认目标运行时与兼容映射。"
+            "message": "OpenAI Assistants 处于迁移期，平台暂未提供托管执行桥：导入后仅可编目发现，不能通过治理测试或发布运行。"
         })),
         _ => None,
     }

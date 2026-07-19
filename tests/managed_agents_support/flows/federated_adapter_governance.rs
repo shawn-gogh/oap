@@ -6,32 +6,25 @@ use wiremock::{
 
 use super::super::{request_json, request_json_raw, start_reachable_mock_server, AppFixture};
 
-/// Real end-to-end governance ("纳管") flow through the federated import
-/// adapters added by the multi-source work: LangGraph/LangSmith, CrewAI AMP,
-/// and OpenAI Assistants. Each drives discover → preview → import → governance
-/// test against a live (mocked) upstream that speaks that adapter's real
-/// discovery contract.
+/// Real end-to-end governance ("纳管") flow through a federated import adapter
+/// that still has **no execution bridge**: OpenAI Assistants. It drives
+/// discover → preview → import → governance test against a live (mocked)
+/// upstream that speaks the adapter's real discovery contract.
 ///
-/// Like the Dify flow, none of these reach published/active, and that is the
-/// point of the test. `inspect_runtime_contract` only grants full
-/// runtime-contract capability to `a2a_v1` and the managed-protocol runtimes;
-/// every federated adapter whose `expose_runtime_harness()` is false — Dify,
-/// OpenAPI, ACP, and now LangGraph/CrewAI/OpenAI Assistants — resolves to
-/// "partial" conformance (`sdk/agents/conformance.rs`). `check_source_contract`
-/// then fails the `runtime_contract` preflight check (it requires exactly
-/// "conformant"), so a governance test on one of these agents can never pass
-/// and request-publish is permanently refused — regardless of how reachable
-/// the upstream is. Asserting it here means any future change to the contract
-/// gate or to an adapter's harness story has to update this test rather than
-/// silently flipping behavior nothing was watching.
+/// It does not reach published/active, and that is the point of the test.
+/// `sessions::external_bridge` has no `invoke_*` case for `openai_assistant`,
+/// so `inspect_runtime_contract` leaves it at "partial" conformance
+/// (`sdk/agents/conformance.rs`). `check_source_contract` then fails the
+/// `runtime_contract` preflight check (it requires exactly "conformant"), so a
+/// governance test on the agent can never pass and request-publish is
+/// permanently refused — regardless of how reachable the upstream is. Adding an
+/// execution bridge (making it publishable) has to move it out of this test,
+/// the way LangGraph and CrewAI moved to their own flows once their bridges
+/// landed.
 pub async fn exercise_federated_adapter_governance(fixture: &AppFixture) {
-    for provider in ["langgraph", "crewai", "openai_assistants"] {
+    for provider in ["openai_assistants"] {
         run_governance_gate_flow(fixture, provider).await;
     }
-    // Drift detection must work on a never-activated federated agent for any
-    // adapter, not just Dify — exercise it once through LangGraph's array-based
-    // discovery contract to prove the sync/accept path generalizes.
-    run_drift_flow(fixture).await;
 }
 
 /// discover → import → governance-test-fails-permanently → publish-refused,
@@ -56,6 +49,15 @@ async fn run_governance_gate_flow(fixture: &AppFixture, provider: &str) {
     assert_eq!(
         previewed["items"][0]["can_import"], true,
         "{provider} preview must allow import: {previewed}"
+    );
+    // The preview advisory must be honest that this adapter is catalog-only.
+    let issues = previewed["items"][0]["issues"].as_array().unwrap();
+    assert!(
+        issues.iter().any(|issue| issue["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("仅可编目发现")),
+        "{provider} preview must flag catalog-only: {issues:?}"
     );
 
     let imported = import(fixture, provider, &server, &external_agent).await;
@@ -103,9 +105,14 @@ async fn assert_governance_gate_blocks(fixture: &AppFixture, provider: &str, age
         .find(|c| c["id"] == "runtime_contract")
         .unwrap();
     assert_eq!(contract["verdict"], "failed", "{provider}: {contract}");
+    // The failure must be honest about *why*: no execution bridge, catalog-only
+    // — not a cryptic contract status.
     assert!(
-        contract["detail"].as_str().unwrap().contains("partial"),
-        "{provider}: {contract}"
+        contract["detail"]
+            .as_str()
+            .unwrap()
+            .contains("暂不支持平台托管执行"),
+        "{provider} must explain catalog-only: {contract}"
     );
     // Execution-smoke is A2A-only; a partial adapter must not fabricate one.
     assert!(
@@ -129,58 +136,6 @@ async fn assert_governance_gate_blocks(fixture: &AppFixture, provider: &str, age
         publish_body.contains("尚未通过运行测试"),
         "{provider}: {publish_body}"
     );
-}
-
-/// Import a LangGraph assistant, then change the upstream definition and prove
-/// sync flags drift and accept re-baselines the source snapshot.
-async fn run_drift_flow(fixture: &AppFixture) {
-    let server = start_reachable_mock_server().await;
-    mount_discover(
-        &server,
-        "langgraph",
-        "Sync Assistant",
-        "Original definition",
-    )
-    .await;
-    let discovered = discover(fixture, "langgraph", &server).await;
-    let external_agent = discovered["agents"][0].clone();
-    let imported = import(fixture, "langgraph", &server, &external_agent).await;
-    let agent_id = imported["results"][0]["agent_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    // A lower priority number wins in wiremock, so the changed response must
-    // out-rank the default (priority 5) mount above to take effect.
-    Mock::given(method("POST"))
-        .and(path("/assistants/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
-            "assistant_id": "assistant-1",
-            "name": "Sync Assistant",
-            "description": "Definition changed upstream",
-            "config": {"configurable": {"model": "openai/gpt-4.1"}}
-        }])))
-        .with_priority(1)
-        .mount(&server)
-        .await;
-    let synced = request_json(
-        fixture.app.clone(),
-        "POST",
-        &format!("/api/agents/{agent_id}/source/sync"),
-        None,
-    )
-    .await;
-    assert_eq!(synced["source"]["sync_state"], "drifted");
-    assert!(synced["source"]["candidate_snapshot_id"].as_str().is_some());
-
-    let accepted = request_json(
-        fixture.app.clone(),
-        "POST",
-        &format!("/api/agents/{agent_id}/source/drift/accept"),
-        Some(json!({ "reason": "reviewed upstream definition change" })),
-    )
-    .await;
-    assert_eq!(accepted["source"]["sync_state"], "in_sync");
 }
 
 async fn discover(fixture: &AppFixture, provider: &str, server: &MockServer) -> Value {
@@ -245,33 +200,6 @@ async fn import(
 /// provider's `discover()` actually issues, and a response its parser accepts.
 async fn mount_discover(server: &MockServer, provider: &str, name: &str, description: &str) {
     match provider {
-        // POST /assistants/search returns a bare array of assistants.
-        "langgraph" => {
-            Mock::given(method("POST"))
-                .and(path("/assistants/search"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
-                    "assistant_id": "assistant-1",
-                    "name": name,
-                    "description": description,
-                    "config": {"configurable": {"model": "openai/gpt-4.1"}}
-                }])))
-                .mount(server)
-                .await;
-        }
-        // GET /inputs describes a single deployment.
-        "crewai" => {
-            Mock::given(method("GET"))
-                .and(path("/inputs"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "crew_id": "crew-1",
-                    "name": name,
-                    "description": description,
-                    "model": "gpt-4.1",
-                    "inputs": [{"name": "topic"}]
-                })))
-                .mount(server)
-                .await;
-        }
         // GET /v1/assistants returns a paginated data array (assistants=v2).
         "openai_assistants" => {
             Mock::given(method("GET"))

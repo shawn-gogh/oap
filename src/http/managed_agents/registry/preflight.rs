@@ -31,7 +31,7 @@ use crate::{
     proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
     sdk::agents::{
         canonical::{normalize_agent, NormalizationSeverity},
-        conformance::inspect_runtime_contract,
+        conformance::{inspect_runtime_contract, ConformanceReport},
     },
 };
 
@@ -141,6 +141,8 @@ async fn check_source_contract(
         }
     });
     let conformance = inspect_runtime_contract(agent);
+    let federated = crate::db::managed_agents::governance::external_source_kind(agent)
+        == Some("external_agent");
     checks.push(PreflightCheck {
         id: "runtime_contract",
         label: "运行时契约".to_owned(),
@@ -149,10 +151,7 @@ async fn check_source_contract(
         } else {
             FAILED
         },
-        detail: format!(
-            "契约 {} 检查结果：{}。",
-            conformance.contract_version, conformance.status
-        ),
+        detail: runtime_contract_detail(&conformance, federated),
     });
     checks.push(
         match crate::db::managed_agents::sources::repository::get_source_by_agent(pool, &agent.id)
@@ -186,6 +185,24 @@ async fn check_source_contract(
         },
     );
     Ok(checks)
+}
+
+/// A federated source is only non-conformant when its protocol has no execution
+/// bridge in `sessions::external_bridge` (bridged protocols are conformant). Say
+/// that plainly instead of surfacing a cryptic contract status, so operators
+/// know the agent is catalog-only rather than misconfigured.
+fn runtime_contract_detail(conformance: &ConformanceReport, federated: bool) -> String {
+    if conformance.status != "conformant" && federated {
+        format!(
+            "该来源协议暂不支持平台托管执行，仅可编目发现，不能通过治理测试或发布运行（契约状态：{}）。",
+            conformance.status
+        )
+    } else {
+        format!(
+            "契约 {} 检查结果：{}。",
+            conformance.contract_version, conformance.status
+        )
+    }
 }
 
 /// Verifies the imported agent's execution credential is resolvable *as

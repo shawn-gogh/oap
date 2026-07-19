@@ -74,6 +74,63 @@
   MCP 绑定。目录按真实会话聚合使用者、会话数和最近使用时间，并区分属主、已授权与未授权状态。
 - 下一切片：P2-4 更多来源适配器。
 
+## 本轮实施进度（2026-07-19）
+
+### 新引入功能的安全审查修复（PR #15）
+
+审查 codex 多源治理合并（PR #13）后修复 7 项问题：
+
+| 项 | 内容 | 关键文件 |
+|---|---|---|
+| 配额绕过 | `/v1/messages`、`/v1/responses` 归因到 agent 却不校验月度预算；新增 `enforce_attributed_budget` 在两个端点强制预算(不消费速率，避免多轮调用重复计数) | `quota_enforcement.rs`、`messages.rs`、`responses.rs` |
+| 目录名册泄露 | `/api/agent-catalog` 对无授权 agent 也附带 consumers 名册；改为仅 `can_use` 的 agent 暴露 | `catalog.rs` |
+| 预算 TOCTOU | 代理层逐次复检收敛溢出(由配额绕过修复顺带解决) | 同上 |
+| resume 状态机 | `resume` 未拦截 `review_due`，可把待复审 agent 翻回 active；补拦截 | `registry/resume.rs` |
+| 职责分离 | 记录 owner==importer 耦合与所有权转移风险(现行为已被测试锁定) | `governance.rs` |
+| 审计 limit | `audit` 端点 `limit` clamp 到 1..=500 | `audit_timeline.rs` |
+| 通知注入 | Mattermost 通知转义属主可控 agent 名(Markdown/@提及) | `mattermost/notifications.rs` |
+
+同时补齐 LangGraph/CrewAI/OpenAI Assistants 端到端纳管流程测试，并修复 PR #14 遗留的 code-size / Check UI 红灯。
+
+### Dify / OpenAPI 发布门禁修复（PR #16）
+
+`runtime_contract_capabilities` 只识别 `a2a_v1`，漏了同样有真实同步执行桥
+(`invoke_dify` / `invoke_openapi`)的 `dify_app` / `openapi_rest`，导致这两类
+**能执行却无法发布**。补齐白名单后二者可通过治理测试并发布；无执行桥的适配器
+(LangGraph/CrewAI/OpenAI Assistants/ACP)保持 `partial`、正确地不可发布。
+Dify 与 OpenAPI 均有端到端治理流程测试(discover→import→治理→发布→激活)。
+
+### 下一步：P2-4 执行桥（进行中）
+
+审查确认 P2-4 的四个适配器**只做了导入(discover)，没有执行桥**：`external_bridge`
+里没有对应 `invoke_*` 分支(ACP 是显式 unsupported)。因此它们虽能导入，却在治理
+测试处永久失败、无法托管执行——体验断裂。路线:
+
+1. **UX 诚实(止血)**：导入对话框/目录明确标注"仅可发现编目，暂不可托管执行"，
+   避免用户白走治理流程。
+2. **逐个建执行桥(补齐能力)**：在 `external_bridge.rs` 为每个协议实现同步
+   request/response 桥(与 `invoke_dify`/`invoke_openapi` 同模式)，接入 spec 分发，
+   加入 conformance 白名单，让其导入建议(input mapping)在确认后清除，并补端到端
+   治理+执行测试。
+   - **LangGraph(已完成)**：`invoke_langgraph` 同步 `POST /runs/wait`(external_agent_id
+     + 确认的输入/输出映射),端到端测试含真实执行往返。
+   - **CrewAI(已完成)**：`invoke_crewai` 异步 `POST /kickoff` + 轮询 `GET /status/{id}`
+     至终态(带取消/60s 超时),端到端测试含真实 kickoff/轮询往返。
+   - **OpenAI Assistants / ACP(已做 UX 诚实)**：前者处于迁移期、后者实现差异大,暂不建桥;
+     它们保持 `partial`、不可发布。导入建议与治理测试失败详情现明确告知"仅可编目发现、
+     暂不支持平台托管执行",不再误导用户以为确认映射即可执行;由
+     `federated_adapter_governance.rs` 锁定该行为。
+
+### 尚未处理（技术债/后续）
+
+- 预算彻底闭合需"调用前成本预估 + 在途预留"两段式(当前仅逐次复检收敛)。
+- 测试隔离：共享测试库 + 全局治理设置(如 `separation_of_duties`)在测试间会污染，
+  已两次引发 CI 假阳性；应每个 fixture 显式重置治理设置。
+- 前端面板(`metrics-panel`/`quota-panel`/`catalog/page`/`revision-diff-panel`)
+  仅审过后端 authz，前端交互未深查。
+- 巨型文件(`managed_agents_api.rs` 2854、`preflight.rs` 939、`source_management.rs`
+  1311)远超软限，baseline 仅记录，未拆分。
+
 ---
 
 ## 已完成（截至 PR #11）
@@ -206,7 +263,7 @@
 | P2-1 角色分离（已完成） | 导入者 / 审批者 / 运维者角色，替代"admin 全能" | `api_keys.role` 与 Web Session 保留角色；外部导入仅允许 importer/admin，发布与数据外发由 approver/admin 审批，跨属主健康检查、紧急停止和退役允许 operator/admin。自审批默认硬阻断，可由管理员显式关闭并审计 |
 | P2-2 定期复审（已完成） | 发布有效期默认 90 天，到期自动降级为“待复审”并暂停新工作 | `0065` 增加发布时间和复审截止时间；source scheduler 原子切换 `review_due`、写审计并通知。复审复用运行检查、黄金回归和 approver 审批，完成后恢复运行并重置有效期 |
 | P2-3 智能体目录（已完成） | 独立消费侧视图：标签、能力搜索、“谁在用”；与运维视图分离 | `/api/agent-catalog` 仅返回可发布消费的安全摘要，config 支持 `tags` / `capabilities`；能力合并工具、技能和 MCP，真实会话聚合使用者；未授权条目可发现但不能直接启动 |
-| P2-4 更多来源适配器 | LangGraph / CrewAI / OpenAI Assistants 导入 | 复用 `ImportAgentsProvider` trait，每个适配器独立文件 |
+| P2-4 更多来源适配器（导入已完成，执行桥进行中） | LangGraph / CrewAI / OpenAI Assistants 导入；执行桥待补 | 导入复用 `ImportAgentsProvider` trait（每适配器独立文件）已完成；执行需在 `external_bridge.rs` 逐个补同步桥 + conformance 白名单，否则只能编目不能托管执行。优先 LangGraph → CrewAI |
 | P2-5 审计导出与留存 | 审计流 CSV/JSON 导出、留存策略 | 合规场景需要 |
 
 ---
