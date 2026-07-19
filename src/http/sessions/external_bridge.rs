@@ -14,12 +14,13 @@ const A2A_SPEC: &str = "a2a_v1";
 const DIFY_SPEC: &str = "dify_app";
 const OPENAPI_SPEC: &str = "openapi_rest";
 const LANGGRAPH_SPEC: &str = "langgraph_assistant";
+const CREWAI_SPEC: &str = "crewai_crew";
 const ACP_SPEC: &str = "acp_legacy";
 
 pub(crate) fn supports(runtime: &str) -> bool {
     matches!(
         runtime,
-        A2A_SPEC | DIFY_SPEC | OPENAPI_SPEC | LANGGRAPH_SPEC | ACP_SPEC
+        A2A_SPEC | DIFY_SPEC | OPENAPI_SPEC | LANGGRAPH_SPEC | CREWAI_SPEC | ACP_SPEC
     )
 }
 
@@ -97,6 +98,9 @@ pub(super) async fn execute_prompt(
             .await
             .map(Some),
         LANGGRAPH_SPEC => invoke_langgraph(&state, source, &credential, prompt, &trace)
+            .await
+            .map(Some),
+        CREWAI_SPEC => invoke_crewai(&state, pool, row, source, &credential, prompt, &trace)
             .await
             .map(Some),
         ACP_SPEC => Err(GatewayError::InvalidConfig(
@@ -861,6 +865,124 @@ async fn invoke_langgraph(
         })
 }
 
+/// CrewAI is asynchronous: POST {base}/kickoff starts the crew and returns a
+/// kickoff id, then GET {base}/status/{id} is polled until the run reaches a
+/// terminal state. The prompt is wrapped under the mapped kickoff input field
+/// and the answer read from the mapped output pointer (operator-confirmed
+/// mapping, like the OpenAPI/LangGraph bridges). Polling is bounded and honours
+/// session cancellation, so the turn always resolves to a completed/failed
+/// state within the deadline.
+async fn invoke_crewai(
+    state: &AppState,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+    source: &Value,
+    credential: &crate::http::agent_runtimes::RuntimeCredential,
+    prompt: &str,
+    trace: &TraceHeaders,
+) -> Result<String, GatewayError> {
+    let mapping = source.pointer("/raw/x-lap-runtime").ok_or_else(|| {
+        GatewayError::InvalidConfig(
+            "CrewAI 来源必须提供经过确认的 kickoff 输入映射后才能执行。".to_owned(),
+        )
+    })?;
+    let input_field = mapping
+        .get("input_field")
+        .and_then(Value::as_str)
+        .unwrap_or("topic");
+    let output_path = mapping
+        .get("output_path")
+        .and_then(Value::as_str)
+        .unwrap_or("/result");
+    let base = validated_endpoint(crewai_runtime_base(source, &credential.api_base)).await?;
+    let base = base.trim_end_matches('/');
+    let kickoff = trace
+        .apply(
+            state
+                .http
+                .post(format!("{base}/kickoff"))
+                .bearer_auth(&credential.api_key)
+                .json(&json!({ "inputs": { input_field: prompt } })),
+        )
+        .send()
+        .await
+        .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
+    let kicked = ensure_success(kickoff).await?;
+    let kickoff_id = kicked
+        .get("kickoff_id")
+        .or_else(|| kicked.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            GatewayError::SandboxError("CrewAI kickoff did not return a kickoff id".to_owned())
+        })?;
+    session_control::repository::bind_active_invocation(
+        pool,
+        &row.id,
+        None,
+        None,
+        Some(kickoff_id),
+        None,
+    )
+    .await?;
+    let status_url = format!("{base}/status/{kickoff_id}");
+    poll_crewai_status(state, row, credential, &status_url, output_path, trace).await
+}
+
+/// Polls a CrewAI kickoff to a terminal state, honouring session cancellation
+/// and a bounded deadline (120 × 500ms = 60s). Returns the mapped output field
+/// on success.
+async fn poll_crewai_status(
+    state: &AppState,
+    row: &sessions::schema::SessionRow,
+    credential: &crate::http::agent_runtimes::RuntimeCredential,
+    status_url: &str,
+    output_path: &str,
+    trace: &TraceHeaders,
+) -> Result<String, GatewayError> {
+    for _ in 0..120 {
+        if state.external_bridge_cancellations.is_cancelled(&row.id) {
+            return Err(GatewayError::SandboxError(
+                "CrewAI run cancelled".to_owned(),
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let response = trace
+            .apply(state.http.get(status_url).bearer_auth(&credential.api_key))
+            .send()
+            .await
+            .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
+        let payload = ensure_success(response).await?;
+        match payload
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("RUNNING")
+            .to_ascii_uppercase()
+            .as_str()
+        {
+            "SUCCESS" | "COMPLETED" => {
+                return payload
+                    .pointer(output_path)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        GatewayError::SandboxError(format!(
+                            "CrewAI response did not contain mapped field {output_path}"
+                        ))
+                    });
+            }
+            "FAILED" | "ERROR" => {
+                return Err(GatewayError::SandboxError(
+                    "CrewAI run ended in a failed state".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Err(GatewayError::SandboxError(
+        "CrewAI run did not finish before the bridge deadline".to_owned(),
+    ))
+}
+
 #[derive(Default)]
 struct TraceHeaders {
     traceparent: Option<String>,
@@ -923,6 +1045,15 @@ fn openapi_runtime_base<'a>(source: &'a Value, fallback: &'a str) -> &'a str {
 }
 
 fn langgraph_runtime_base<'a>(source: &'a Value, fallback: &'a str) -> &'a str {
+    source
+        .pointer("/raw/x-lap-runtime/base_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+}
+
+fn crewai_runtime_base<'a>(source: &'a Value, fallback: &'a str) -> &'a str {
     source
         .pointer("/raw/x-lap-runtime/base_url")
         .and_then(Value::as_str)

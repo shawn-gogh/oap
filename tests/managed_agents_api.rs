@@ -2862,3 +2862,13 @@ async fn langgraph_agent_governance_pipeline_against_postgres() {
     };
     flows::exercise_langgraph_governance(&fixture).await;
 }
+
+#[tokio::test]
+async fn crewai_agent_governance_pipeline_against_postgres() {
+    let _guard = DB_TEST_LOCK.lock().await;
+    let Some(fixture) = AppFixture::new().await else {
+        eprintln!("skipping CrewAI governance integration test: TEST_DATABASE_URL is not set");
+        return;
+    };
+    flows::exercise_crewai_governance(&fixture).await;
+}

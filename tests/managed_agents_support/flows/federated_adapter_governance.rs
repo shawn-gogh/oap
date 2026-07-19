@@ -6,24 +6,23 @@ use wiremock::{
 
 use super::super::{request_json, request_json_raw, start_reachable_mock_server, AppFixture};
 
-/// Real end-to-end governance ("纳管") flow through the federated import
-/// adapters that have **no execution bridge**: CrewAI AMP and OpenAI
-/// Assistants. Each drives discover → preview → import → governance test
-/// against a live (mocked) upstream that speaks that adapter's real discovery
-/// contract.
+/// Real end-to-end governance ("纳管") flow through a federated import adapter
+/// that still has **no execution bridge**: OpenAI Assistants. It drives
+/// discover → preview → import → governance test against a live (mocked)
+/// upstream that speaks the adapter's real discovery contract.
 ///
-/// These do not reach published/active, and that is the point of the test.
-/// `sessions::external_bridge` has no `invoke_*` case for `crewai_crew` or
-/// `openai_assistant`, so `inspect_runtime_contract` leaves them at "partial"
-/// conformance (`sdk/agents/conformance.rs`). `check_source_contract` then
-/// fails the `runtime_contract` preflight check (it requires exactly
-/// "conformant"), so a governance test on one of these agents can never pass
-/// and request-publish is permanently refused — regardless of how reachable
-/// the upstream is. Asserting it here means adding an execution bridge for one
-/// of them (making it publishable) has to move it out of this test, the way
-/// LangGraph moved to langgraph_governance.rs once its bridge landed.
+/// It does not reach published/active, and that is the point of the test.
+/// `sessions::external_bridge` has no `invoke_*` case for `openai_assistant`,
+/// so `inspect_runtime_contract` leaves it at "partial" conformance
+/// (`sdk/agents/conformance.rs`). `check_source_contract` then fails the
+/// `runtime_contract` preflight check (it requires exactly "conformant"), so a
+/// governance test on the agent can never pass and request-publish is
+/// permanently refused — regardless of how reachable the upstream is. Adding an
+/// execution bridge (making it publishable) has to move it out of this test,
+/// the way LangGraph and CrewAI moved to their own flows once their bridges
+/// landed.
 pub async fn exercise_federated_adapter_governance(fixture: &AppFixture) {
-    for provider in ["crewai", "openai_assistants"] {
+    for provider in ["openai_assistants"] {
         run_governance_gate_flow(fixture, provider).await;
     }
 }
@@ -187,20 +186,6 @@ async fn import(
 /// provider's `discover()` actually issues, and a response its parser accepts.
 async fn mount_discover(server: &MockServer, provider: &str, name: &str, description: &str) {
     match provider {
-        // GET /inputs describes a single deployment.
-        "crewai" => {
-            Mock::given(method("GET"))
-                .and(path("/inputs"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "crew_id": "crew-1",
-                    "name": name,
-                    "description": description,
-                    "model": "gpt-4.1",
-                    "inputs": [{"name": "topic"}]
-                })))
-                .mount(server)
-                .await;
-        }
         // GET /v1/assistants returns a paginated data array (assistants=v2).
         "openai_assistants" => {
             Mock::given(method("GET"))

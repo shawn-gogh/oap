@@ -53,7 +53,7 @@ fn runtime_contract_capabilities(
     }
     if matches!(
         runtime,
-        Some("a2a_v1" | "dify_app" | "openapi_rest" | "langgraph_assistant")
+        Some("a2a_v1" | "dify_app" | "openapi_rest" | "langgraph_assistant" | "crewai_crew")
     ) {
         // Bridges that sessions::external_bridge actually executes:
         // - a2a_v1: poll_a2a_task maps completed/failed/cancelled/rejected to
@@ -229,7 +229,12 @@ mod tests {
         // Dify (blocking chat) and OpenAPI both have real synchronous execution
         // bridges in sessions::external_bridge, so they earn the same terminal
         // guarantees as A2A and must be publishable through governance.
-        for runtime in ["dify_app", "openapi_rest", "langgraph_assistant"] {
+        for runtime in [
+            "dify_app",
+            "openapi_rest",
+            "langgraph_assistant",
+            "crewai_crew",
+        ] {
             assert_eq!(
                 inspect_runtime_contract(&agent(Some(runtime))).status,
                 "conformant",
@@ -243,7 +248,7 @@ mod tests {
         // No execution bridge exists for these specs (they hit "unsupported
         // external bridge" or an explicit unsupported error), so they must not
         // be publishable.
-        for runtime in ["crewai_crew", "openai_assistant", "acp_legacy"] {
+        for runtime in ["openai_assistant", "acp_legacy"] {
             assert_eq!(
                 inspect_runtime_contract(&agent(Some(runtime))).status,
                 "partial",

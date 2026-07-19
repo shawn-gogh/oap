@@ -111,10 +111,13 @@ Dify 与 OpenAPI 均有端到端治理流程测试(discover→import→治理→
 2. **逐个建执行桥(补齐能力)**：在 `external_bridge.rs` 为每个协议实现同步
    request/response 桥(与 `invoke_dify`/`invoke_openapi` 同模式)，接入 spec 分发，
    加入 conformance 白名单，让其导入建议(input mapping)在确认后清除，并补端到端
-   治理+执行测试。**优先级：LangGraph → CrewAI →(OpenAI Assistants / ACP 视需求)**。
-   - LangGraph：`POST {base}/runs/wait`(assistant_id + input 映射)同步返回最终状态。
-   - CrewAI：`POST {deployment}/kickoff` 同步/轮询取回结果。
-   - OpenAI Assistants 处于迁移期、ACP 实现差异大，可暂只做 UX 诚实。
+   治理+执行测试。
+   - **LangGraph(已完成)**：`invoke_langgraph` 同步 `POST /runs/wait`(external_agent_id
+     + 确认的输入/输出映射),端到端测试含真实执行往返。
+   - **CrewAI(已完成)**：`invoke_crewai` 异步 `POST /kickoff` + 轮询 `GET /status/{id}`
+     至终态(带取消/60s 超时),端到端测试含真实 kickoff/轮询往返。
+   - **OpenAI Assistants / ACP(暂只做 UX 诚实)**：前者处于迁移期、后者实现差异大;
+     它们保持 `partial`、不可发布,由 `federated_adapter_governance.rs` 锁定该行为。
 
 ### 尚未处理（技术债/后续）
 

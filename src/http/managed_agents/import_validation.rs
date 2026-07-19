@@ -90,10 +90,10 @@ fn provider_issue(provider_id: &str, raw: Option<&Value>) -> Option<Value> {
             "field": "source.raw.x-lap-runtime",
             "message": "LangGraph 来源可进入资产清单，但执行前必须确认输入与状态映射。"
         })),
-        "crewai" => Some(json!({
+        "crewai" if raw.get("x-lap-runtime").is_none() => Some(json!({
             "severity": "approval_required",
             "code": "crewai_kickoff_mapping_required",
-            "field": "execution.input_mapping",
+            "field": "source.raw.x-lap-runtime",
             "message": "CrewAI 来源可进入资产清单，但执行前必须确认 kickoff 输入映射。"
         })),
         "openai_assistants" => Some(json!({
