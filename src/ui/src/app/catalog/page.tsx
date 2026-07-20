@@ -94,6 +94,7 @@ export default function AgentCatalogPage() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                aria-label="搜索智能体目录"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="按名称、描述、标签或能力搜索"
@@ -171,7 +172,7 @@ export default function AgentCatalogPage() {
                     <span>
                       {agent.consumers.length === 0
                         ? "还没有实际使用记录"
-                        : `${agent.consumers.slice(0, 3).map((consumer) => consumer.display_name).join("、")} 等 ${agent.consumers.length} 人使用 · ${agent.session_count} 个会话`}
+                        : `${agent.consumers.slice(0, 3).map((consumer) => consumer.display_name).join("、")}${agent.consumers.length > 3 ? ` 等 ${agent.consumers.length} 人` : ""} 使用 · ${agent.session_count} 个会话`}
                     </span>
                   </div>
                 </div>

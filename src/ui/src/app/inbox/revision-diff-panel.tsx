@@ -5,12 +5,16 @@ import { GitCompareArrows } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { getAgentRevisionDiff, type AgentRevisionDiff, type InboxItem } from "@/lib/api";
 
-const RISK_LABELS = {
+const RISK_LABELS: Record<string, string> = {
   low: "低风险",
   medium: "中风险",
   high: "高风险",
   critical: "关键风险",
-} as const;
+};
+
+function riskLabel(risk: string): string {
+  return RISK_LABELS[risk] ?? risk;
+}
 
 function integer(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
@@ -73,7 +77,7 @@ export function RevisionDiffPanel({ item }: { item: InboxItem }) {
                   className="mt-1"
                   variant={finding.risk === "critical" || finding.risk === "high" ? "destructive" : "outline"}
                 >
-                  {RISK_LABELS[finding.risk]}
+                  {riskLabel(finding.risk)}
                 </Badge>
               </div>
               <div className="grid gap-2 text-xs sm:grid-cols-2">
