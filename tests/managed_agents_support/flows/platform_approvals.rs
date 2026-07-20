@@ -1,4 +1,5 @@
 use litellm_rust::db::managed_agents::{messages, session_control, sessions as db_sessions};
+use litellm_rust::managed_agents::adapters::types::InteractionProfileV1;
 use serde_json::{json, Value};
 
 use crate::support::{request_json, AppFixture};
@@ -42,12 +43,23 @@ async fn create_approval_agent(fixture: &AppFixture) -> String {
 /// the caller can resume/complete it — an active turn would otherwise block
 /// the approval-resume prompt.
 async fn seed_granted_turn(fixture: &AppFixture, session_id: &str, agent_id: &str) -> String {
+    let turn_input = json!({});
+    let input_schema = json!({"type": "object"});
+    let output_schema = json!({});
+    let interaction_profile = serde_json::to_value(InteractionProfileV1::default()).unwrap();
     let created = session_control::repository::create_or_get(
         &fixture.pool,
         session_control::repository::NewTurn {
             session_id,
             request_id: &format!("approval-grant-{session_id}"),
             model: Some("test-model"),
+            input: &turn_input,
+            input_schema: &input_schema,
+            output_schema: &output_schema,
+            interaction_profile: &interaction_profile,
+            trigger_type: "conversation",
+            retry_of_turn_id: None,
+            attempt_number: 1,
             agent_id: Some(agent_id),
             runtime: None,
             protocol: "platform",

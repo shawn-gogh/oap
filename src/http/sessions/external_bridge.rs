@@ -82,20 +82,18 @@ pub(super) async fn execute_prompt(
     .await?;
 
     let response = match spec {
-        A2A_SPEC => {
-            invoke_a2a(
-                &state,
-                pool,
-                row,
-                source,
-                &credential,
-                prompt,
-                &agent.name,
-                &trace,
-            )
-            .await
-            .map(|result| result.map(Value::String))
-        }
+        A2A_SPEC => invoke_a2a(
+            &state,
+            pool,
+            row,
+            source,
+            &credential,
+            prompt,
+            &agent.name,
+            &trace,
+        )
+        .await
+        .map(|result| result.map(Value::String)),
         DIFY_SPEC => invoke_dify(
             &state,
             pool,
@@ -108,16 +106,12 @@ pub(super) async fn execute_prompt(
         )
         .await
         .map(Some),
-        OPENAPI_SPEC => {
-            invoke_openapi(&state, source, &credential, &run_input, prompt, &trace)
-                .await
-                .map(Some)
-        }
-        LANGGRAPH_SPEC => {
-            invoke_langgraph(&state, source, &credential, &run_input, prompt, &trace)
-                .await
-                .map(Some)
-        }
+        OPENAPI_SPEC => invoke_openapi(&state, source, &credential, &run_input, prompt, &trace)
+            .await
+            .map(Some),
+        LANGGRAPH_SPEC => invoke_langgraph(&state, source, &credential, &run_input, prompt, &trace)
+            .await
+            .map(Some),
         CREWAI_SPEC => invoke_crewai(
             &state,
             pool,
@@ -772,12 +766,9 @@ async fn invoke_dify(
         )
         .await?;
     }
-    payload
-        .get("answer")
-        .cloned()
-        .ok_or_else(|| {
-            GatewayError::SandboxError("Dify response did not contain answer".to_owned())
-        })
+    payload.get("answer").cloned().ok_or_else(|| {
+        GatewayError::SandboxError("Dify response did not contain answer".to_owned())
+    })
 }
 
 async fn invoke_openapi(
@@ -823,14 +814,11 @@ async fn invoke_openapi(
         .await
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     let payload = ensure_success(response).await?;
-    payload
-        .get(output_field)
-        .cloned()
-        .ok_or_else(|| {
-            GatewayError::SandboxError(format!(
-                "OpenAPI response did not contain mapped field {output_field}"
-            ))
-        })
+    payload.get(output_field).cloned().ok_or_else(|| {
+        GatewayError::SandboxError(format!(
+            "OpenAPI response did not contain mapped field {output_field}"
+        ))
+    })
 }
 
 /// Synchronous LangGraph run: POST {base}/runs/wait with the confirmed
@@ -886,14 +874,11 @@ async fn invoke_langgraph(
         .await
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     let payload = ensure_success(response).await?;
-    payload
-        .pointer(output_path)
-        .cloned()
-        .ok_or_else(|| {
-            GatewayError::SandboxError(format!(
-                "LangGraph response did not contain mapped field {output_path}"
-            ))
-        })
+    payload.pointer(output_path).cloned().ok_or_else(|| {
+        GatewayError::SandboxError(format!(
+            "LangGraph response did not contain mapped field {output_path}"
+        ))
+    })
 }
 
 /// CrewAI is asynchronous: POST {base}/kickoff starts the crew and returns a
@@ -994,14 +979,11 @@ async fn poll_crewai_status(
             .as_str()
         {
             "SUCCESS" | "COMPLETED" => {
-                return payload
-                    .pointer(output_path)
-                    .cloned()
-                    .ok_or_else(|| {
-                        GatewayError::SandboxError(format!(
-                            "CrewAI response did not contain mapped field {output_path}"
-                        ))
-                    });
+                return payload.pointer(output_path).cloned().ok_or_else(|| {
+                    GatewayError::SandboxError(format!(
+                        "CrewAI response did not contain mapped field {output_path}"
+                    ))
+                });
             }
             "FAILED" | "ERROR" => {
                 return Err(GatewayError::SandboxError(

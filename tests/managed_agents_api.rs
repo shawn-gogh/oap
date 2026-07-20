@@ -28,12 +28,26 @@ async fn invocation_telemetry_persists_and_continues_w3c_context_against_postgre
     .await
     .unwrap();
     let parent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let turn_input = serde_json::json!({});
+    let input_schema = serde_json::json!({"type": "object"});
+    let output_schema = serde_json::json!({});
+    let interaction_profile = serde_json::to_value(
+        litellm_rust::managed_agents::adapters::types::InteractionProfileV1::default(),
+    )
+    .unwrap();
     let created = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
         &fixture.pool,
         litellm_rust::db::managed_agents::session_control::repository::NewTurn {
             session_id: &session.id,
             request_id: "telemetry-request",
             model: Some("test-model"),
+            input: &turn_input,
+            input_schema: &input_schema,
+            output_schema: &output_schema,
+            interaction_profile: &interaction_profile,
+            trigger_type: "conversation",
+            retry_of_turn_id: None,
+            attempt_number: 1,
             agent_id: None,
             runtime: None,
             protocol: "a2a",
@@ -95,12 +109,26 @@ async fn canonical_external_artifacts_are_unverified_idempotent_and_owner_scoped
     )
     .await
     .unwrap();
+    let turn_input = serde_json::json!({});
+    let input_schema = serde_json::json!({"type": "object"});
+    let output_schema = serde_json::json!({});
+    let interaction_profile = serde_json::to_value(
+        litellm_rust::managed_agents::adapters::types::InteractionProfileV1::default(),
+    )
+    .unwrap();
     let turn = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
         &fixture.pool,
         litellm_rust::db::managed_agents::session_control::repository::NewTurn {
             session_id: &session.id,
             request_id: "artifact-boundary-request",
             model: Some("test-model"),
+            input: &turn_input,
+            input_schema: &input_schema,
+            output_schema: &output_schema,
+            interaction_profile: &interaction_profile,
+            trigger_type: "conversation",
+            retry_of_turn_id: None,
+            attempt_number: 1,
             agent_id: None,
             runtime: None,
             protocol: "platform",
@@ -202,12 +230,26 @@ async fn mcp_grants_are_invocation_scoped_and_revoked_against_postgres() {
     )
     .await
     .unwrap();
+    let turn_input = serde_json::json!({});
+    let input_schema = serde_json::json!({"type": "object"});
+    let output_schema = serde_json::json!({});
+    let interaction_profile = serde_json::to_value(
+        litellm_rust::managed_agents::adapters::types::InteractionProfileV1::default(),
+    )
+    .unwrap();
     let created = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
         &fixture.pool,
         litellm_rust::db::managed_agents::session_control::repository::NewTurn {
             session_id: &session.id,
             request_id: "mcp-grant-request",
             model: Some("test-model"),
+            input: &turn_input,
+            input_schema: &input_schema,
+            output_schema: &output_schema,
+            interaction_profile: &interaction_profile,
+            trigger_type: "conversation",
+            retry_of_turn_id: None,
+            attempt_number: 1,
             agent_id: Some(agent_id),
             runtime: None,
             protocol: "platform",
@@ -538,10 +580,24 @@ async fn session_turn_idempotency_approval_and_cancel_against_postgres() {
     )
     .await
     .unwrap();
+    let turn_input = serde_json::json!({});
+    let input_schema = serde_json::json!({"type": "object"});
+    let output_schema = serde_json::json!({});
+    let interaction_profile = serde_json::to_value(
+        litellm_rust::managed_agents::adapters::types::InteractionProfileV1::default(),
+    )
+    .unwrap();
     let input = || litellm_rust::db::managed_agents::session_control::repository::NewTurn {
         session_id: &session.id,
         request_id: "req_idempotent",
         model: Some("test-model"),
+        input: &turn_input,
+        input_schema: &input_schema,
+        output_schema: &output_schema,
+        interaction_profile: &interaction_profile,
+        trigger_type: "conversation",
+        retry_of_turn_id: None,
+        attempt_number: 1,
         agent_id: None,
         runtime: None,
         protocol: "platform",
@@ -682,12 +738,26 @@ async fn session_turn_idempotency_approval_and_cancel_against_postgres() {
     assert_eq!(events.first().unwrap().event_type, "turn.accepted");
     assert_eq!(events.last().unwrap().event_type, "turn.cancelled");
 
+    let recovery_input = serde_json::json!({});
+    let recovery_input_schema = serde_json::json!({"type": "object"});
+    let recovery_output_schema = serde_json::json!({});
+    let recovery_interaction_profile = serde_json::to_value(
+        litellm_rust::managed_agents::adapters::types::InteractionProfileV1::default(),
+    )
+    .unwrap();
     let recovered = litellm_rust::db::managed_agents::session_control::repository::create_or_get(
         &fixture.pool,
         litellm_rust::db::managed_agents::session_control::repository::NewTurn {
             session_id: &session.id,
             request_id: "req_recovery",
             model: Some("test-model"),
+            input: &recovery_input,
+            input_schema: &recovery_input_schema,
+            output_schema: &recovery_output_schema,
+            interaction_profile: &recovery_interaction_profile,
+            trigger_type: "conversation",
+            retry_of_turn_id: None,
+            attempt_number: 1,
             agent_id: None,
             runtime: None,
             protocol: "platform",
