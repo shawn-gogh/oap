@@ -498,16 +498,18 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span
-                        title={tone === "busy" ? "智能体运行中" : tone === "failed" ? "上次执行异常" : "准备就绪"}
-                        className={`size-1.5 shrink-0 rounded-full ${
-                          tone === "busy"
-                            ? "animate-ping bg-emerald-500"
-                            : tone === "failed"
-                              ? "bg-destructive"
-                              : "bg-emerald-500/60"
-                        }`}
-                      />
+                      {tone === "busy" && (
+                        <span
+                          title="智能体思考执行中"
+                          className="size-1.5 shrink-0 rounded-full bg-emerald-500 animate-ping"
+                        />
+                      )}
+                      {tone === "failed" && (
+                        <span
+                          title="上次执行异常"
+                          className="size-1.5 shrink-0 rounded-full bg-destructive"
+                        />
+                      )}
                       <span className="truncate font-medium text-xs">{title}</span>
                     </div>
                     <div className="font-mono text-[10px] text-muted-foreground truncate mt-0.5">

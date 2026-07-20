@@ -1,0 +1,164 @@
+---
+title: "Run control plane branch execution plan"
+description: "Team execution plan for the Run domain model, APIs, canonical events, and runtime adapters."
+---
+
+# Run control plane branch execution plan
+
+## Branch
+
+`codex/run-control-plane`
+
+Update the branch from the latest `main` before implementation starts. Keep
+unrelated changes out of this branch.
+
+## Objective
+
+Deliver the provider-neutral backend for Run interactions. A Run is presented
+to users as one execution, while its canonical persisted resource remains the
+existing Session Turn.
+
+The backend must support structured input, asynchronous progress, human
+continuation, approvals, artifacts, cancellation, retry, recovery, and
+terminal-state convergence.
+
+## Team responsibility
+
+This team owns:
+
+- the shared Run contract and API shapes;
+- Session Turn, Invocation, ControlEvent, Operation, and Artifact persistence;
+- structured Run input and output;
+- create, detail, resume, cancel, retry, and recovery behavior;
+- canonical event generation and resumable event streaming;
+- capability and interaction-profile negotiation;
+- runtime adapter integration for imported agents;
+- backend and adapter tests.
+
+The team does not own the Run page or frontend components.
+
+## Required architectural rules
+
+1. Do not create another interactive Run table. The UI Run is backed by a
+   Session Turn.
+2. Keep Session, Turn, Invocation, Approval, Operation, and Artifact as
+   separate resources.
+3. Do not reduce all inputs and results to strings.
+4. Preserve provider-native events as evidence; expose canonical events to the
+   frontend.
+5. Runtime adapters must not directly mutate Session state.
+6. Every active Run must reach exactly one terminal state.
+7. Existing text-chat APIs must remain compatible.
+
+## Execution stages
+
+### Stage 1: Freeze the shared contract
+
+Define and version:
+
+- `InteractionProfileV1`;
+- `RunSnapshotV1`;
+- `ControlEventV1`;
+- Run create, resume, cancel, and retry commands;
+- common status, progress, error, input-request, approval, and Artifact shapes.
+
+Provide representative JSON fixtures in a separable commit so the Run Surface
+team can work independently.
+
+### Stage 2: Complete the Run control model
+
+Extend Session Turns to retain structured input, schema snapshots, interaction
+profile, structured result, trigger type, retry lineage, and attempt number.
+
+Reuse the existing Invocation, ControlEvent, Operation, Approval, and canonical
+Artifact models. Add only the repository operations needed to manage child
+Invocations and independent Invocation state.
+
+### Stage 3: Implement the Run service and APIs
+
+Create a focused service layer responsible for:
+
+- input validation and idempotent Turn creation;
+- capability-profile snapshotting;
+- state transitions and Run detail projection;
+- human continuation;
+- cancel and abort;
+- retry as a new Turn;
+- process-restart recovery.
+
+HTTP handlers should remain limited to authentication, request parsing, and
+response shaping.
+
+### Stage 4: Implement canonical events
+
+Cover Turn and Invocation lifecycle, progress, steps, messages, structured
+results, input requests, approvals, and Artifacts.
+
+Events must remain ordered and deduplicated. SSE reconnect must recover from a
+known sequence, and late provider events must not reopen a terminal Run.
+
+### Stage 5: Move providers behind runtime adapters
+
+Migrate providers in this order:
+
+1. A2A;
+2. generic OpenAPI;
+3. LangGraph;
+4. Dify chat and workflow;
+5. CrewAI;
+6. ACP after a compatibility profile is selected.
+
+Each adapter maps its native behavior to the shared Run contract. Do not add
+new provider branches to core Session handlers.
+
+### Stage 6: Harden and prepare rollout
+
+Complete restart recovery, execution deadlines, bounded cancel-to-abort,
+terminal capability revocation, observability, feature flags, and compatibility
+tests.
+
+## Code ownership
+
+Primary areas:
+
+- `src/db/managed_agents/`;
+- `src/http/sessions/`;
+- `src/managed_agents/adapters/`;
+- imported-provider modules under `src/sdk/providers/`;
+- related routes, migrations, fixtures, and backend tests.
+
+Avoid changes under `src/ui/`. Frontend-facing changes must be delivered through
+the shared contract and fixtures.
+
+## Coordination rules
+
+- Notify the Run Surface team when a contract field changes.
+- After contract freeze, prefer additive optional fields.
+- Status or event-type changes require joint contract-test updates.
+- Provider-specific fields belong in metadata or raw evidence.
+- The Run Surface team should never need provider-native events.
+
+## Acceptance criteria
+
+The branch is ready to merge when:
+
+- legacy text conversations still work;
+- structured inputs and results survive storage and replay;
+- Run detail returns the authoritative snapshot;
+- event streaming reconnects without visible gaps or duplicates;
+- waiting input and approval flows resume correctly;
+- cancel, retry, failure, rejection, and timeout converge to one terminal state;
+- Artifacts are associated with the correct Turn and Invocation;
+- A2A and generic OpenAPI pass real-container end-to-end tests;
+- other supported providers have adapter coverage without new provider
+  branching in Session handlers;
+- backend formatting, tests, and migrations pass.
+
+## Merge order
+
+Open a draft pull request early. Keep the shared contract in the first
+separable commit.
+
+This branch merges before `codex/run-surface`. The Run Surface branch then
+rebases onto the updated `main` and connects its fixture-backed UI to the real
+APIs.

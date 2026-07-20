@@ -1,0 +1,173 @@
+---
+title: "Run surface branch execution plan"
+description: "Team execution plan for the provider-neutral Run user experience and end-to-end UI verification."
+---
+
+# Run surface branch execution plan
+
+## Branch
+
+`codex/run-surface`
+
+Update the branch from the latest `main`, then cherry-pick the shared-contract
+commit produced by `codex/run-control-plane`.
+
+## Objective
+
+Deliver a provider-neutral Run experience that lets users submit structured
+input, observe execution, respond to human requests, inspect results and
+Artifacts, cancel or retry work, and recover after refresh or stream
+disconnection.
+
+The same components must work for A2A, OpenAPI, LangGraph, Dify, CrewAI, and
+future adapters.
+
+## Team responsibility
+
+This team owns:
+
+- frontend Run types and API client;
+- the Run page or Run drawer;
+- schema-driven input;
+- status, progress, step, and Invocation presentation;
+- human input and approval interactions;
+- result and Artifact presentation;
+- cancel and retry actions;
+- SSE state management and snapshot recovery;
+- entry points from Chat, Agent details, Tasks, Routines, Inbox, and Artifacts;
+- frontend and browser end-to-end tests.
+
+The team does not own backend state transitions or provider normalization.
+
+## Required product rules
+
+1. Consume only the shared Run contract and canonical events.
+2. Do not add branches such as `provider === "dify"`.
+3. Provider names may be shown as metadata but cannot select UI behavior.
+4. A final text answer is only one possible result.
+5. Backend snapshots are authoritative.
+6. Unsupported schemas fall back to a JSON editor.
+7. Existing Chat behavior remains available for conversational agents.
+
+## Execution stages
+
+### Stage 1: Establish types and fixtures
+
+Consume the shared contract and create frontend types for interaction profile,
+Run snapshot, status, Invocation, progress, input requests, approvals,
+Artifacts, events, and errors.
+
+Develop against committed JSON fixtures until the backend APIs are available.
+
+### Stage 2: Build the Run shell
+
+Provide a reusable container with:
+
+- title, status, trigger, timing, and agent metadata;
+- input summary;
+- progress and execution timeline;
+- result and Artifact area;
+- pending human-action area;
+- cancel, retry, and navigation actions;
+- loading and terminal states.
+
+Conversational agents use Chat as the primary surface with a Run drawer.
+Workflow-style agents may use the Run surface as the primary page.
+
+### Stage 3: Build structured input
+
+The initial renderer should support text, number, boolean, enum, simple arrays
+and objects, and file or Artifact references. Unsupported structures use a raw
+JSON editor.
+
+Show field-level validation and preserve the immutable input snapshot after
+submission.
+
+### Stage 4: Build execution presentation
+
+Render Run progress, ordered steps, current and failed stages, parent/child
+Invocations, agent or tool roles, expandable details, and a raw-event
+inspector.
+
+Use stable platform IDs for reconciliation and list keys.
+
+### Stage 5: Build human interaction and results
+
+Support supplemental input, choices, file requests, authentication requests,
+approval, rejection feedback, and repeated continuation rounds.
+
+Present Markdown, JSON, tables, text, code, images, PDFs, downloadable files,
+and external references through generic Artifact components.
+
+### Stage 6: Implement live updates and recovery
+
+The UI must:
+
+1. load a Run snapshot;
+2. connect from its latest event sequence;
+3. merge deduplicated events;
+4. reconnect with the last event ID;
+5. reload the snapshot when it detects a sequence gap or inconsistent state.
+
+Refresh and temporary disconnection must not lose progress, pending actions,
+terminal state, or Artifacts.
+
+### Stage 7: Integrate entry points and real-source tests
+
+Link to Runs from Chat, Agent task history, Routine history, Inbox items, and
+Artifact provenance.
+
+Extend the real-source lab and browser tests using native services, not sources
+reshaped to imitate platform adapters.
+
+## Code ownership
+
+Primary areas:
+
+- `src/ui/src/app/`;
+- `src/ui/src/components/run/`;
+- Run-related modules under `src/ui/src/lib/`;
+- frontend tests;
+- `tests/real_source_lab/`;
+- browser end-to-end fixtures and scripts.
+
+Avoid changes under `src/db/`, `src/http/`, and
+`src/managed_agents/adapters/`. Missing backend behavior should be raised
+through the shared contract.
+
+## Coordination rules
+
+- Use fixture-backed development until the control-plane API is stable.
+- Coordinate changes to statuses, event types, commands, errors, Artifact
+  references, sequences, and timestamps.
+- Do not infer state from provider-native events.
+- Do not add frontend-only presentation fields to the backend contract unless
+  deterministic replay requires them.
+
+## Acceptance criteria
+
+The branch is ready to merge when:
+
+- one set of components renders all supported provider fixtures;
+- no provider-specific condition controls the interaction layout;
+- users can submit structured input and inspect its snapshot;
+- progress, steps, and child Invocations update correctly;
+- waiting input and approvals can be resolved;
+- Artifacts can be previewed or downloaded by media type;
+- cancel and retry reflect authoritative backend state;
+- refresh and SSE reconnection restore the Run;
+- Chat remains usable and links to its underlying Run;
+- real-source browser tests cover A2A, generic OpenAPI, LangGraph, Dify
+  workflow, and CrewAI;
+- frontend type checking, tests, and browser tests pass.
+
+## Merge order
+
+Open a draft pull request after the fixture-backed Run shell is usable.
+
+After `codex/run-control-plane` merges:
+
+1. rebase this branch onto `main`;
+2. replace fixture transport with the real APIs;
+3. run cross-provider end-to-end tests;
+4. merge behind the agreed feature flag.

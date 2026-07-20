@@ -858,15 +858,22 @@ function ChatInner() {
       getActiveTurn(sid)
         .then((turn) => {
           if (!mounted || activeSessionRef.current !== sid) return;
-          if (turn) {
+          const turnStatus = turn?.turn?.status;
+          const isBusyTurn =
+            turnStatus === "running" ||
+            turnStatus === "queued" ||
+            turnStatus === "cancelling";
+          if (turn && isBusyTurn) {
             canonicalTurnObservedRef.current = true;
             setActiveTurn(turn);
             terminalSessionSnapshotRef.current = false;
             setSessionStatus("busy");
-          } else if (canonicalTurnObservedRef.current) {
-            setActiveTurn(null);
-            terminalSessionSnapshotRef.current = true;
-            setSessionStatus("idle");
+          } else {
+            if (turn) setActiveTurn(turn);
+            if (canonicalTurnObservedRef.current || !isBusyTurn) {
+              terminalSessionSnapshotRef.current = true;
+              setSessionStatus("idle");
+            }
           }
         })
         .catch(() => {})
