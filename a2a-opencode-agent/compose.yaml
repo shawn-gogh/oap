@@ -6,7 +6,18 @@ services:
     ports:
       - "9200:9200"
     environment:
-      # Unset GATEWAY_BASE_URL so opencode uses its default free providers/auth.
+      # Route through the control-plane gateway (`lap`) to deepseek-chat,
+      # which lap actually has configured — reliable for the governance
+      # smoke test. lap exposes deepseek-chat via its Anthropic-compatible
+      # /v1/messages surface, hence GATEWAY_KIND=anthropic.
+      #
+      # To use opencode's own free Opencode Zen models instead (e.g.
+      # opencode/big-pickle) — no gateway routing, but the free backend is
+      # occasionally slow/unstable — unset GATEWAY_BASE_URL.
+      GATEWAY_KIND: ${GATEWAY_KIND:-anthropic}
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://lap:4000}
+      GATEWAY_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
+      OPENCODE_MODEL: ${OPENCODE_MODEL:-deepseek-chat}
       A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-http://a2a-opencode-test:9200/}
     extra_hosts:
       - "host.docker.internal:host-gateway"

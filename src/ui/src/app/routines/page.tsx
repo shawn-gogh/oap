@@ -2,11 +2,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
+import {
+  Pencil,
+  Play,
+  Plus,
+  Trash2,
+  Zap,
+  Clock,
+  Loader2,
+  Info,
+  Calendar,
+  Sparkles,
+  Bot,
+  AlertCircle,
+} from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -56,13 +68,13 @@ const EMPTY_FORM: RoutineForm = {
 };
 
 function timeAgo(ms?: number | null): string {
-  if (!ms) return "Never";
+  if (!ms) return "从未运行";
   const diff = Math.max(0, Date.now() - ms);
   const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return `${mins} 分钟前`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  if (hrs < 24) return `${hrs} 小时前`;
+  return `${Math.floor(hrs / 24)} 天前`;
 }
 
 export default function RoutinesPage() {
@@ -77,7 +89,7 @@ export default function RoutinesPage() {
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
-  const [logsTitle, setLogsTitle] = useState("Routine run logs");
+  const [logsTitle, setLogsTitle] = useState("任务运行日志");
   const [logsText, setLogsText] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
@@ -94,7 +106,7 @@ export default function RoutinesPage() {
       setRoutines(routineList);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load routines");
+      setError(err instanceof Error ? err.message : "加载定时任务失败");
     }
   };
 
@@ -130,9 +142,9 @@ export default function RoutinesPage() {
     setSaving(true);
     setFormError(null);
     try {
-      if (!form.agent_id) throw new Error("Agent is required");
-      if (!form.name.trim()) throw new Error("Name is required");
-      if (!form.cron.trim()) throw new Error("Schedule is required");
+      if (!form.agent_id) throw new Error("请选择关联的智能体");
+      if (!form.name.trim()) throw new Error("请输入任务名称");
+      if (!form.cron.trim()) throw new Error("请设置定时 Cron 表达式");
       const input = {
         agent_id: form.agent_id,
         name: form.name.trim(),
@@ -146,19 +158,19 @@ export default function RoutinesPage() {
       setOpen(false);
       await load();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to save routine");
+      setFormError(err instanceof Error ? err.message : "保存定时任务失败");
     } finally {
       setSaving(false);
     }
   };
 
   const remove = async (routine: Routine) => {
-    if (!confirm(`Delete routine "${routine.name}"?`)) return;
+    if (!confirm(`确定要移除定时任务 "${routine.name}" 吗？`)) return;
     setRoutines((current) => current?.filter((item) => item.id !== routine.id) ?? null);
     try {
       await deleteRoutine(routine.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete routine");
+      setError(err instanceof Error ? err.message : "删除定时任务失败");
       await load();
     }
   };
@@ -170,7 +182,7 @@ export default function RoutinesPage() {
       await triggerRoutine(routine.id);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to trigger routine");
+      setError(err instanceof Error ? err.message : "手动触发定时任务失败");
     } finally {
       setTriggeringId(null);
     }
@@ -184,200 +196,329 @@ export default function RoutinesPage() {
     if (!routine.last_run_id) return;
 
     setLogsOpen(true);
-    setLogsTitle(`${routine.name} logs`);
+    setLogsTitle(`${routine.name} 运行日志`);
     setLogsText("");
     setLogsError(null);
     setLogsLoading(true);
     try {
       const logs = await getAgentRunLogs(routine.agent_id, routine.last_run_id);
-      setLogsText(logs.trim() ? logs : "No logs were captured.");
+      setLogsText(logs.trim() ? logs : "未捕获到任何输出日志。");
     } catch (err) {
-      setLogsError(err instanceof Error ? err.message : "Failed to load run logs");
+      setLogsError(err instanceof Error ? err.message : "加载运行日志失败");
     } finally {
       setLogsLoading(false);
     }
   };
 
+  const activeCount = useMemo(
+    () => routines?.filter((r) => r.status === "active").length ?? 0,
+    [routines],
+  );
+
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden selection:bg-amber-500/20">
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <h1 className="text-sm font-semibold">定时任务</h1>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Header - Pure Chinese */}
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/80 px-4 bg-background/80 backdrop-blur">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-7 items-center justify-center rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20">
+              <Zap className="size-4" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold tracking-tight">定时任务调度</span>
+              <span className="text-xs text-muted-foreground font-medium">/ 任务</span>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={openCreate} disabled={agents.length === 0}>
+            <Button
+              size="sm"
+              className="gap-1.5 bg-amber-600 text-white hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600 font-medium text-xs shadow-xs"
+              onClick={openCreate}
+              disabled={agents.length === 0}
+            >
               <Plus className="size-4" />
-              New routine
+              新建定时任务
             </Button>
             <ThemeToggle />
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex max-w-5xl flex-col gap-3 px-4 py-6">
+        <main className="min-h-0 flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="mx-auto max-w-5xl space-y-6">
+            {/* Banner - Pure Chinese */}
+            <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card p-6 shadow-xs">
+              <div className="absolute right-0 top-0 -mr-16 -mt-16 size-64 rounded-full bg-amber-500/5 blur-3xl pointer-events-none" />
+              <div className="relative z-10 flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
+                <div className="space-y-1.5 max-w-xl">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                      <Clock className="size-3" /> CRON SCHEDULER
+                    </span>
+                    <span className="text-xs text-muted-foreground font-medium">自动化周期调度</span>
+                  </div>
+                  <h1 className="text-xl font-bold tracking-tight text-foreground">
+                    智能体后台定时任务与周期调度
+                  </h1>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    使用 Cron 表达式为智能体设置定时作业。系统将在后台自动唤醒智能体执行对应任务并生成审计日志。
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-4 shrink-0 rounded-xl bg-muted/40 p-3.5 border border-border/60">
+                  <div className="text-center">
+                    <div className="text-[11px] font-medium text-muted-foreground">任务总数</div>
+                    <div className="text-xl font-bold font-mono text-foreground">{routines?.length ?? 0}</div>
+                  </div>
+                  <div className="h-7 w-px bg-border/60" />
+                  <div className="text-center">
+                    <div className="text-[11px] font-medium text-muted-foreground">启用中</div>
+                    <div className="text-xl font-bold font-mono text-amber-600 dark:text-amber-400">{activeCount}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {error && (
-              <Card className="border-destructive p-3">
-                <p className="text-sm text-destructive">{error}</p>
-              </Card>
-            )}
-            {!routines && !error && (
-              <div className="text-sm text-muted-foreground">加载中...</div>
-            )}
-            {routines && routines.length === 0 && (
-              <div className="py-16 text-center text-sm text-muted-foreground">
-                No routines yet. Create a scheduled job for one of your agents.
+              <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-xs text-destructive font-mono">
+                {error}
               </div>
             )}
-            {routines?.map((routine) => {
-              const agent = agentsById.get(routine.agent_id);
-              const lastRun = timeAgo(routine.last_run_at);
-              const canOpenLastRun = Boolean(routine.last_session_id || routine.last_run_id);
-              return (
-                <Card key={routine.id} className="flex items-start justify-between gap-4 p-4">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-medium">{routine.name}</span>
-                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                        {routine.status}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {agent?.name ?? routine.agent_id}
-                    </p>
-                    {routine.prompt && (
-                      <p className="mt-1 line-clamp-1 font-mono text-xs text-muted-foreground/80">
-                        {routine.prompt}
-                      </p>
-                    )}
-                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1.5">
-                        <Zap className="size-3" />
-                        <span className="font-mono">
+
+            {!routines && !error && (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="h-28 animate-pulse rounded-2xl border border-border/60 bg-muted/20" />
+                ))}
+              </div>
+            )}
+
+            {routines && routines.length === 0 && (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border p-12 text-center">
+                <div className="flex size-12 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-500">
+                  <Zap className="size-6" />
+                </div>
+                <h3 className="mt-3 text-sm font-semibold">暂无配置定时任务</h3>
+                <p className="mt-1 text-xs text-muted-foreground max-w-xs leading-normal">
+                  添加首个周期任务（例如每日自动代码审计、定时巡检日志等）。
+                </p>
+                <Button
+                  size="sm"
+                  className="gap-1.5 bg-amber-600 hover:bg-amber-700 text-white mt-4"
+                  onClick={openCreate}
+                  disabled={agents.length === 0}
+                >
+                  <Plus className="size-4" />
+                  创建首个任务
+                </Button>
+              </div>
+            )}
+
+            {/* Routines Grid */}
+            <div className="space-y-3">
+              {routines?.map((routine) => {
+                const agent = agentsById.get(routine.agent_id);
+                const lastRun = timeAgo(routine.last_run_at);
+                const canOpenLastRun = Boolean(routine.last_session_id || routine.last_run_id);
+                const isActive = routine.status === "active";
+
+                return (
+                  <div
+                    key={routine.id}
+                    className="group relative flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-500/40 hover:shadow-md"
+                  >
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-sm text-foreground">{routine.name}</span>
+                        <span
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-medium border ${
+                            isActive
+                              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                              : "bg-muted text-muted-foreground border-border/40"
+                          }`}
+                        >
+                          {isActive ? "启用中" : "已暂停"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Bot className="size-3.5 text-muted-foreground shrink-0" />
+                        <span className="font-medium text-foreground">{agent?.name ?? routine.agent_id}</span>
+                      </div>
+
+                      {routine.prompt && (
+                        <p className="line-clamp-1 font-mono text-xs text-muted-foreground bg-muted/20 p-1.5 rounded border border-border/30">
+                          {routine.prompt}
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground pt-1">
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
+                          <Zap className="size-3" />
                           {scheduleLabel(routine.cron, routine.timezone)}
                         </span>
-                      </span>
-                      {canOpenLastRun ? (
-                        <button
-                          type="button"
-                          onClick={() => void openLastRun(routine)}
-                          className="underline decoration-border underline-offset-2 hover:text-foreground"
-                        >
-                          Last run {lastRun}
-                        </button>
-                      ) : (
-                        <span>上次运行 {lastRun}</span>
-                      )}
+                        {canOpenLastRun ? (
+                          <button
+                            type="button"
+                            onClick={() => void openLastRun(routine)}
+                            className="text-[11px] font-mono underline decoration-border underline-offset-2 hover:text-foreground transition-colors"
+                          >
+                            上次运行: {lastRun}
+                          </button>
+                        ) : (
+                          <span className="text-[11px] font-mono">上次运行: {lastRun}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-1.5 self-end sm:self-center">
+                      <Button
+                        size="sm"
+                        className="h-8 text-xs gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-medium"
+                        onClick={() => void trigger(routine)}
+                        disabled={triggeringId === routine.id}
+                      >
+                        {triggeringId === routine.id ? (
+                          <>
+                            <Loader2 className="size-3.5 animate-spin" />
+                            触发中...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="size-3.5" />
+                            立即执行
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2.5 hover:bg-muted"
+                        onClick={() => openEdit(routine)}
+                        aria-label="编辑任务"
+                        title="编辑任务"
+                      >
+                        <Pencil className="size-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => void remove(routine)}
+                        aria-label="移除任务"
+                        title="移除任务"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      size="sm"
-                      onClick={() => void trigger(routine)}
-                      disabled={triggeringId === routine.id}
-                    >
-                      <Play className="size-3.5" />
-                      {triggeringId === routine.id ? "Starting" : "Trigger"}
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => openEdit(routine)} aria-label="Edit">
-                      <Pencil className="size-3.5" />
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => void remove(routine)} aria-label="Delete">
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </Card>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </main>
       </div>
 
+      {/* Routine Edit/Create Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="w-[92vw] sm:max-w-2xl">
+        <DialogContent className="w-[92vw] sm:max-w-2xl rounded-2xl">
           <DialogHeader>
-            <DialogTitle>{editingId ? "Edit routine" : "New routine"}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2 text-base font-semibold">
+              <Zap className="size-4 text-amber-500" />
+              {editingId ? "编辑定时任务" : "创建新定时任务"}
+            </DialogTitle>
           </DialogHeader>
+
           <div className="grid gap-4 py-2">
             <div className="grid gap-1.5">
-              <Label>智能体</Label>
+              <Label className="text-xs font-medium text-muted-foreground uppercase">关联智能体</Label>
               <Select
                 value={form.agent_id}
                 onValueChange={(value) => setForm({ ...form, agent_id: value ?? "" })}
               >
-                <SelectTrigger className="h-8 w-full">
+                <SelectTrigger className="h-9 w-full text-xs">
                   <SelectValue>
-                    {agentsById.get(form.agent_id)?.name ?? "Select agent"}
+                    {agentsById.get(form.agent_id)?.name ?? "选择执行任务的智能体"}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {agents.map((agent) => (
-                    <SelectItem key={agent.id} value={agent.id}>
+                    <SelectItem key={agent.id} value={agent.id} className="text-xs">
                       {agent.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+
             <div className="grid gap-1.5">
-              <Label htmlFor="routine-name">名称</Label>
+              <Label htmlFor="routine-name" className="text-xs font-medium text-muted-foreground uppercase">任务名称</Label>
               <Input
                 id="routine-name"
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="每日代码审查"
+                placeholder="例如: 每日早间代码库诊断"
+                className="text-xs"
               />
             </div>
+
             <div className="grid gap-1.5">
-              <Label htmlFor="routine-prompt">指令</Label>
+              <Label htmlFor="routine-prompt" className="text-xs font-medium text-muted-foreground uppercase">任务指令文本</Label>
               <Textarea
                 id="routine-prompt"
                 value={form.prompt}
                 onChange={(event) => setForm({ ...form, prompt: event.target.value })}
-                rows={5}
-                placeholder="告诉智能体每次运行时要做什么。"
+                rows={4}
+                placeholder="告知智能体在触发时需要执行的详细任务指令..."
+                className="text-xs font-mono resize-none leading-relaxed"
               />
             </div>
+
             <ScheduleEditor
               cron={form.cron}
               timezone={form.timezone}
               onChange={(next) => setForm({ ...form, ...next })}
             />
+
             <div className="grid gap-1.5">
-              <Label>状态</Label>
+              <Label className="text-xs font-medium text-muted-foreground uppercase">状态控制</Label>
               <Select
                 value={form.status}
                 onValueChange={(value) => setForm({ ...form, status: value || "active" })}
               >
-                <SelectTrigger className="h-8 w-full">
+                <SelectTrigger className="h-9 w-full text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="active">启用</SelectItem>
-                  <SelectItem value="paused">暂停</SelectItem>
+                  <SelectItem value="active" className="text-xs">启用 (Active)</SelectItem>
+                  <SelectItem value="paused" className="text-xs">暂停 (Paused)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            {formError && <p className="text-sm text-destructive">{formError}</p>}
+
+            {formError && <div className="text-xs text-destructive rounded-md bg-destructive/10 p-2.5 font-mono">{formError}</div>}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
-              Cancel
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)} disabled={saving} className="text-xs">
+              取消
             </Button>
-            <Button onClick={() => void save()} disabled={saving}>
-              {saving ? "Saving..." : "Save routine"}
+            <Button size="sm" onClick={() => void save()} disabled={saving} className="text-xs bg-amber-600 hover:bg-amber-700 text-white font-medium">
+              {saving ? "提交保存中..." : "保存定时任务"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Logs View Dialog */}
       <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
-        <DialogContent className="flex max-h-[88vh] w-[92vw] max-w-3xl flex-col">
+        <DialogContent className="flex max-h-[88vh] w-[92vw] max-w-3xl flex-col rounded-2xl">
           <DialogHeader>
-            <DialogTitle>{logsTitle}</DialogTitle>
+            <DialogTitle className="text-sm font-semibold">{logsTitle}</DialogTitle>
           </DialogHeader>
-          {logsError && <p className="text-sm text-destructive">{logsError}</p>}
-          <pre className="min-h-48 overflow-auto rounded border border-border bg-muted p-3 font-mono text-xs text-muted-foreground">
-            {logsLoading ? "Loading..." : logsText}
+          {logsError && <div className="text-xs text-destructive rounded-md bg-destructive/10 p-2 font-mono">{logsError}</div>}
+          <pre className="min-h-48 overflow-auto rounded-xl border border-border/70 bg-muted/40 p-4 font-mono text-xs leading-relaxed text-foreground whitespace-pre-wrap">
+            {logsLoading ? "正在载入运行日志..." : logsText}
           </pre>
         </DialogContent>
       </Dialog>

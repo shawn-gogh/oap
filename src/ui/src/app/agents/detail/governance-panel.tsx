@@ -28,6 +28,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -49,11 +50,13 @@ import {
   retireAgent,
   rollbackAgent,
   saveAgentByoCredential,
+  setAgentSourceRuntimeMapping,
   syncAgentSource,
   testAgentGovernance,
   type AgentGovernanceResponse,
   type AgentPreflightReport,
   type AgentSourceOverview,
+  type RuntimeMapping,
 } from "@/lib/api";
 import { useCurrentTime } from "@/lib/use-current-time";
 import type { Agent } from "@/lib/types";
@@ -70,6 +73,11 @@ const MANAGEMENT_MODE_LABELS: Record<string, string> = {
   mirrored: "镜像托管",
   managed: "平台托管",
 };
+
+// These three bridges execute against a provider-specific I/O shape they
+// can't infer on their own — sessions::external_bridge won't run a session
+// until an operator has confirmed the mapping (config.source.raw["x-lap-runtime"]).
+const RUNTIME_MAPPING_PROVIDERS = new Set(["openapi", "langgraph", "crewai"]);
 
 const SYNC_STATE_LABELS: Record<string, string> = {
   unknown: "未知",
@@ -345,6 +353,9 @@ export function ManagedGovernancePanel({
   const [driftReason, setDriftReason] = useState("");
   const [byoDialogOpen, setByoDialogOpen] = useState(false);
   const [byoKeyDraft, setByoKeyDraft] = useState("");
+  const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
+  const [mappingDraft, setMappingDraft] = useState<RuntimeMapping>({});
+  const [mappingSaving, setMappingSaving] = useState(false);
   const governance = response.governance;
   const testedCurrentRevision =
     governance.runtime_health === "healthy" &&
@@ -384,6 +395,20 @@ export function ManagedGovernancePanel({
       toast.success("已保存你的 BYO 密钥");
     } catch (e) {
       toast.error(apiErrorMessage(e, "保存密钥失败"));
+    }
+  };
+
+  const saveMapping = async () => {
+    setMappingSaving(true);
+    try {
+      await setAgentSourceRuntimeMapping(governance.agent_id, mappingDraft);
+      onAgentChange(await getAgent(governance.agent_id));
+      setMappingDialogOpen(false);
+      toast.success("已确认执行映射，现在可以运行会话了");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "保存映射失败"));
+    } finally {
+      setMappingSaving(false);
     }
   };
 
@@ -623,7 +648,7 @@ export function ManagedGovernancePanel({
                   <MoreHorizontal className="size-3.5" />更多
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuItem onSelect={() => void runTest()}>
+                  <DropdownMenuItem onClick={() => void runTest()}>
                     <Activity className="size-3.5" />运行检查
                   </DropdownMenuItem>
                   <DropdownMenuItem
@@ -632,41 +657,43 @@ export function ManagedGovernancePanel({
                       !response.eval_gate.passed ||
                       governance.lifecycle_status === "pending_approval"
                     }
-                    onSelect={() => void requestPublish()}
+                    onClick={() => void requestPublish()}
                   >
                     <GitPullRequest className="size-3.5" />申请发布
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     disabled={governance.previous_published_revision == null}
-                    onSelect={() => void rollback()}
+                    onClick={() => void rollback()}
                   >
                     <RotateCcw className="size-3.5" />回滚版本
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="text-[11px] text-muted-foreground">
-                    诊断（平台会定期自动执行）
-                  </DropdownMenuLabel>
-                  <DropdownMenuItem onSelect={() => void runSourceAction("sync")}>
-                    <RefreshCw className="size-3.5" />立即同步来源
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => void runSourceAction("conformance")}>
-                    <ShieldCheck className="size-3.5" />契约检查
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => void runSourceAction("health")}>
-                    <Activity className="size-3.5" />健康检查
-                  </DropdownMenuItem>
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="text-[11px] text-muted-foreground">
+                      诊断（平台会定期自动执行）
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem onClick={() => void runSourceAction("sync")}>
+                      <RefreshCw className="size-3.5" />立即同步来源
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => void runSourceAction("conformance")}>
+                      <ShieldCheck className="size-3.5" />契约检查
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => void runSourceAction("health")}>
+                      <Activity className="size-3.5" />健康检查
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
                     disabled={governance.lifecycle_status === "retired"}
-                    onSelect={() => void stopOrRetire("stop")}
+                    onClick={() => void stopOrRetire("stop")}
                   >
                     紧急停止
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     variant="destructive"
                     disabled={governance.lifecycle_status === "retired"}
-                    onSelect={() => void stopOrRetire("retire")}
+                    onClick={() => void stopOrRetire("retire")}
                   >
                     退役智能体
                   </DropdownMenuItem>
@@ -701,6 +728,14 @@ export function ManagedGovernancePanel({
               >
                 {response.eval_gate.message}
               </span>
+              {/* This panel only renders for imported/federated agents
+                  (governance row required). Their eval runs execute against
+                  the platform's own model with a synthetic placeholder
+                  prompt, not the external agent's real runtime — so a
+                  pass/fail here doesn't reflect remote behavior. */}
+              <p className="mt-1 text-amber-700 dark:text-amber-400">
+                该智能体为外部联邦来源，评估结果仅供参考，不反映远端真实行为。
+              </p>
             </dd>
             <dt className="text-muted-foreground">运行凭据</dt>
             <dd>
@@ -721,6 +756,26 @@ export function ManagedGovernancePanel({
                 </span>
               )}
             </dd>
+            {RUNTIME_MAPPING_PROVIDERS.has(governance.source_provider) && (
+              <>
+                <dt className="text-muted-foreground">执行映射</dt>
+                <dd>
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    该来源需要人工确认请求/响应字段映射后才能运行会话
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMappingDraft({});
+                        setMappingDialogOpen(true);
+                      }}
+                      className="underline underline-offset-2 text-muted-foreground hover:text-foreground"
+                    >
+                      配置映射
+                    </button>
+                  </span>
+                </dd>
+              </>
+            )}
           </dl>
         </div>
       </Card>
@@ -967,6 +1022,93 @@ export function ManagedGovernancePanel({
             </Button>
             <Button size="sm" disabled={!byoKeyDraft.trim()} onClick={() => void saveByoKey()}>
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={mappingDialogOpen} onOpenChange={setMappingDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>配置执行映射</DialogTitle>
+            <DialogDescription>
+              {governance.source_provider === "openapi"
+                ? "告诉平台调用哪个站内路径、以及请求/响应里提示词和答案分别放在哪个字段。"
+                : "告诉平台请求/响应里提示词和答案分别放在哪个字段；留空则使用该运行时的默认字段名。"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-1">
+            {governance.source_provider === "openapi" && (
+              <div className="grid gap-1.5">
+                <Label htmlFor="mapping-path" className="text-xs">
+                  站内路径（必填，如 /agents/run）
+                </Label>
+                <Input
+                  id="mapping-path"
+                  value={mappingDraft.path ?? ""}
+                  onChange={(event) =>
+                    setMappingDraft((draft) => ({ ...draft, path: event.target.value }))
+                  }
+                  placeholder="/agents/run"
+                />
+              </div>
+            )}
+            <div className="grid gap-1.5">
+              <Label htmlFor="mapping-input-field" className="text-xs">
+                请求字段（默认 {governance.source_provider === "crewai" ? "topic" : "input"}）
+              </Label>
+              <Input
+                id="mapping-input-field"
+                value={mappingDraft.input_field ?? ""}
+                onChange={(event) =>
+                  setMappingDraft((draft) => ({ ...draft, input_field: event.target.value }))
+                }
+                placeholder={governance.source_provider === "crewai" ? "topic" : "input"}
+              />
+            </div>
+            {governance.source_provider === "openapi" ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="mapping-output-field" className="text-xs">
+                  响应字段（默认 output）
+                </Label>
+                <Input
+                  id="mapping-output-field"
+                  value={mappingDraft.output_field ?? ""}
+                  onChange={(event) =>
+                    setMappingDraft((draft) => ({ ...draft, output_field: event.target.value }))
+                  }
+                  placeholder="output"
+                />
+              </div>
+            ) : (
+              <div className="grid gap-1.5">
+                <Label htmlFor="mapping-output-path" className="text-xs">
+                  响应字段路径（默认 {governance.source_provider === "crewai" ? "/result" : "/output"}）
+                </Label>
+                <Input
+                  id="mapping-output-path"
+                  value={mappingDraft.output_path ?? ""}
+                  onChange={(event) =>
+                    setMappingDraft((draft) => ({ ...draft, output_path: event.target.value }))
+                  }
+                  placeholder={governance.source_provider === "crewai" ? "/result" : "/output"}
+                />
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setMappingDialogOpen(false)}>
+              取消
+            </Button>
+            <Button
+              size="sm"
+              disabled={
+                mappingSaving ||
+                (governance.source_provider === "openapi" && !mappingDraft.path?.trim())
+              }
+              onClick={() => void saveMapping()}
+            >
+              {mappingSaving ? "保存中…" : "保存并确认"}
             </Button>
           </DialogFooter>
         </DialogContent>

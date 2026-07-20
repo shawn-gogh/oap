@@ -583,6 +583,9 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
                 </div>
               </div>
             )}
+            {mode === "remote" && !importResults && error && (
+              <p className="text-sm text-destructive">{error}</p>
+            )}
             {mode === "remote" && preview.length > 0 && (
               <div className="rounded-lg border border-border bg-muted/20 p-3">
                 <div className="flex items-center justify-between gap-3">
@@ -661,7 +664,7 @@ export function ImportAgentDialog({ open, onOpenChange, onImported }: ImportAgen
               </div>
             </div>
           )}
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {mode !== "remote" && error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter className="m-0 rounded-b-xl px-6 py-4">
           {importResults ? (

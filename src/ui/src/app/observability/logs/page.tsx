@@ -10,6 +10,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
+  Zap,
 } from "lucide-react";
 
 import { Sidebar } from "@/components/sidebar";
@@ -32,7 +33,7 @@ function formatDate(value: string | null | undefined): string {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("zh-CN", {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -43,7 +44,7 @@ function formatDate(value: string | null | undefined): string {
 
 function formatDuration(ms: number | null | undefined): string {
   if (ms == null) return "-";
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(3)} s`;
+  return ms < 1000 ? `${ms} 毫秒` : `${(ms / 1000).toFixed(3)} 秒`;
 }
 
 function prettyJson(value: unknown): string {
@@ -53,7 +54,7 @@ function prettyJson(value: unknown): string {
 
 function truncateForPrompt(value: string): string {
   if (value.length <= MAX_PROMPT_JSON_CHARS) return value;
-  return `${value.slice(0, MAX_PROMPT_JSON_CHARS)}\n\n[truncated]`;
+  return `${value.slice(0, MAX_PROMPT_JSON_CHARS)}\n\n[截断未完全显示的超长部分]`;
 }
 
 function currentLogUrl(requestId: string): string {
@@ -90,7 +91,7 @@ function isStreaming(log: SpendLog): boolean {
 }
 
 function typeLabel(log: SpendLog): string {
-  return log.call_type === "messages" ? "LLM" : log.call_type;
+  return log.call_type === "messages" ? "LLM 对话" : log.call_type;
 }
 
 function timeToFirstToken(log: SpendLog): string {
@@ -106,26 +107,26 @@ function errorInfo(log: SpendLog | null): Record<string, unknown> | null {
 
 function buildDebugPrompt(log: SpendLog, error: Record<string, unknown> | null): string {
   const lines = [
-    "Debug this OAP gateway request log and identify the likely root cause.",
+    "请诊断此 OAP 网关请求日志并找出根本原因。",
     "",
-    `Log URL: ${currentLogUrl(log.request_id)}`,
-    `Request ID: ${log.request_id}`,
-    `Status: ${log.status ?? "unknown"}`,
-    `Call type: ${log.call_type}`,
-    `Provider: ${log.custom_llm_provider ?? "-"}`,
-    `Model: ${log.model_group || log.model}`,
-    `API base: ${log.api_base ?? "-"}`,
-    `Started: ${log.start_time}`,
-    `Duration: ${formatDuration(log.request_duration_ms)}`,
-    `Input tokens: ${log.prompt_tokens}`,
-    `Output tokens: ${log.completion_tokens}`,
-    `Cost: ${formatCost(log.spend)}`,
+    `日志地址: ${currentLogUrl(log.request_id)}`,
+    `请求 ID: ${log.request_id}`,
+    `状态: ${log.status ?? "未知"}`,
+    `调用类型: ${log.call_type}`,
+    `提供方: ${log.custom_llm_provider ?? "-"}`,
+    `模型: ${log.model_group || log.model}`,
+    `API 基础地址: ${log.api_base ?? "-"}`,
+    `开始时间: ${log.start_time}`,
+    `总耗时: ${formatDuration(log.request_duration_ms)}`,
+    `输入 Tokens: ${log.prompt_tokens}`,
+    `输出 Tokens: ${log.completion_tokens}`,
+    `开销: ${formatCost(log.spend)}`,
   ];
 
   if (error) {
     lines.push(
       "",
-      "Captured error:",
+      "捕获到的异常堆栈:",
       "```json",
       truncateForPrompt(prettyJson(error)),
       "```",
@@ -134,17 +135,17 @@ function buildDebugPrompt(log: SpendLog, error: Record<string, unknown> | null):
 
   lines.push(
     "",
-    "Request payload:",
+    "请求载荷 Payload:",
     "```json",
     truncateForPrompt(prettyJson(log.messages)),
     "```",
     "",
-    "Response payload:",
+    "响应载荷 Response:",
     "```json",
     truncateForPrompt(prettyJson(log.response)),
     "```",
     "",
-    "Explain what failed, where to look in the codebase, and propose the smallest safe fix. If you have repository access, implement the fix and run the relevant checks.",
+    "请说明失败原因、代码定位及最小安全修复方案。",
   );
 
   return lines.join("\n");
@@ -235,25 +236,29 @@ export default function ObservabilityLogsPage() {
   const selectedError = errorInfo(selected);
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden selection:bg-blue-500/20">
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-5">
-          <div className="min-w-0">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Pure Chinese Header */}
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/80 px-4 bg-background/80 backdrop-blur">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-7 items-center justify-center rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 ring-1 ring-blue-500/20">
+              <BarChart3 className="size-4" />
+            </div>
             <div className="flex items-center gap-2">
-              <BarChart3 className="size-4 text-muted-foreground" />
-              <h1 className="truncate text-xl font-semibold tracking-tight">请求日志</h1>
+              <span className="text-sm font-semibold tracking-tight">调用日志与观测</span>
+              <span className="text-xs text-muted-foreground font-medium">/ 调用日志</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              className="h-8 border-border bg-card text-xs"
+              className="h-8 border-border bg-card text-xs gap-1.5"
               onClick={() => load(true)}
             >
               <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
-              Fetch
+              手动拉取
             </Button>
             <ThemeToggle />
           </div>
@@ -261,47 +266,51 @@ export default function ObservabilityLogsPage() {
 
         <main id="main-content" className="relative min-h-0 flex-1 overflow-hidden">
           <section className="flex h-full min-h-0 min-w-0 flex-col bg-card">
-            <div className="border-b border-border px-4 py-3">
-              <div className="flex flex-wrap items-center justify-end gap-4 text-sm text-muted-foreground">
-                <span>第 {pageStart} - {pageEnd} 条，共 {logs.length} 条</span>
-                <span>第 {currentPage} / {totalPages} 页</span>
-                <Button
-                  variant="outline"
-                  className="h-8 border-border bg-card text-sm"
-                  disabled={currentPage <= 1}
-                  onClick={() => setPage((value) => Math.max(1, value - 1))}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-8 border-border bg-card text-sm"
-                  disabled={currentPage >= totalPages}
-                  onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-                >
-                  Next
-                </Button>
+            <div className="border-b border-border px-4 py-3 bg-muted/20">
+              <div className="flex flex-wrap items-center justify-between gap-4 text-xs font-mono text-muted-foreground">
+                <div>显示第 {pageStart} 到 {pageEnd} 条，共 {logs.length} 条记录</div>
+                <div className="flex items-center gap-3">
+                  <span>页码 {currentPage} / {totalPages}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={currentPage <= 1}
+                    onClick={() => setPage((value) => Math.max(1, value - 1))}
+                  >
+                    上一页
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                  >
+                    下一页
+                  </Button>
+                </div>
               </div>
             </div>
 
-            <div className={`border-b px-4 py-2 text-sm font-medium ${
+            <div className={`border-b px-4 py-2 text-xs font-mono flex items-center justify-between ${
               liveTail ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "border-border bg-muted text-muted-foreground"
             }`}>
-              {liveTail ? "Auto-refreshing every 15 seconds" : "Live tail paused"}
-              <Button variant="ghost" size="sm" className="float-right h-6 px-2 text-xs" onClick={() => setLiveTail(v => !v)} aria-label={liveTail ? "Stop auto-refresh" : "Start auto-refresh"}>
-                {liveTail ? "Stop" : "Start"}
+              <span>{liveTail ? "已开启实时轮询 (每 15 秒同步一次最新日志)" : "实时轮询已暂停"}</span>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs font-medium" onClick={() => setLiveTail(v => !v)}>
+                {liveTail ? "暂停轮询" : "开启轮询"}
               </Button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-auto">
               {error && (
-                <div className="m-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                <div className="m-4 rounded-xl border border-destructive/40 bg-destructive/10 p-3.5 text-xs text-destructive font-mono">
                   {error}
                 </div>
               )}
-              {loading && <div className="p-4 text-sm text-muted-foreground">正在加载日志...</div>}
+              {loading && <div className="p-4 text-xs text-muted-foreground font-mono">正在加载日志列表...</div>}
               {!loading && logs.length === 0 && !error && (
-                <div className="p-4 text-sm text-muted-foreground">暂无调用日志。</div>
+                <div className="p-4 text-xs text-muted-foreground font-mono">暂无网关调用日志。</div>
               )}
               <div className="min-w-[1660px]">
                 <TableHeader />
@@ -320,12 +329,12 @@ export default function ObservabilityLogsPage() {
           {selected && !detailOpen && (
             <button
               type="button"
-              className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-lg focus-visible:ring-2 focus-visible:ring-ring/50"
-              title="Open request details"
+              className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs font-medium text-foreground shadow-md hover:bg-muted"
+              title="展开请求详细面板"
               onClick={() => setDetailOpen(true)}
             >
               <PanelRightOpen className="size-4 text-muted-foreground" />
-              Details
+              查看详细
             </button>
           )}
 
@@ -347,19 +356,19 @@ export default function ObservabilityLogsPage() {
 function TableHeader() {
   return (
     <div className={`grid ${TABLE_COLUMNS} border-b border-border bg-card px-4 py-2.5 text-xs font-semibold text-foreground`}>
-      <div>时间</div>
+      <div>调用时间</div>
       <div>类型</div>
       <div>状态</div>
       <div>会话 ID</div>
       <div>请求 ID</div>
-      <div>费用</div>
-      <div>耗时（秒）</div>
-      <div>首字延迟（秒）</div>
-      <div>团队</div>
+      <div>费用开销</div>
+      <div>总耗时</div>
+      <div>首字延迟</div>
+      <div>团队名称</div>
       <div>密钥哈希</div>
-      <div>密钥名称</div>
-      <div>模型</div>
-      <div>Tokens</div>
+      <div>调起人</div>
+      <div>接入模型</div>
+      <div>令牌消耗 (Total)</div>
     </div>
   );
 }
@@ -375,26 +384,26 @@ function LogRow({
 }) {
   return (
     <button
-      className={`grid w-full ${TABLE_COLUMNS} items-center border-b border-border px-4 py-2.5 text-left text-[13px] transition ${
-        active ? "bg-primary/10 border-l-2 border-primary" : "hover:bg-muted"
+      className={`grid w-full ${TABLE_COLUMNS} items-center border-b border-border/60 px-4 py-2.5 text-left text-xs transition-colors ${
+        active ? "bg-blue-500/10 border-l-2 border-l-blue-500 font-medium" : "hover:bg-muted/40"
       }`}
       onClick={onSelect}
     >
       <div className="font-mono text-muted-foreground">{formatDate(log.start_time)}</div>
       <div><TypePill value={typeLabel(log)} /></div>
       <div><StatusBadge status={log.status} compact /></div>
-      <div className="truncate font-mono text-primary">{shortValue(log.session_id, 13)}</div>
+      <div className="truncate font-mono text-blue-600 dark:text-blue-400">{shortValue(log.session_id, 13)}</div>
       <div className="truncate font-mono text-muted-foreground">{shortValue(log.request_id, 18)}</div>
       <div className="font-mono text-muted-foreground">{log.status === "error" ? "-" : formatCost(log.spend)}</div>
-      <div className="font-mono text-muted-foreground">{((log.request_duration_ms ?? 0) / 1000).toFixed(2)}</div>
+      <div className="font-mono text-muted-foreground">{((log.request_duration_ms ?? 0) / 1000).toFixed(2)}s</div>
       <div className="font-mono text-muted-foreground">{timeToFirstToken(log)}</div>
       <div className="truncate text-muted-foreground">{metadataString(log, "team_name") ?? "-"}</div>
       <div className="truncate font-mono text-muted-foreground">{shortValue(log.api_key, 14)}</div>
       <div className="truncate text-muted-foreground">{log.user || "-"}</div>
-      <div className="truncate text-muted-foreground">{log.model_group || log.model}</div>
+      <div className="truncate text-muted-foreground font-mono">{log.model_group || log.model}</div>
       <div className="font-mono text-muted-foreground">
         {log.total_tokens.toLocaleString()}{" "}
-        <span className="text-muted-foreground">
+        <span className="text-muted-foreground/70">
           ({log.prompt_tokens}+{log.completion_tokens})
         </span>
       </div>
@@ -404,7 +413,7 @@ function LogRow({
 
 function TypePill({ value }: { value: string }) {
   return (
-    <span className="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-1 text-xs font-semibold text-sky-600 dark:text-sky-400">
+    <span className="inline-flex items-center rounded-md bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400 border border-blue-500/20">
       {value}
     </span>
   );
@@ -413,12 +422,12 @@ function TypePill({ value }: { value: string }) {
 function StatusBadge({ status, compact = false }: { status: string | null; compact?: boolean }) {
   const ok = status !== "error";
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold ${
-      ok ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-         : "border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-400"
+    <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium ${
+      ok ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+         : "border-destructive/30 bg-destructive/10 text-destructive"
     }`}>
-      {!compact && (ok ? <Check className="size-3.5" /> : <AlertTriangle className="size-3.5" />)}
-      {ok ? "Success" : "Failure"}
+      {!compact && (ok ? <Check className="size-3" /> : <AlertTriangle className="size-3" />)}
+      {ok ? "成功" : "失败"}
     </span>
   );
 }
@@ -443,131 +452,130 @@ function LogDetail({
 
   return (
     <div className="space-y-5 px-6 py-5">
-      <div className="border-b border-border pb-4">
+      <div className="border-b border-border/80 pb-4">
         <div className="space-y-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[15px] font-semibold text-foreground">{log.model_group || log.model}</span>
-              <span className="text-sm text-muted-foreground">{log.custom_llm_provider || "-"}</span>
+              <span className="text-sm font-bold text-foreground font-mono">{log.model_group || log.model}</span>
+              <span className="text-xs text-muted-foreground">{log.custom_llm_provider || "-"}</span>
               <Button
                 variant="ghost"
                 size="icon"
-                className="ml-auto h-8 w-8 text-muted-foreground"
-                title="Collapse request details"
+                className="ml-auto h-8 w-8 text-muted-foreground hover:bg-muted"
+                title="折叠请求详情"
                 onClick={onClose}
               >
                 <PanelRightClose className="size-4" />
               </Button>
             </div>
-            <div className="mt-4 flex min-w-0 items-center gap-2">
-              <h2 className="truncate font-mono text-[22px] font-semibold leading-tight text-foreground">
+            <div className="mt-3 flex min-w-0 items-center gap-2">
+              <h2 className="truncate font-mono text-lg font-bold leading-tight text-foreground">
                 {log.request_id}
               </h2>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-primary"
-                title="Copy request ID"
+                className="h-7 w-7 text-blue-500 hover:bg-blue-500/10"
+                title="复制请求 ID"
                 onClick={() => void copy("request", log.request_id)}
               >
-                {copied === "request" ? <Check className="size-4" /> : <Copy className="size-4" />}
+                {copied === "request" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
               </Button>
             </div>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <StatusBadge status={log.status} />
-              <span className="rounded-md border border-border bg-card px-3 py-1 text-sm">
-                Env: {metadataString(log, "environment") ?? "default"}
+              <span className="rounded-md border border-border bg-card px-2.5 py-0.5 text-xs font-mono">
+                环境: {metadataString(log, "environment") ?? "默认"}
               </span>
-              <span className="text-sm text-muted-foreground">{formatDate(log.start_time)}</span>
+              <span className="text-xs text-muted-foreground font-mono">{formatDate(log.start_time)}</span>
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 border-border bg-card text-xs"
+                className="h-7 text-xs border-border bg-card gap-1"
                 onClick={() => void copy("url", logUrl)}
               >
-                {copied === "url" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                Copy URL
+                {copied === "url" ? <Check className="size-3" /> : <Copy className="size-3" />}
+                复制地址
               </Button>
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 border-border bg-card text-xs"
+                className="h-7 text-xs border-border bg-card gap-1"
                 onClick={() => void copy("prompt", debugPrompt)}
               >
-                {copied === "prompt" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                Debug Prompt
+                {copied === "prompt" ? <Check className="size-3" /> : <Copy className="size-3" />}
+                生成诊断 Prompt
               </Button>
             </div>
           </div>
-          <div className="grid overflow-hidden rounded-md border border-border bg-card sm:grid-cols-4">
-            <DetailStat label="Cost" value={formatCost(log.spend)} />
-            <DetailStat label="Tokens" value={log.total_tokens.toLocaleString()} />
-            <DetailStat label="Latency" value={formatDuration(log.request_duration_ms)} />
-            <DetailStat label="TTFT" value={timeToFirstToken(log)} />
+          <div className="grid overflow-hidden rounded-xl border border-border bg-card sm:grid-cols-4">
+            <DetailStat label="费用开销" value={formatCost(log.spend)} />
+            <DetailStat label="总 Tokens" value={log.total_tokens.toLocaleString()} />
+            <DetailStat label="请求延迟" value={formatDuration(log.request_duration_ms)} />
+            <DetailStat label="首字延迟 (TTFT)" value={timeToFirstToken(log)} />
           </div>
         </div>
       </div>
 
-      <InfoCard title="Tags">
+      <InfoCard title="标头与关联标签">
         <TagList log={log} />
       </InfoCard>
 
-      <InfoCard title="Request Details">
+      <InfoCard title="请求元数据">
         <TwoColumnFields
           left={[
-            ["Model", log.model],
-            ["Call Type", log.call_type],
-            ["API Base", log.api_base],
+            ["模型 Group", log.model],
+            ["调用类型", log.call_type],
+            ["API 基础地址", log.api_base],
           ]}
           right={[
-            ["Provider", log.custom_llm_provider],
-            ["Model ID", log.model_id],
-            ["IP Address", log.requester_ip_address],
+            ["提供方", log.custom_llm_provider],
+            ["模型 ID", log.model_id],
+            ["请求 IP 地址", log.requester_ip_address],
           ]}
         />
       </InfoCard>
 
-      <InfoCard title="Metrics">
+      <InfoCard title="性能与 Token 指标">
         <TwoColumnFields
           left={[
-            ["Input Tokens", log.prompt_tokens.toLocaleString()],
-            ["Cost", formatCost(log.spend)],
-            ["Time to First Token", timeToFirstToken(log)],
-            ["Cache Read Tokens", metadataString(log, "cache_read_tokens") ?? "-"],
-            ["Retries", "None"],
-            ["End Time", log.end_time],
+            ["输入 Tokens", log.prompt_tokens.toLocaleString()],
+            ["费用开销", formatCost(log.spend)],
+            ["首字响应延迟", timeToFirstToken(log)],
+            ["缓存读取 Tokens", metadataString(log, "cache_read_tokens") ?? "-"],
+            ["结束时间", log.end_time],
           ]}
           right={[
-            ["Output Tokens", log.completion_tokens.toLocaleString()],
-            ["Duration", formatDuration(log.request_duration_ms)],
-            ["Cache Hit", log.cache_hit ?? "false"],
-            ["Cache Creation Tokens", metadataString(log, "cache_creation_tokens") ?? "-"],
-            ["Start Time", log.start_time],
+            ["输出 Tokens", log.completion_tokens.toLocaleString()],
+            ["总执行耗时", formatDuration(log.request_duration_ms)],
+            ["缓存命中", log.cache_hit ?? "否"],
+            ["缓存创建 Tokens", metadataString(log, "cache_creation_tokens") ?? "-"],
+            ["发起时间", log.start_time],
           ]}
         />
       </InfoCard>
 
       {error && (
-        <InfoCard title="Error Trace" tone="error">
+        <InfoCard title="异常报错追踪" tone="error">
           <div className="space-y-3">
-            <ErrorField label="Type" value={String(error.error_type ?? "-")} />
-            <ErrorField label="Message" value={String(error.message ?? "-")} />
+            <ErrorField label="错误类型" value={String(error.error_type ?? "-")} />
+            <ErrorField label="错误消息" value={String(error.message ?? "-")} />
             <CodeBlock value={String(error.trace ?? "")} tone="error" />
           </div>
         </InfoCard>
       )}
 
-      <InfoCard title="Cost Breakdown">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">合计</span>
-          <span className="font-mono text-base font-semibold text-foreground">{formatCost(log.spend)}</span>
+      <InfoCard title="费用小计">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-muted-foreground font-medium">当前调用总费用</span>
+          <span className="font-mono text-sm font-bold text-foreground">{formatCost(log.spend)}</span>
         </div>
       </InfoCard>
 
-      <InfoCard title="Request & Response">
+      <InfoCard title="请求与响应 Payload 载荷">
         <div className="space-y-3">
-          <PayloadBlock title="Input" tokens={log.prompt_tokens} value={prettyJson(log.messages)} />
-          <PayloadBlock title="Output" tokens={log.completion_tokens} value={prettyJson(log.response)} />
+          <PayloadBlock title="输入载荷 (Input)" tokens={log.prompt_tokens} value={prettyJson(log.messages)} />
+          <PayloadBlock title="输出载荷 (Output)" tokens={log.completion_tokens} value={prettyJson(log.response)} />
         </div>
       </InfoCard>
     </div>
@@ -590,7 +598,7 @@ function TagList({ log }: { log: SpendLog }) {
       {tags.map((tag, index) => (
         <span
           key={`${String(tag)}-${index}`}
-          className="rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium text-muted-foreground"
+          className="rounded-md border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
         >
           {index}: {String(tag)}
         </span>
@@ -609,15 +617,15 @@ function PayloadBlock({
   value: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
-      <div className="flex items-center gap-3 border-b border-border bg-muted px-3 py-2 text-sm">
+    <div className="overflow-hidden rounded-xl border border-border/80 bg-card">
+      <div className="flex items-center gap-3 border-b border-border/80 bg-muted/40 px-3.5 py-2 text-xs font-mono">
         <span className="font-semibold text-foreground">{title}</span>
-        <span className="text-muted-foreground">Tokens：{tokens.toLocaleString()}</span>
+        <span className="text-muted-foreground">Tokens: {tokens.toLocaleString()}</span>
         <Button
           variant="ghost"
           size="icon"
-          className="ml-auto h-7 w-7 text-muted-foreground"
-          title={`Copy ${title.toLowerCase()}`}
+          className="ml-auto h-7 w-7 text-muted-foreground hover:bg-muted"
+          title={`复制 ${title}`}
           onClick={() => navigator.clipboard?.writeText(value)}
         >
           <Copy className="size-3.5" />
@@ -630,9 +638,9 @@ function PayloadBlock({
 
 function DetailStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 border-r border-border px-3 py-2 last:border-r-0">
-      <div className="text-[11px] font-semibold uppercase text-muted-foreground">{label}</div>
-      <div className="mt-1 truncate font-mono text-[13px] font-semibold text-foreground">
+    <div className="min-w-0 border-r border-border/70 px-3.5 py-2.5 last:border-r-0">
+      <div className="text-[10px] font-medium uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate font-mono text-xs font-semibold text-foreground">
         {value}
       </div>
     </div>
@@ -649,18 +657,18 @@ function InfoCard({
   tone?: "error";
 }) {
   return (
-    <section className={`overflow-hidden rounded-lg border bg-card shadow-sm ${
-      tone === "error" ? "border-destructive/40" : "border-border"
+    <section className={`overflow-hidden rounded-2xl border bg-card shadow-2xs ${
+      tone === "error" ? "border-destructive/40" : "border-border/80"
     }`}>
-      <div className="flex h-12 items-center gap-2 border-b border-border px-5">
-        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">{title}</h3>
+      <div className="flex h-10 items-center gap-2 border-b border-border/70 px-4 bg-muted/20">
+        <h3 className="text-xs font-semibold tracking-tight text-foreground">{title}</h3>
         {tone === "error" && (
-          <span className="ml-auto rounded-md bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
-            Captured on error
+          <span className="ml-auto rounded-md bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
+            包含捕获到的异常
           </span>
         )}
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-4">{children}</div>
     </section>
   );
 }
@@ -673,13 +681,13 @@ function TwoColumnFields({
   right: Array<[string, string | null | undefined]>;
 }) {
   return (
-    <div className="grid gap-x-14 gap-y-3 md:grid-cols-2">
-      <div className="space-y-3">
+    <div className="grid gap-x-8 gap-y-2.5 md:grid-cols-2 text-xs font-mono">
+      <div className="space-y-2.5">
         {left.map(([label, value]) => (
           <InlineMetric key={label} label={label} value={value} />
         ))}
       </div>
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         {right.map(([label, value]) => (
           <InlineMetric key={label} label={label} value={value} />
         ))}
@@ -690,18 +698,18 @@ function TwoColumnFields({
 
 function InlineMetric({ label, value }: { label: string; value: string | null | undefined }) {
   return (
-    <div className="flex min-w-0 items-baseline gap-2 text-[15px]">
+    <div className="flex min-w-0 items-baseline gap-2">
       <span className="shrink-0 text-muted-foreground">{label}:</span>
-      <span className="min-w-0 break-words font-medium text-foreground">{value || "-"}</span>
+      <span className="min-w-0 break-words font-semibold text-foreground">{value || "-"}</span>
     </div>
   );
 }
 
 function ErrorField({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-destructive/20 bg-card px-3 py-2">
-      <div className="text-[11px] font-semibold uppercase text-destructive">{label}</div>
-      <div className="mt-1 break-words text-sm font-medium text-foreground">{value}</div>
+    <div className="rounded-xl border border-destructive/20 bg-card p-3 font-mono">
+      <div className="text-[10px] font-semibold uppercase text-destructive">{label}</div>
+      <div className="mt-1 break-words text-xs font-medium text-foreground">{value}</div>
     </div>
   );
 }
@@ -717,12 +725,12 @@ function CodeBlock({
 }) {
   return (
     <pre
-      className={`overflow-auto rounded-md border p-4 font-mono text-xs leading-5 ${
+      className={`overflow-auto p-4 font-mono text-xs leading-relaxed ${
         compact ? "max-h-[260px]" : "max-h-[540px]"
       } ${
         tone === "error"
-          ? "border-destructive/40 bg-destructive/10 text-destructive"
-          : "border-border bg-muted text-foreground"
+          ? "bg-destructive/10 text-destructive"
+          : "bg-muted/30 text-foreground"
       }`}
     >
       {value}

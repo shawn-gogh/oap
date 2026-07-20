@@ -89,6 +89,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::registry::create::create).get(super::registry::list::list),
         )
         .route(
+            "/api/agents/deleted",
+            get(super::registry::list_deleted::list_deleted),
+        )
+        .route(
             "/api/agents/{agent_id}",
             get(super::registry::get::get)
                 .patch(super::registry::update::update)
@@ -184,6 +188,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/agents/{agent_id}/source/sync",
             post(super::source_management::sync_source),
+        )
+        .route(
+            "/api/agents/{agent_id}/source/runtime-mapping",
+            post(super::source_management::set_runtime_mapping),
         )
         .route(
             "/api/agents/{agent_id}/source/drift/accept",

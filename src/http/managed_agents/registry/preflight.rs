@@ -167,15 +167,32 @@ async fn check_source_contract(
                     detail: "来源处于同步状态且没有待处理漂移。".to_owned(),
                 }
             }
-            Some(source) => PreflightCheck {
-                id: "source_sync",
-                label: "来源同步".to_owned(),
-                verdict: FAILED,
-                detail: format!(
-                    "来源状态为 {}，必须先处理同步错误、缺失或候选漂移。",
-                    source.sync_state
-                ),
-            },
+            Some(source) => {
+                let reason = if source.sync_state == "sync_error" {
+                    crate::db::managed_agents::sources::repository::latest_sync_run(
+                        pool, &source.id,
+                    )
+                    .await?
+                    .and_then(|run| run.error_detail)
+                } else {
+                    None
+                };
+                PreflightCheck {
+                    id: "source_sync",
+                    label: "来源同步".to_owned(),
+                    verdict: FAILED,
+                    detail: match reason {
+                        Some(reason) => format!(
+                            "来源状态为 {}：{}。请先处理该错误，或到「来源、漂移与运行保障」区点击「立即同步来源」重试。",
+                            source.sync_state, reason
+                        ),
+                        None => format!(
+                            "来源状态为 {}，必须先处理同步错误、缺失或候选漂移。",
+                            source.sync_state
+                        ),
+                    },
+                }
+            }
             None => PreflightCheck {
                 id: "source_sync",
                 label: "来源同步".to_owned(),
@@ -193,14 +210,37 @@ async fn check_source_contract(
 /// know the agent is catalog-only rather than misconfigured.
 fn runtime_contract_detail(conformance: &ConformanceReport, federated: bool) -> String {
     if conformance.status != "conformant" && federated {
-        format!(
+        return format!(
             "该来源协议暂不支持平台托管执行，仅可编目发现，不能通过治理测试或发布运行（契约状态：{}）。",
             conformance.status
-        )
-    } else {
+        );
+    }
+    if conformance.status == "conformant" {
+        return format!(
+            "契约 {} 检查结果：{}。",
+            conformance.contract_version, conformance.status
+        );
+    }
+    // "partial"/"non_conformant" alone tells the operator nothing about what
+    // to fix — name the specific required sub-checks that failed, matching
+    // the ids/labels shown in the governance panel's own breakdown table.
+    let failing: Vec<&str> = conformance
+        .checks
+        .iter()
+        .filter(|check| check.required && !check.passed)
+        .map(|check| check.detail.as_str())
+        .collect();
+    if failing.is_empty() {
         format!(
             "契约 {} 检查结果：{}。",
             conformance.contract_version, conformance.status
+        )
+    } else {
+        format!(
+            "契约 {} 检查结果：{}。未满足的必需项：{}",
+            conformance.contract_version,
+            conformance.status,
+            failing.join("；")
         )
     }
 }

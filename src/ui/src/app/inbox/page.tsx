@@ -10,6 +10,7 @@ import {
   Inbox as InboxIcon,
   RefreshCw,
   ShieldCheck,
+  Zap,
 } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -29,17 +30,17 @@ import {
 function timeAgo(ts?: number | null): string {
   if (!ts) return "";
   const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (secs < 60) return `${secs}s`;
+  if (secs < 60) return `${secs} 秒前`;
   const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
+  if (mins < 60) return `${mins} 分钟前`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
+  if (hrs < 24) return `${hrs} 小时前`;
+  return `${Math.floor(hrs / 24)} 天前`;
 }
 
 function formatDate(ts?: number | null): string {
   if (!ts) return "未知";
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("zh-CN", {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -50,19 +51,19 @@ function formatDate(ts?: number | null): string {
 const TABS: { key: InboxFilter; label: string }[] = [
   { key: "attention", label: "待处理" },
   { key: "completed", label: "已完成" },
-  { key: "all", label: "全部" },
+  { key: "all", label: "全部消息" },
 ];
 
 const statusStyles: Record<string, { label: string; cls: string }> = {
-  pending: { label: "待审批", cls: "border-border bg-muted/50 text-foreground" },
-  open: { label: "待处理问题", cls: "border-border bg-muted/50 text-foreground" },
+  pending: { label: "待审批", cls: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400" },
+  open: { label: "待处理问题", cls: "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400" },
   accepted: {
     label: "已批准",
-    cls: "border-border bg-muted/40 text-muted-foreground",
+    cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   },
   rejected: {
     label: "已拒绝",
-    cls: "border-border bg-muted/40 text-muted-foreground",
+    cls: "border-destructive/30 bg-destructive/10 text-destructive",
   },
   resolved: {
     label: "已解决",
@@ -82,9 +83,9 @@ function approvalKindLabel(item: InboxItem): string {
   const labels: Partial<Record<InboxItem["kind"], string>> = {
     approval: "兼容审批",
     business_decision: "业务决策",
-    tool_permission: "运行时权限（兼容）",
+    tool_permission: "运行时权限",
     runtime_permission: "运行时权限",
-    unlisted_data_egress: "数据外发（兼容）",
+    unlisted_data_egress: "数据外发",
     data_egress: "数据外发",
     agent_publish: "智能体发布",
     agent_change: "智能体变更",
@@ -124,25 +125,25 @@ function itemTone(item: InboxItem): string {
 }
 
 function attentionDot(item: InboxItem): string {
-  if (item.status === "pending") return "bg-amber-400";
-  if (item.status === "open") return "bg-foreground";
+  if (item.status === "pending") return "bg-amber-500 animate-pulse";
+  if (item.status === "open") return "bg-blue-500";
   return "bg-muted-foreground/35";
 }
 
 function EmptyState({ tab }: { tab: InboxFilter }) {
   return (
     <div className="flex h-full min-h-[360px] items-center justify-center px-6">
-      <div className="max-w-sm text-center">
-        <div className="mx-auto flex size-11 items-center justify-center rounded-lg border border-border bg-muted/40">
-          <ShieldCheck className="size-5 text-muted-foreground" />
+      <div className="max-w-sm text-center space-y-3">
+        <div className="mx-auto flex size-12 items-center justify-center rounded-2xl border border-border bg-muted/30 text-muted-foreground">
+          <ShieldCheck className="size-6 text-emerald-500" />
         </div>
-        <div className="mt-4 text-sm font-medium">
-          {tab === "attention" ? "没有被阻塞的智能体" : "收件箱为空"}
+        <div className="text-sm font-semibold text-foreground">
+          {tab === "attention" ? "暂无待阻塞的人工处理任务" : "收件箱无记录"}
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground leading-relaxed">
           {tab === "attention"
-            ? "当智能体的工作需要人工决定时，审批和问题会出现在这里。"
-            : "切换标签或稍后刷新查看智能体的新动态。"}
+            ? "当智能体的工具调用或执行流程需要人工审批确认时，消息会在此处显示。"
+            : "可切换顶部标签或稍后手动刷新接收新动态。"}
         </p>
       </div>
     </div>
@@ -295,16 +296,22 @@ function InboxInner() {
   );
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden selection:bg-blue-500/20">
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background px-4">
-          <div className="flex items-center gap-2">
-            <InboxIcon className="size-4 text-muted-foreground" />
-            <span className="text-sm font-semibold">智能体收件箱</span>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Pure Chinese Header */}
+        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/80 px-4 bg-background/80 backdrop-blur">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-7 items-center justify-center rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 ring-1 ring-blue-500/20">
+              <InboxIcon className="size-4" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold tracking-tight">智能体收件箱</span>
+              <span className="text-xs text-muted-foreground font-medium">/ 收件箱</span>
+            </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon-sm" onClick={() => load(tab)} aria-label="刷新收件箱">
+            <Button variant="ghost" size="icon-sm" onClick={() => load(tab)} title="刷新消息队列">
               <RefreshCw className="size-3.5" />
             </Button>
             <ThemeToggle />
@@ -312,69 +319,75 @@ function InboxInner() {
         </header>
 
         <main id="main-content" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <section className="border-b border-border px-4 py-4">
+          {/* Top Summary Banner */}
+          <section className="border-b border-border px-6 py-4 bg-card/40">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0">
-                <h1 className="text-xl font-semibold tracking-tight leading-tight">人工审核队列</h1>
-                <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  审批被阻塞的工具调用、处理智能体上报的问题，并可直接跳回来源会话。
+              <div className="min-w-0 space-y-1">
+                <h1 className="text-xl font-bold tracking-tight leading-tight text-foreground">
+                  人工审核与响应队列
+                </h1>
+                <p className="max-w-2xl text-xs text-muted-foreground leading-relaxed">
+                  审批受限的工具调用请求、处理智能体上报的异常，或直接跳回来源会话。
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-                <div>
-                  <span className="font-semibold text-foreground">{items ? counts.blocked : "…"}</span>
-                  <span className="ml-1.5 text-muted-foreground">needs action</span>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-foreground font-mono text-base">{items ? counts.blocked : "…"}</span>
+                  <span className="text-muted-foreground">需人工干预</span>
                 </div>
-                <div className="h-4 w-px bg-border" />
-                <div>
-                  <span className="font-semibold text-foreground">{items ? counts.approvals : "…"}</span>
-                  <span className="ml-1.5 text-muted-foreground">approvals</span>
+                <div className="h-4 w-px bg-border/60" />
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-foreground font-mono text-base">{items ? counts.approvals : "…"}</span>
+                  <span className="text-muted-foreground">待审批项</span>
                 </div>
-                <div className="h-4 w-px bg-border" />
-                <div>
-                  <span className="font-semibold text-foreground">{items ? counts.issues : "…"}</span>
-                  <span className="ml-1.5 text-muted-foreground">issues</span>
+                <div className="h-4 w-px bg-border/60" />
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-foreground font-mono text-base">{items ? counts.issues : "…"}</span>
+                  <span className="text-muted-foreground">待解决问题</span>
                 </div>
-                <div className="hidden h-4 w-px bg-border sm:block" />
-                <div className="text-xs text-muted-foreground">refreshes every 4s</div>
+                <div className="hidden h-4 w-px bg-border/60 sm:block" />
+                <div className="text-[11px] text-muted-foreground font-mono">每 4 秒自动轮询</div>
               </div>
             </div>
           </section>
 
-          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2">
-            <div className="flex items-center gap-1 rounded-md border border-border bg-background p-1">
+          {/* Filter Bar */}
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 bg-muted/10">
+            <div className="flex items-center gap-1 rounded-xl border border-border/70 bg-muted/30 p-1">
               {TABS.map((t) => (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className={`h-7 rounded-md px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
+                  className={`h-7 rounded-lg px-3 text-xs font-medium transition-all ${
                     tab === t.key
-                      ? "bg-secondary text-secondary-foreground"
-                      : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                      ? "bg-background text-foreground shadow-2xs font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   {t.label}
                 </button>
               ))}
             </div>
-            <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
+            <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex font-mono">
               <Clock3 className="size-3.5" />
-              <span>{items ? `${items.length} 条` : "正在加载队列"}</span>
+              <span>{items ? `${items.length} 条数据` : "正在加载队列..."}</span>
             </div>
           </div>
 
+          {/* Master Detail View */}
           <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-            <div className="flex max-h-[42vh] w-full min-w-0 flex-col border-b border-border md:max-h-none md:w-[42%] md:min-w-[340px] md:border-b-0 md:border-r xl:w-[480px]">
+            {/* Master List */}
+            <div className="flex max-h-[42vh] w-full min-w-0 flex-col border-b border-border md:max-h-none md:w-[42%] md:min-w-[340px] md:border-b-0 md:border-r xl:w-[460px] bg-card/20">
               <div className="flex-1 overflow-y-auto">
                 {error && (
-                  <div className="m-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  <div className="m-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive font-mono">
                     {error}
                   </div>
                 )}
                 {!items && !error && (
                   <div className="space-y-2 px-4 py-3" aria-label="正在加载收件箱">
                     {[...Array(5)].map((_, i) => (
-                      <div key={i} className="animate-pulse rounded-md border border-border/50 bg-muted/40 px-4 py-3">
+                      <div key={i} className="animate-pulse rounded-xl border border-border/50 bg-muted/40 px-4 py-3">
                         <div className="flex items-start gap-2">
                           <div className="mt-2 size-1.5 shrink-0 rounded-full bg-muted-foreground/20" />
                           <div className="min-w-0 flex-1 space-y-2">
@@ -394,33 +407,33 @@ function InboxInner() {
                     <button
                       key={item.id}
                       onClick={() => selectItem(item.id)}
-                      className={`flex w-full border-b border-border/70 px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset ${itemTone(item)} ${
-                        active ? "bg-muted/55" : "hover:bg-muted/25"
+                      className={`flex w-full border-b border-border/50 px-4 py-3.5 text-left transition-all ${itemTone(item)} ${
+                        active ? "bg-muted/70 border-l-2 border-l-blue-500" : "hover:bg-muted/30"
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-start gap-2">
-                          <div className="mt-2 flex size-3 shrink-0 items-center justify-center">
-                            <span className={`size-1.5 rounded-full ${attentionDot(item)}`} />
+                        <div className="flex items-start gap-2.5">
+                          <div className="mt-1.5 flex size-3 shrink-0 items-center justify-center">
+                            <span className={`size-2 rounded-full ${attentionDot(item)}`} />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <span className="truncate text-sm font-medium">{item.title}</span>
-                              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                              <span className="truncate text-xs font-semibold text-foreground">{item.title}</span>
+                              <span className="ml-auto shrink-0 text-[10px] font-mono text-muted-foreground">
                                 {timeAgo(item.createdAt)}
                               </span>
                             </div>
-                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-                              <span className="text-xs text-muted-foreground">
+                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px]">
+                              <span className="text-muted-foreground font-medium">
                                 {statusStyles[item.status]?.label ?? item.status}
                               </span>
-                              <span className="text-xs text-muted-foreground" aria-hidden="true">/</span>
-                              <span className="truncate text-xs text-muted-foreground">
-                                {item.agent ?? "未指派智能体"}
+                              <span className="text-muted-foreground/40">/</span>
+                              <span className="truncate text-muted-foreground">
+                                {item.agent ?? "通用智能体"}
                               </span>
                             </div>
                             {itemPreview && (
-                              <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                              <p className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground font-mono bg-muted/20 p-1.5 rounded border border-border/30">
                                 {itemPreview}
                               </p>
                             )}
@@ -433,65 +446,69 @@ function InboxInner() {
               </div>
             </div>
 
-            <div className="min-w-0 flex-1 overflow-y-auto">
+            {/* Detail View */}
+            <div className="min-w-0 flex-1 overflow-y-auto p-5 bg-background">
               {!selected ? (
                 <EmptyState tab={tab} />
               ) : (
-                <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-5 py-5">
-                  <div className="rounded-lg border border-border bg-card">
-                    <div className="flex flex-col gap-4 border-b border-border px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+                  <div className="rounded-2xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+                    <div className="flex flex-col gap-4 border-b border-border/70 px-5 py-4 lg:flex-row lg:items-start lg:justify-between bg-muted/20">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusTag item={selected} />
                           {selected.escalatedAt && (
-                            <span className="inline-flex h-6 items-center rounded-md border border-amber-500/30 bg-amber-500/10 px-2 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                              已升级至 {selected.escalationRole}
+                            <span className="inline-flex h-6 items-center rounded-md border border-amber-500/30 bg-amber-500/10 px-2 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                              升级至权限组 {selected.escalationRole}
                             </span>
                           )}
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-xs text-muted-foreground font-medium">
                             {approvalKindLabel(selected)} · {selected.enforcementOwner} 执行
                           </span>
                         </div>
-                        <h2 className="mt-3 text-base font-semibold tracking-tight leading-snug">{selected.title}</h2>
-                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                          <span>{selected.agent ?? "未指派智能体"}</span>
-                          <span>{formatDate(selected.createdAt)}</span>
-                          {selected.resolvedAt && <span>解决于 {formatDate(selected.resolvedAt)}</span>}
+                        <h2 className="mt-2 text-base font-bold tracking-tight text-foreground">{selected.title}</h2>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                          <span>智能体: {selected.agent ?? "未指定"}</span>
+                          <span>创建时间: {formatDate(selected.createdAt)}</span>
+                          {selected.resolvedAt && <span>解决于: {formatDate(selected.resolvedAt)}</span>}
                         </div>
                       </div>
                       {selected.sessionId && (
                         <Button
                           variant="outline"
                           size="sm"
+                          className="h-8 text-xs gap-1.5 shrink-0"
                           onClick={() => router.push(`/chat/?id=${encodeURIComponent(selected.sessionId!)}`)}
                         >
                           <ExternalLink className="size-3.5" />
-                          打开会话
+                          跳转至会话
                         </Button>
                       )}
                     </div>
+
                     {selected.body && (
-                      <div className="border-b border-border px-4 py-3">
-                        <div className="text-[11px] font-medium uppercase text-muted-foreground">智能体备注</div>
-                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{selected.body}</p>
+                      <div className="border-b border-border/70 px-5 py-3.5 bg-background/50">
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">智能体说明备注</div>
+                        <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground font-mono">{selected.body}</p>
                       </div>
                     )}
-                    <div className="grid grid-cols-2 gap-px bg-border text-xs md:grid-cols-4">
+
+                    <div className="grid grid-cols-2 gap-px bg-border/60 text-xs md:grid-cols-4">
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">条目 ID</div>
-                        <div className="mt-1 truncate font-mono">{selected.id}</div>
+                        <div className="text-[11px] text-muted-foreground font-medium">条目 ID</div>
+                        <div className="mt-0.5 truncate font-mono text-xs">{selected.id}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">会话</div>
-                        <div className="mt-1 truncate font-mono">{selected.sessionId ?? "none"}</div>
+                        <div className="text-[11px] text-muted-foreground font-medium">关联会话</div>
+                        <div className="mt-0.5 truncate font-mono text-xs">{selected.sessionId ?? "无"}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">状态</div>
-                        <div className="mt-1">{statusStyles[selected.status]?.label ?? selected.status}</div>
+                        <div className="text-[11px] text-muted-foreground font-medium">处理状态</div>
+                        <div className="mt-0.5 font-medium">{statusStyles[selected.status]?.label ?? selected.status}</div>
                       </div>
                       <div className="bg-card px-4 py-3">
-                        <div className="text-muted-foreground">交付状态</div>
-                        <div className="mt-1 truncate">{selected.deliveryStatus}</div>
+                        <div className="text-[11px] text-muted-foreground font-medium">交付状态</div>
+                        <div className="mt-0.5 truncate font-mono text-xs">{selected.deliveryStatus}</div>
                       </div>
                     </div>
                   </div>
@@ -518,13 +535,14 @@ function InboxInner() {
                   )}
 
                   {isApprovalKind(selected.kind) && selected.status !== "pending" && (
-                    <div className="rounded-lg border border-border bg-card p-4">
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <div className="text-sm font-medium">审批记录</div>
+                    <div className="rounded-2xl border border-border/70 bg-card p-5 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs font-semibold text-foreground">审批历史明细</div>
                         {selected.deliveryStatus === "delivery_failed" && (
                           <Button
                             size="sm"
                             variant="outline"
+                            className="h-7 text-xs gap-1"
                             onClick={() => void onRetryDelivery(selected.id)}
                             disabled={busy}
                           >
@@ -534,7 +552,7 @@ function InboxInner() {
                         )}
                       </div>
                       {selected.lastDeliveryError && (
-                        <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive font-mono">
                           {selected.lastDeliveryError}
                         </div>
                       )}
@@ -542,41 +560,41 @@ function InboxInner() {
                         <div className="space-y-3">
                           {Object.entries(selected.args).map(([k, v]) => (
                             <div key={k}>
-                              <div className="text-xs text-muted-foreground">{k}</div>
-                              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs">
+                              <div className="text-xs font-mono text-muted-foreground">{k}</div>
+                              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-xl border border-border/70 bg-muted/30 px-3.5 py-2.5 font-mono text-xs leading-relaxed">
                                 {typeof v === "string" ? v : JSON.stringify(v, null, 2)}
                               </pre>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <p className="text-sm text-muted-foreground">该操作没有参数。</p>
+                        <p className="text-xs text-muted-foreground">该操作无参数输入。</p>
                       )}
                       {selected.feedback && (
-                        <div className="mt-4 border-t border-border pt-4">
-                          <div className="text-xs font-medium text-muted-foreground">给智能体的反馈</div>
-                          <p className="mt-1 whitespace-pre-wrap text-sm">{selected.feedback}</p>
+                        <div className="mt-4 border-t border-border/50 pt-3.5">
+                          <div className="text-xs font-medium text-muted-foreground">人工反馈意见</div>
+                          <p className="mt-1 whitespace-pre-wrap text-xs text-foreground leading-relaxed">{selected.feedback}</p>
                         </div>
                       )}
                     </div>
                   )}
 
                   {selected.kind === "issue" && (
-                    <div className="rounded-lg border border-border bg-card p-4">
-                      <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="rounded-2xl border border-border/70 bg-card p-5 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-sm font-medium">问题详情</div>
-                          <div className="text-xs text-muted-foreground">智能体提交给人工处理的备注。</div>
+                          <div className="text-xs font-semibold text-foreground">问题报告详情</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">智能体上报的人工处理说明。</div>
                         </div>
                         {selected.status === "open" && (
-                          <Button size="sm" onClick={() => onResolve(selected.id)} disabled={busy}>
+                          <Button size="sm" className="h-7 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => onResolve(selected.id)} disabled={busy}>
                             <CheckCircle2 className="size-3.5" />
                             标记已解决
                           </Button>
                         )}
                       </div>
-                      <p className="whitespace-pre-wrap rounded-md border border-border bg-muted/30 px-3 py-2 text-sm leading-6">
-                        {selected.body || "未提供详情。"}
+                      <p className="whitespace-pre-wrap rounded-xl border border-border/70 bg-muted/30 px-3.5 py-2.5 text-xs leading-relaxed font-mono">
+                        {selected.body || "未提供更详细的信息。"}
                       </p>
                     </div>
                   )}
@@ -594,8 +612,8 @@ export default function InboxPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-          Loading inbox…
+        <div className="flex h-screen items-center justify-center bg-background text-xs text-muted-foreground font-mono">
+          加载消息队列...
         </div>
       }
     >

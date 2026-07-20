@@ -75,6 +75,13 @@ pub async fn get(
     .map_err(GatewayError::Database)
 }
 
+/// Matches a live agent for "re-importing the same source updates it in
+/// place" (see `persist_imported_agent`/`update_from_import`). Deliberately
+/// excludes soft-deleted agents (`archived_pending_delete`, pending the
+/// reaper's 7-day purge, see `registry::cleanup`) — otherwise re-importing a
+/// source you just deleted silently resurrects the old agent under its old
+/// id, with all its sessions/tasks/history intact, which contradicts what
+/// "delete" told the user it did.
 pub async fn find_by_source(
     pool: &PgPool,
     owner_id: &str,
@@ -84,9 +91,11 @@ pub async fn find_by_source(
 ) -> Result<Option<AgentGovernanceRow>, GatewayError> {
     sqlx::query_as::<_, AgentGovernanceRow>(
         r#"
-        SELECT * FROM "LiteLLM_ManagedAgentGovernanceTable"
-        WHERE owner_id = $1 AND source_provider = $2
-          AND source_endpoint = $3 AND external_agent_id = $4
+        SELECT g.* FROM "LiteLLM_ManagedAgentGovernanceTable" g
+        JOIN "LiteLLM_ManagedAgentsTable" a ON a.id = g.agent_id
+        WHERE g.owner_id = $1 AND g.source_provider = $2
+          AND g.source_endpoint = $3 AND g.external_agent_id = $4
+          AND a.status != 'archived_pending_delete'
         "#,
     )
     .bind(owner_id)
@@ -103,6 +112,34 @@ pub async fn record_import(
     source: ImportedSource<'_>,
 ) -> Result<AgentGovernanceRow, GatewayError> {
     let now = now_ms();
+    // (owner_id, source_provider, source_endpoint, external_agent_id) is
+    // unique — a soft-deleted agent's governance row still holds that
+    // identity for the rest of its 7-day retention window (see
+    // `registry::cleanup`), so importing the same source again to make a
+    // *new* agent (see `find_by_source`, which excludes soft-deleted rows)
+    // would otherwise collide on that constraint. Free the identity by
+    // tombstoning the old row instead of blocking the re-import or silently
+    // reviving the deleted agent under it.
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentGovernanceTable" g
+        SET external_agent_id = g.external_agent_id || '#deleted:' || g.agent_id
+        FROM "LiteLLM_ManagedAgentsTable" a
+        WHERE a.id = g.agent_id
+          AND g.agent_id != $1
+          AND g.owner_id = $2 AND g.source_provider = $3
+          AND g.source_endpoint = $4 AND g.external_agent_id = $5
+          AND a.status = 'archived_pending_delete'
+        "#,
+    )
+    .bind(source.agent_id)
+    .bind(source.owner_id)
+    .bind(source.provider)
+    .bind(source.endpoint)
+    .bind(source.external_agent_id)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
     let governance = sqlx::query_as::<_, AgentGovernanceRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentGovernanceTable" (

@@ -151,6 +151,15 @@ pub async fn request_publish(
     .await?;
     let base_revision = governance.published_revision.unwrap_or(0);
     let governance = governance::request_publish(&pool, &agent.id, &approval.id).await?;
+    // The agent list shows `agent.status`, not `governance.lifecycle_status` —
+    // without this, a previously-published agent stays "active" in the list
+    // for the entire pending-approval window, hiding that a re-publish is in
+    // flight. `apply_publish_approval` flips it back to "active" on approval.
+    if agent.status == "active" {
+        repository::set_status(&pool, &agent.id, "draft")
+            .await?
+            .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+    }
     audit::record(
         &pool,
         &auth.user_id,

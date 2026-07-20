@@ -3,6 +3,7 @@ pub mod create;
 pub mod delete;
 pub mod get;
 pub mod list;
+pub mod list_deleted;
 pub mod pause;
 pub mod preflight;
 pub mod restore;

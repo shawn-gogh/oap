@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bot, Plus, X, Brain, Plug, Upload } from "lucide-react";
+import { Bot, Plus, X, Brain, Plug, Trash2, Upload } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -63,6 +63,7 @@ import type {
 import { useMattermostAppFlow } from "./mattermost-app-flow";
 import { useWebhookAppFlow } from "./webhook-app-flow";
 import { ImportAgentDialog } from "./import-agent-dialog";
+import { DeletedAgentsDialog } from "./deleted-agents-dialog";
 import { AgentsTable } from "./agents-table";
 import {
   agentConfig,
@@ -124,6 +125,7 @@ export default function AgentsPage() {
   const [memKey, setMemKey] = useState("");
   const [memValue, setMemValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [deletedOpen, setDeletedOpen] = useState(false);
   const [byoConfiguredAgents, setByoConfiguredAgents] = useState<Set<string>>(new Set());
   const mattermostFlow = useMattermostAppFlow(setAgents);
   const webhookFlow = useWebhookAppFlow(setAgents);
@@ -156,6 +158,23 @@ export default function AgentsPage() {
     listByoConfiguredAgents()
       .then((ids) => setByoConfiguredAgents(new Set(ids)))
       .catch(() => setByoConfiguredAgents(new Set()));
+  }, []);
+
+  // Governance actions (test/publish/approve/rollback) happen entirely on
+  // the separate /agents/detail route and never write back into this list's
+  // state — a user coming back here via browser back/forward (bfcache, no
+  // remount) would otherwise keep seeing pre-edit status until a hard
+  // navigation. Refetch whenever this tab/page becomes visible again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+    };
   }, []);
 
   const attachVaultKey = (key: string) => {
@@ -321,7 +340,7 @@ export default function AgentsPage() {
   const remove = async (ag: Agent) => {
     const ok = await confirmAction({
       title: `删除智能体「${String(ag.name)}」？`,
-      description: "其配置、评估历史和工作区文件将一并删除，且无法恢复。",
+      description: "7 天内可以在「已删除」里复原；超过 7 天后台会永久清除其配置、评估历史和工作区文件。",
     });
     if (!ok) return;
     setAgents((prev) => prev?.filter((x) => x.id !== ag.id) ?? null);
@@ -364,6 +383,10 @@ export default function AgentsPage() {
             <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
               <Upload className="size-4" />
               Import agent
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setDeletedOpen(true)}>
+              <Trash2 className="size-4" />
+              已删除
             </Button>
             <ThemeToggle />
           </div>
@@ -810,6 +833,11 @@ export default function AgentsPage() {
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={(imported) => setAgents((current) => [...imported, ...(current ?? [])])}
+      />
+      <DeletedAgentsDialog
+        open={deletedOpen}
+        onOpenChange={setDeletedOpen}
+        onRestored={(restored) => setAgents((current) => [restored, ...(current ?? [])])}
       />
       {mattermostFlow.dialog}
       {webhookFlow.dialog}

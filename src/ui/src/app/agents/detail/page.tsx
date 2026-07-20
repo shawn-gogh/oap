@@ -593,7 +593,7 @@ function AgentDetail() {
     if (!agent) return;
     const ok = await confirmAction({
       title: `删除智能体「${agent.name}」？`,
-      description: "其配置、评估历史和工作区文件将一并删除，且无法恢复。",
+      description: "7 天内可以在智能体列表的「已删除」里复原；超过 7 天后台会永久清除其配置、评估历史和工作区文件。",
     });
     if (!ok) return;
     try {

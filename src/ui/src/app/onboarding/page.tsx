@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Check, KeyRound } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { OapLogo } from "@/components/oap-logo";
 import {
   ApiError,
   getStoredMasterKey,
@@ -113,9 +115,8 @@ export default function OnboardingPage() {
   return (
     <div className="min-h-dvh flex items-center justify-center px-4 bg-background text-foreground">
       <div className="w-full max-w-sm flex flex-col gap-6">
-        <div className="flex items-center gap-2">
-          <span className="text-2xl leading-none">🔓</span>
-          <span className="font-semibold text-lg">OAP 开放智能体平台</span>
+        <div className="mb-2">
+          <OapLogo size={28} showText />
         </div>
 
         {step !== "checking" && <Steps current={step} />}

@@ -644,6 +644,27 @@ pub async fn finish_sync_run(
     .map_err(GatewayError::Database)
 }
 
+/// Most recent sync attempt for a source, whatever its outcome — used to
+/// surface the actual failure reason (not just the bare `sync_error` state
+/// name) wherever the source's health is reported.
+pub async fn latest_sync_run(
+    pool: &PgPool,
+    source_id: &str,
+) -> Result<Option<AgentSourceSyncRunRow>, GatewayError> {
+    sqlx::query_as::<_, AgentSourceSyncRunRow>(
+        r#"
+        SELECT * FROM "LiteLLM_AgentSourceSyncRunsTable"
+        WHERE source_id = $1
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(source_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn mark_sync_state(
     pool: &PgPool,
     source_id: &str,

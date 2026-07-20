@@ -30,6 +30,7 @@ import { useSidebarCollapsed } from "@/lib/use-sidebar-collapsed";
 import type { LucideIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { OapLogoMark } from "@/components/oap-logo";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -191,13 +192,13 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const currentPath = pathname ?? "";
   const sections: NavSection[] = [
     ...(currentUser?.is_admin ? [{
-      label: "AI Gateway",
+      label: "AI 网关",
       icon: ShieldCheck,
       home: "/providers/",
       description: "密钥、团队、日志、模型提供方与运行时",
       items: [
         {
-          label: "密钥 Keys",
+          label: "密钥管理",
           href: "/keys/",
           icon: KeyRound,
           active: (path: string) => path.startsWith("/keys"),
@@ -211,7 +212,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           group: "访问控制",
         },
         {
-          label: "团队 Teams",
+          label: "团队管理",
           href: "/teams/",
           icon: Users,
           active: (path: string) => path.startsWith("/teams"),
@@ -239,7 +240,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           group: "基础设施",
         },
         {
-          label: "MCP 服务器",
+          label: "MCP 扩展服务",
           href: "/mcp-servers/",
           icon: Server,
           active: (path: string) => path.startsWith("/mcp-servers"),
@@ -275,7 +276,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
       }],
     }] : []),
     {
-      label: "Agent Platform",
+      label: "智能体平台",
       icon: Bot,
       home: "/chat/",
       description: "智能体、收件箱、集成与技能",
@@ -551,10 +552,10 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
           variant={pathname?.startsWith("/settings") ? "secondary" : "ghost"}
           className={`w-full ${railJustify}`}
           size="sm"
-          aria-label="Settings"
+          aria-label="系统设置"
         >
           <Settings className="size-4" />
-          <span className={labelCls}>Settings</span>
+          <span className={labelCls}>系统设置</span>
         </Button>
       </div>
     </aside>
@@ -574,6 +575,7 @@ function ProductSwitcher({
 }) {
   const CurrentIcon = current.icon;
   const revealCls = collapsed ? "hidden" : "hidden sm:block";
+  const isAgentPlatform = current.label === "智能体平台" || current.label === "Agent Platform";
 
   return (
     <DropdownMenu>
@@ -581,9 +583,13 @@ function ProductSwitcher({
         className={`flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-2 text-left text-sm font-semibold outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 ${
           collapsed ? "" : "sm:justify-start"
         }`}
-        aria-label="Switch product"
+        aria-label="切换视图"
       >
-        <CurrentIcon className="size-5 shrink-0" />
+        {isAgentPlatform ? (
+          <OapLogoMark size={20} />
+        ) : (
+          <CurrentIcon className="size-5 shrink-0" />
+        )}
         <span className={`min-w-0 flex-1 truncate ${revealCls}`}>{current.label}</span>
         <ChevronDown className={`size-4 shrink-0 text-muted-foreground ${revealCls}`} />
       </DropdownMenuTrigger>
@@ -591,17 +597,22 @@ function ProductSwitcher({
         {sections.map((section) => {
           const Icon = section.icon;
           const selected = section.label === current.label;
+          const isSectionAgentPlatform = section.label === "智能体平台" || section.label === "Agent Platform";
           return (
             <DropdownMenuItem
               key={section.label}
               onClick={() => onSelect(section)}
               className={`items-start gap-3 px-3 py-2.5 ${selected ? "bg-accent" : ""}`}
             >
-              <Icon className="mt-0.5 size-5" />
+              {isSectionAgentPlatform ? (
+                <OapLogoMark size={20} className="mt-0.5" />
+              ) : (
+                <Icon className="mt-0.5 size-5" />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-medium">{section.label}</span>
-                  {selected && <span className="text-xs text-muted-foreground">Current</span>}
+                  {selected && <span className="text-[11px] text-muted-foreground font-medium">当前选中</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">{section.description}</p>
               </div>

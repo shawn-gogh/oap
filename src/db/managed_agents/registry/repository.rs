@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{json, Value};
 use sqlx::{PgConnection, PgPool};
 
 use crate::{
@@ -177,6 +177,39 @@ pub async fn list(
     Ok(rows)
 }
 
+/// Soft-deleted agents still inside their retention window (see
+/// `registry::cleanup`'s reaper) — the counterpart to `list`'s exclusion of
+/// them, so a "已删除" view has something to show and restore.
+pub async fn list_deleted(
+    pool: &PgPool,
+    owner_id: Option<&str>,
+) -> Result<Vec<ManagedAgentRow>, GatewayError> {
+    let rows = if let Some(owner_id) = owner_id {
+        sqlx::query_as::<_, ManagedAgentRow>(
+            r#"
+            SELECT * FROM "LiteLLM_ManagedAgentsTable"
+            WHERE owner_id = $1 AND status = 'archived_pending_delete'
+            ORDER BY (config->>'deleted_at')::BIGINT DESC NULLS LAST
+            "#,
+        )
+        .bind(owner_id)
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query_as::<_, ManagedAgentRow>(
+            r#"
+            SELECT * FROM "LiteLLM_ManagedAgentsTable"
+            WHERE status = 'archived_pending_delete'
+            ORDER BY (config->>'deleted_at')::BIGINT DESC NULLS LAST
+            "#,
+        )
+        .fetch_all(pool)
+        .await
+    }
+    .map_err(GatewayError::Database)?;
+    Ok(rows)
+}
+
 pub async fn get(pool: &PgPool, agent_id: &str) -> Result<Option<ManagedAgentRow>, GatewayError> {
     sqlx::query_as::<_, ManagedAgentRow>(
         r#"SELECT * FROM "LiteLLM_ManagedAgentsTable" WHERE id = $1"#,
@@ -347,6 +380,32 @@ pub async fn delete(pool: &PgPool, agent_id: &str) -> Result<bool, GatewayError>
         .map_err(GatewayError::Database)?;
 
     Ok(result.rows_affected() > 0)
+}
+
+/// Writes the operator-confirmed request/response mapping that the OpenAPI,
+/// LangGraph and CrewAI execution bridges require before they'll run a
+/// session (`sessions::external_bridge::invoke_{openapi,langgraph,crewai}`
+/// all read `config.source.raw["x-lap-runtime"]`). Scoped `jsonb_set` so it
+/// can't clobber the rest of `config` the way a full-object `config` PATCH
+/// would.
+pub async fn set_source_runtime_mapping(
+    pool: &PgPool,
+    agent_id: &str,
+    mapping: &Value,
+) -> Result<Option<ManagedAgentRow>, GatewayError> {
+    sqlx::query_as::<_, ManagedAgentRow>(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentsTable"
+        SET config = jsonb_set(config, '{source,raw,x-lap-runtime}', $2::jsonb, true)
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(agent_id)
+    .bind(mapping)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 pub async fn soft_delete(

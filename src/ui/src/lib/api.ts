@@ -2752,6 +2752,30 @@ export async function syncAgentSource(id: string): Promise<AgentSourceOverview> 
   );
 }
 
+// Confirms the request/response mapping the openapi/langgraph/crewai
+// execution bridges require before they'll run a session — see
+// `sessions::external_bridge::invoke_{openapi,langgraph,crewai}` on the
+// backend, which reads `config.source.raw["x-lap-runtime"]`.
+export interface RuntimeMapping {
+  path?: string;
+  input_field?: string;
+  output_field?: string;
+  output_path?: string;
+}
+
+export async function setAgentSourceRuntimeMapping(
+  id: string,
+  mapping: RuntimeMapping,
+): Promise<Agent> {
+  return jsonOrThrow<Agent>(
+    await req(`/api/agents/${encodeURIComponent(id)}/source/runtime-mapping`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mapping),
+    }),
+  );
+}
+
 export async function resolveAgentDrift(
   id: string,
   resolution: "accept" | "reject",
@@ -3015,6 +3039,18 @@ export async function createSlackOAuthState(agentId: string): Promise<string> {
 
 export async function deleteAgent(id: string): Promise<void> {
   await req(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// Soft-deleted agents stay recoverable for a retention window before a
+// background reaper purges them for good — see `restoreAgent`.
+export async function listDeletedAgents(): Promise<Agent[]> {
+  const res = await req("/api/agents/deleted");
+  const data = await jsonOrThrow<{ agents: Agent[] }>(res);
+  return data.agents;
+}
+
+export async function restoreAgent(id: string): Promise<void> {
+  await req(`/api/agents/${encodeURIComponent(id)}/restore`, { method: "POST" });
 }
 
 // ── Agent evaluation runs ───────────────────────────────────────────────────

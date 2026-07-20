@@ -56,7 +56,7 @@ pub async fn enforce_separation_of_duties(pool: &PgPool) -> Result<bool, Gateway
                 "false" | "0" | "off"
             )
         })
-        .unwrap_or(true))
+        .unwrap_or(false))
 }
 
 pub async fn set_separation_of_duties(

@@ -327,6 +327,79 @@ pub async fn sync_source(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RuntimeMappingRequest {
+    /// Required for `openapi` — a site-relative path (e.g. `/agents/run`).
+    /// Ignored for `langgraph`/`crewai`, which have a fixed endpoint shape.
+    pub path: Option<String>,
+    /// JSON field the prompt is wrapped under in the outbound request body.
+    /// Falls back to the bridge's own per-provider default (see
+    /// `sessions::external_bridge::invoke_{openapi,langgraph,crewai}`) when
+    /// omitted, so an empty `{}` is already valid for langgraph/crewai.
+    pub input_field: Option<String>,
+    /// `openapi` only: JSON field to read the answer from in the response body.
+    pub output_field: Option<String>,
+    /// `langgraph`/`crewai` only: JSON pointer (e.g. `/output`) to read the
+    /// answer from in the response body.
+    pub output_path: Option<String>,
+}
+
+/// Persists the operator-confirmed request/response mapping the execution
+/// bridges require before they'll run a session for `openapi`/`langgraph`/
+/// `crewai` sources (see `sessions::external_bridge`). This is the write side
+/// of the `unmapped_high_risk_field`/`*_mapping_required` preflight issues
+/// (`import_validation.rs`) — before this endpoint existed there was no way
+/// to actually clear that check, so those three providers were import-able
+/// but permanently unable to execute.
+pub async fn set_runtime_mapping(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(input): Json<RuntimeMappingRequest>,
+) -> Result<Json<crate::db::managed_agents::registry::schema::ManagedAgentRow>, GatewayError> {
+    let (pool, auth, _agent) = editable_agent(&state, &headers, &agent_id).await?;
+    let governance = governance::get(&pool, &agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("governance not found".to_owned()))?;
+    if governance.source_provider == "openapi" {
+        let path = input
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| GatewayError::InvalidJsonMessage("path 不能为空。".to_owned()))?;
+        if !path.starts_with('/') || path.starts_with("//") {
+            return Err(GatewayError::InvalidJsonMessage(
+                "path 必须是站内绝对路径。".to_owned(),
+            ));
+        }
+    }
+    let mut mapping = json!({});
+    for (key, value) in [
+        ("path", &input.path),
+        ("input_field", &input.input_field),
+        ("output_field", &input.output_field),
+        ("output_path", &input.output_path),
+    ] {
+        if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            mapping[key] = json!(value);
+        }
+    }
+    let row = repository::set_source_runtime_mapping(&pool, &agent_id, &mapping)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("not found".to_owned()))?;
+    audit::record(
+        &pool,
+        &auth.user_id,
+        "agent.source.runtime_mapping_confirmed",
+        "agent",
+        &agent_id,
+        mapping,
+    )
+    .await?;
+    Ok(Json(row))
+}
+
 pub async fn accept_drift(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -690,6 +763,15 @@ pub(crate) async fn reconcile_source(
             )
         }
     };
+    // Bundle/file-uploaded agents (`agent-bundle://…`, `opencode-file://…`)
+    // have no live endpoint to sync against — the uploaded content already
+    // *is* the source of truth, so there is no drift to detect. Without this,
+    // every scheduled tick hit `validate_connector_endpoint`'s http(s)-only
+    // check and permanently marked the source `sync_error`, a state no
+    // amount of user action could ever clear.
+    if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+        return Ok(false);
+    }
     validate_connector_endpoint(&endpoint).await?;
     let discovered = tokio::time::timeout(
         CONNECT_TIMEOUT,

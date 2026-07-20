@@ -29,6 +29,7 @@ import {
 } from "@/lib/api";
 import { defaultModelForRuntime, isFederatedBridgeRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
+import { importedSource } from "@/app/agents/agent-row-utils";
 import type { Agent, AgentRuntimeId, OpencodeSession, RuntimeHarness } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -194,6 +195,11 @@ function SessionsStart() {
   const selectedAgentMissing = selectedAgentId !== "" && selectedAgent === null;
   const selectedAgentIsConfigured = Boolean(selectedAgent && !isDbBackedAgent(selectedAgent));
   const needsRuntime = !selectedAgentIsConfigured;
+  // Imported/federated agents (any source — not just credential_mode "byo")
+  // are bound to the runtime they were imported with — switching runtimes
+  // here creates a session the provider session id can't be resolved for,
+  // which later fails at send-time with an opaque 500.
+  const selectedAgentIsImported = Boolean(selectedAgent && importedSource(selectedAgent));
   const needsPrompt = !selectedAgent;
   const canStart =
     (!needsPrompt || prompt.trim().length > 0) &&
@@ -271,11 +277,13 @@ function SessionsStart() {
 
   const runtimeStatusLabel = selectedAgentIsConfigured
     ? `${selectedAgent?.name} 就绪`
-    : selectedRuntime?.connected
-      ? `${selectedRuntime.display_name} 就绪`
-      : isFederatedBridgeRuntime(runtime)
-        ? `${selectedAgent?.name ?? "远程智能体"} 就绪`
-        : "运行时密钥缺失";
+    : selectedAgentIsImported
+      ? `${selectedRuntime?.display_name ?? runtimeLabel(runtime)}（导入固定运行时）`
+      : selectedRuntime?.connected
+        ? `${selectedRuntime.display_name} 就绪`
+        : isFederatedBridgeRuntime(runtime)
+          ? `${selectedAgent?.name ?? "远程智能体"} 就绪`
+          : "运行时密钥缺失";
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -389,8 +397,15 @@ function SessionsStart() {
                 </SelectContent>
               </Select>
 
-              <Select value={runtime} onValueChange={(value) => setRuntime((value ?? "") as AgentRuntimeId | "")}>
-                <SelectTrigger className="h-10 w-auto min-w-[260px] max-w-[340px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
+              <Select
+                value={runtime}
+                onValueChange={(value) => setRuntime((value ?? "") as AgentRuntimeId | "")}
+                disabled={selectedAgentIsImported}
+              >
+                <SelectTrigger
+                  disabled={selectedAgentIsImported}
+                  title={selectedAgentIsImported ? "导入的智能体使用固定运行时，无法更改" : undefined}
+                  className="h-10 w-auto min-w-[260px] max-w-[340px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       运行时
