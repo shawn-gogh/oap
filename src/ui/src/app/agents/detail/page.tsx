@@ -1215,7 +1215,7 @@ function AgentDetail() {
                     preflightReport={preflightReport}
                     onSelectSection={setActiveSection}
                   />
-                  <AgentMetricsPanel agent={agent} onAgentUpdated={setAgent} />
+                  <AgentMetricsPanel key={agent.id} agent={agent} onAgentUpdated={setAgent} />
                   </div>
                 )}
 
