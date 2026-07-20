@@ -1214,3 +1214,30 @@ mod tests {
         assert_eq!(request.headers()["tracestate"], "vendor=value");
     }
 }
+
+fn result_display_text(result: &Value) -> String {
+    match result {
+        Value::String(s) => s.clone(),
+        Value::Object(map) => {
+            if let Some(Value::String(text)) = map
+                .get("text")
+                .or_else(|| map.get("answer"))
+                .or_else(|| map.get("output"))
+            {
+                text.clone()
+            } else {
+                serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string())
+            }
+        }
+        _ => result.to_string(),
+    }
+}
+
+fn mapped_input(input: &Value, input_field: &str, fallback_prompt: &str) -> Value {
+    if let Value::Object(map) = input {
+        if let Some(val) = map.get(input_field) {
+            return val.clone();
+        }
+    }
+    Value::String(fallback_prompt.to_owned())
+}
