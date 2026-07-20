@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "turn": {
+    "id": "turn_waiting",
+    "session_id": "session_example",
+    "request_id": "request_waiting",
+    "status": "waiting_input"
+  },
+  "interaction_profile": {
+    "schema_version": 1,
+    "primary_surface": "run",
+    "execution_mode": "async_poll",
+    "input_schema": {
+      "type": "object"
+    },
+    "output_schema": {},
+    "progress_mode": "status",
+    "continuation_modes": [
+      "input"
+    ],
+    "accepted_input_types": [
+      "application/json"
+    ],
+    "artifact_media_types": [],
+    "supports_retry": true,
+    "supports_checkpoint_resume": false,
+    "supports_child_invocations": false
+  },
+  "input": {
+    "topic": "agent interoperability"
+  },
+  "result": null,
+  "invocations": [],
+  "operations": [],
+  "pending_requests": [
+    {
+      "id": "input_request_example",
+      "kind": "input",
+      "title": "Select a region",
+      "status": "pending",
+      "request_id": "input_request_example",
+      "turn_id": "turn_waiting"
+    }
+  ],
+  "artifacts": [],
+  "latest_sequence": 8
+}

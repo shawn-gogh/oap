@@ -3,7 +3,7 @@ use sqlx::PgPool;
 
 use crate::{db::managed_agents::runtime_events, errors::GatewayError, proxy::state::AppState};
 
-use super::runtime_lifecycle::mark_session_status;
+use super::runtime_lifecycle::{mark_session_status, persist_turn_result};
 
 pub(super) async fn reconcile_terminal_status_from_events(
     state: &AppState,
@@ -12,6 +12,9 @@ pub(super) async fn reconcile_terminal_status_from_events(
     current_status: &str,
     events: &Value,
 ) -> Result<(), GatewayError> {
+    if let Some(result) = result_from_event_values(events) {
+        persist_turn_result(pool, session_id, result).await?;
+    }
     let (terminal_status, terminal_error) = terminal_status_from_event_values(events);
     if let Some(status) = terminal_status {
         if current_status != status {
@@ -19,6 +22,34 @@ pub(super) async fn reconcile_terminal_status_from_events(
         }
     }
     Ok(())
+}
+
+fn result_from_event_values(events: &Value) -> Option<Value> {
+    event_items(events)?
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                event.get("type").and_then(Value::as_str),
+                Some("assistant_response" | "agent.message")
+            )
+        })
+        .map(|event| {
+            let content = event
+                .get("content")
+                .cloned()
+                .or_else(|| {
+                    event
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(|text| serde_json::json!([{"type": "text", "text": text}]))
+                })
+                .unwrap_or_else(|| serde_json::json!([]));
+            serde_json::json!({
+                "type": "message",
+                "content": content,
+            })
+        })
 }
 
 pub(super) async fn persist_runtime_event_values(
@@ -122,7 +153,7 @@ fn event_value_error_message(event: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::terminal_status_from_event_values;
+    use super::{result_from_event_values, terminal_status_from_event_values};
 
     #[test]
     fn terminal_status_from_event_list_values() {
@@ -138,6 +169,30 @@ mod tests {
         ]));
         assert_eq!(status, Some("idle"));
         assert_eq!(error, None);
+    }
+
+    #[test]
+    fn result_uses_last_assistant_message_without_flattening_content() {
+        let result = result_from_event_values(&json!([
+            { "type": "agent.message", "text": "first" },
+            {
+                "type": "agent.message",
+                "content": [
+                    { "type": "text", "text": "done" },
+                    { "type": "json", "value": { "score": 0.9 } }
+                ]
+            }
+        ]));
+        assert_eq!(
+            result,
+            Some(json!({
+                "type": "message",
+                "content": [
+                    { "type": "text", "text": "done" },
+                    { "type": "json", "value": { "score": 0.9 } }
+                ]
+            }))
+        );
     }
 
     #[test]

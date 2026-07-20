@@ -7,7 +7,8 @@ use axum::{
 };
 
 use crate::{
-    db::managed_agents::registry::repository, errors::GatewayError,
+    db::managed_agents::registry::repository,
+    errors::GatewayError,
     proxy::{auth::master_key::authenticate, state::AppState},
 };
 

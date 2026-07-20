@@ -1,0 +1,25 @@
+[
+  {
+    "id": "artifact_example",
+    "owner_id": "user_example",
+    "session_id": "session_example",
+    "turn_id": "turn_completed",
+    "invocation_id": "invocation_example",
+    "task_id": null,
+    "source_artifact_id": "report",
+    "media_type": "application/json",
+    "digest": "sha256:example",
+    "size_bytes": 128,
+    "storage_backend": "object_storage",
+    "object_bucket": "session-example",
+    "object_key": "report.json",
+    "external_uri": null,
+    "status": "verified",
+    "metadata": {
+      "name": "report.json"
+    },
+    "created_by": "runtime",
+    "created_at": 1720000000300,
+    "verified_at": 1720000000300
+  }
+]

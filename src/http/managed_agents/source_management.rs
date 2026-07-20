@@ -456,12 +456,12 @@ pub async fn suggest_runtime_mapping(
         Ok(schemas) => {
             let input_schema = schemas.get("input_schema").cloned();
             let output_schema = schemas.get("output_schema").cloned();
-            let input_field = input_schema
-                .as_ref()
-                .and_then(|s| crate::sdk::providers::langgraph_import_agents::guess_field_name(
+            let input_field = input_schema.as_ref().and_then(|s| {
+                crate::sdk::providers::langgraph_import_agents::guess_field_name(
                     s,
                     &["input", "message", "messages", "text", "query"],
-                ));
+                )
+            });
             let output_field = output_schema.as_ref().and_then(|s| {
                 crate::sdk::providers::langgraph_import_agents::guess_field_name(
                     s,

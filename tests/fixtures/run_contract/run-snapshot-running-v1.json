@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "turn": {
+    "id": "turn_example",
+    "session_id": "session_example",
+    "request_id": "request_example",
+    "status": "running",
+    "model": null,
+    "input_json": {
+      "topic": "agent interoperability"
+    },
+    "input_schema_json": {
+      "type": "object"
+    },
+    "output_schema_json": {},
+    "interaction_profile_json": {
+      "schema_version": 1,
+      "primary_surface": "run",
+      "execution_mode": "async_stream"
+    },
+    "result_json": null,
+    "trigger_type": "manual",
+    "retry_of_turn_id": null,
+    "attempt_number": 1,
+    "error_json": null,
+    "started_at": 1720000000000,
+    "completed_at": null,
+    "created_at": 1720000000000,
+    "updated_at": 1720000001000
+  },
+  "interaction_profile": {
+    "schema_version": 1,
+    "primary_surface": "run",
+    "execution_mode": "async_stream",
+    "input_schema": {
+      "type": "object"
+    },
+    "output_schema": {},
+    "progress_mode": "steps",
+    "continuation_modes": [],
+    "accepted_input_types": [
+      "application/json"
+    ],
+    "artifact_media_types": [],
+    "supports_retry": true,
+    "supports_checkpoint_resume": false,
+    "supports_child_invocations": true
+  },
+  "input": {
+    "topic": "agent interoperability"
+  },
+  "result": null,
+  "invocations": [],
+  "operations": [],
+  "pending_requests": [],
+  "artifacts": [],
+  "latest_sequence": 4
+}
