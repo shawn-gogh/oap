@@ -54,4 +54,101 @@ describe("applyRunEvent", () => {
     expect(result.status).toBe(replacement.status);
     expect(result.lastEventSeq).toBe(99);
   });
+
+  it("turn.status_changed also patches error when the optional field is present (real-transport-only)", () => {
+    const base = ALL_FIXTURES.a2a.snapshot;
+    const result = applyRunEvent(base, {
+      seq: base.lastEventSeq + 1,
+      ts: 123,
+      type: "turn.status_changed",
+      status: "failed",
+      error: { code: "boom", message: "it broke", retryable: true },
+    });
+    expect(result.status).toBe("failed");
+    expect(result.error).toEqual({ code: "boom", message: "it broke", retryable: true });
+  });
+
+  it("turn.status_changed leaves error untouched when the field is omitted (fixture-transport shape)", () => {
+    const base = { ...ALL_FIXTURES.a2a.snapshot, error: { code: "prior", message: "prior error", retryable: false } };
+    const result = applyRunEvent(base, {
+      seq: base.lastEventSeq + 1,
+      ts: 123,
+      type: "turn.status_changed",
+      status: "running",
+    });
+    expect(result.error).toEqual({ code: "prior", message: "prior error", retryable: false });
+  });
+
+  it("invocation.status_changed patches an existing invocation's status by id, setting endedAt on first terminal transition", () => {
+    const base = ALL_FIXTURES.a2a.snapshot;
+    const targetId = base.invocations[0].id;
+    const running = { ...base, invocations: base.invocations.map((inv) => (inv.id === targetId ? { ...inv, status: "running" as const, endedAt: null } : inv)) };
+    const result = applyRunEvent(running, {
+      seq: base.lastEventSeq + 1,
+      ts: 5000,
+      type: "invocation.status_changed",
+      invocationId: targetId,
+      status: "completed",
+    });
+    const patched = result.invocations.find((inv) => inv.id === targetId);
+    expect(patched?.status).toBe("completed");
+    expect(patched?.endedAt).toBe(5000);
+  });
+
+  it("invocation.status_changed sets startedAt on first transition to running", () => {
+    const base = ALL_FIXTURES.a2a.snapshot;
+    const targetId = base.invocations[0].id;
+    const queued = { ...base, invocations: base.invocations.map((inv) => (inv.id === targetId ? { ...inv, status: "queued" as const, startedAt: null } : inv)) };
+    const result = applyRunEvent(queued, {
+      seq: base.lastEventSeq + 1,
+      ts: 42,
+      type: "invocation.status_changed",
+      invocationId: targetId,
+      status: "running",
+    });
+    expect(result.invocations.find((inv) => inv.id === targetId)?.startedAt).toBe(42);
+  });
+
+  it("turn.status_changed cascades onto non-terminal invocations (mirrors the backend's own transition() SQL cascade)", () => {
+    const base = ALL_FIXTURES.a2a.snapshot;
+    const runningInvocations = base.invocations.map((inv) => ({ ...inv, status: "running" as const, endedAt: null }));
+    const running = { ...base, invocations: runningInvocations };
+    const result = applyRunEvent(running, {
+      seq: base.lastEventSeq + 1,
+      ts: 7000,
+      type: "turn.status_changed",
+      status: "completed",
+    });
+    expect(result.invocations.every((inv) => inv.status === "completed")).toBe(true);
+    expect(result.invocations.every((inv) => inv.endedAt === 7000)).toBe(true);
+  });
+
+  it("turn.status_changed's cascade leaves an already-terminal invocation untouched", () => {
+    const base = ALL_FIXTURES.a2a.snapshot;
+    const [first, ...rest] = base.invocations;
+    const mixed = {
+      ...base,
+      invocations: [{ ...first, status: "failed" as const, endedAt: 100 }, ...rest.map((inv) => ({ ...inv, status: "running" as const, endedAt: null }))],
+    };
+    const result = applyRunEvent(mixed, {
+      seq: base.lastEventSeq + 1,
+      ts: 7000,
+      type: "turn.status_changed",
+      status: "completed",
+    });
+    expect(result.invocations[0]).toEqual(mixed.invocations[0]); // untouched: already terminal
+    expect(result.invocations.slice(1).every((inv) => inv.status === "completed" && inv.endedAt === 7000)).toBe(true);
+  });
+
+  it("invocation.status_changed is a no-op when the invocation id isn't found", () => {
+    const base = ALL_FIXTURES.a2a.snapshot;
+    const result = applyRunEvent(base, {
+      seq: base.lastEventSeq + 1,
+      ts: 42,
+      type: "invocation.status_changed",
+      invocationId: "inv_does_not_exist",
+      status: "completed",
+    });
+    expect(result.invocations).toEqual(base.invocations);
+  });
 });

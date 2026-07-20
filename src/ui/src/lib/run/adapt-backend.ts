@@ -6,6 +6,7 @@
 
 import type {
   BackendArtifactResponse,
+  BackendControlEventV1,
   BackendInboxItemRow,
   BackendManagedArtifactRow,
   BackendRunSnapshotV1,
@@ -13,9 +14,11 @@ import type {
   BackendTurnStatus,
 } from "./backend-types";
 import type {
+  ControlEventV1,
   RunApproval,
   RunArtifact,
   RunInputRequest,
+  RunInputRequestField,
   RunInvocation,
   RunResult,
   RunSnapshotV1,
@@ -176,7 +179,11 @@ export function adaptSnapshot(backend: BackendRunSnapshotV1): RunSnapshotV1 {
       resultKinds: backend.result ? ["text", "json", "artifact"] : ["none"],
     },
     inputSnapshot: backend.input,
-    progress: null, // derived from step.progress control events, not the snapshot (Stage 4)
+    // The backend's control-event taxonomy (adaptControlEvent below) has no
+    // progress/step event at all — confirmed by an exhaustive grep of every
+    // `event_type` literal it emits (Stage 6 notes). Progress simply isn't
+    // produced yet on the backend side; this isn't a frontend gap to close.
+    progress: null,
     invocations: backend.invocations.map(adaptInvocation),
     pendingInputRequest: inputRequestItem ? adaptPendingInputRequest(inputRequestItem) : null,
     pendingApproval: approvalItem ? adaptPendingApproval(approvalItem) : null,
@@ -191,4 +198,143 @@ export function adaptSnapshot(backend: BackendRunSnapshotV1): RunSnapshotV1 {
       : null,
     lastEventSeq: backend.latest_sequence,
   };
+}
+
+const KNOWN_INPUT_FIELD_KINDS = new Set(["text", "choice", "file", "auth"]);
+
+/** `payload.fields` is runtime-supplied, opaque data (see
+ * `src/http/sessions/runtime_lifecycle.rs`'s `persist_input_request`, which
+ * forwards whatever the agent runtime sent) — not a guaranteed shape. Only
+ * used as real structured fields when every element already matches
+ * `RunInputRequestField`'s shape; otherwise the caller falls back to the
+ * existing single-generic-field simplification. */
+function asStructuredFields(value: unknown): RunInputRequestField[] | null {
+  if (!Array.isArray(value)) return null;
+  const fields: RunInputRequestField[] = [];
+  for (const item of value) {
+    if (
+      typeof item !== "object" ||
+      item === null ||
+      typeof (item as Record<string, unknown>).id !== "string" ||
+      typeof (item as Record<string, unknown>).label !== "string" ||
+      !KNOWN_INPUT_FIELD_KINDS.has((item as Record<string, unknown>).kind as string)
+    ) {
+      return null;
+    }
+    fields.push(item as unknown as RunInputRequestField);
+  }
+  return fields;
+}
+
+function adaptTurnError(error: unknown): { code: string; message: string; retryable: boolean } | null {
+  if (error === null || error === undefined) return null;
+  const record = error as Record<string, unknown>;
+  return {
+    code: typeof record.code === "string" ? record.code : "unknown",
+    message: typeof record.message === "string" ? record.message : "运行出错。",
+    retryable: typeof record.retryable === "boolean" ? record.retryable : true,
+  };
+}
+
+// A plain `Omit<ControlEventV1, "seq" | "ts">` doesn't distribute over the
+// union (Omit converts it to an intersection of keys first), so every
+// variant's own fields would be erased down to just `type`. This
+// conditional-type form forces per-member distribution instead.
+type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
+
+export type AdaptedControlEvent = DistributiveOmit<ControlEventV1, "seq" | "ts"> | "refetch" | null;
+
+/** Adapts one real backend SSE frame into a frontend `ControlEventV1` (minus
+ * `seq`/`ts`, which the caller — real-client.ts — already has from the
+ * frame's envelope). Pure and self-contained: it never needs the current
+ * snapshot, only the frame's own payload — see the Stage 6 plan's mapping
+ * table for the full, exhaustively-grepped `event_type` taxonomy this
+ * switches on. Returns `"refetch"` for the one case that genuinely can't be
+ * patched from the payload alone (`invocation.accepted` — a brand-new
+ * invocation whose full row isn't in the event) and for any unrecognized
+ * event_type (defensive fallback); returns `null` to silently ignore a frame
+ * that isn't worth patching or reloading over (an unparseable
+ * `message.completed`). */
+export function adaptControlEvent(event: BackendControlEventV1): AdaptedControlEvent {
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+
+  if (event.type.startsWith("turn.")) {
+    const status = payload.status;
+    if (typeof status !== "string") return "refetch";
+    return { type: "turn.status_changed", status: status as RunStatus, error: adaptTurnError(payload.error) };
+  }
+
+  if (event.type === "invocation.accepted") return "refetch";
+  if (event.type.startsWith("invocation.")) {
+    const status = payload.status;
+    if (typeof status !== "string" || !event.invocation_id) return "refetch";
+    return {
+      type: "invocation.status_changed",
+      invocationId: event.invocation_id,
+      status: status as RunStatus,
+    };
+  }
+
+  switch (event.type) {
+    case "artifact.added": {
+      const artifact = payload.artifact;
+      if (!artifact || typeof artifact !== "object") return "refetch";
+      return { type: "artifact.added", artifact: adaptArtifact(artifact as BackendManagedArtifactRow) };
+    }
+    case "input.requested": {
+      const requestId = typeof payload.request_id === "string" ? payload.request_id : event.request_id;
+      if (!requestId) return "refetch";
+      const structuredFields = asStructuredFields(payload.fields);
+      const prompt = typeof payload.prompt === "string" ? payload.prompt : "需要补充输入";
+      return {
+        type: "input_request.created",
+        request: {
+          id: requestId,
+          requestedAt: event.occurred_at,
+          prompt,
+          fields: structuredFields ?? [{ id: "input", label: prompt, kind: "text", required: true }],
+        },
+      };
+    }
+    case "approval.requested": {
+      const approval = payload.approval as Record<string, unknown> | undefined;
+      if (!approval || typeof approval.id !== "string") return "refetch";
+      return {
+        type: "approval.created",
+        approval: {
+          id: approval.id,
+          kind: typeof approval.kind === "string" ? approval.kind : "approval",
+          title: typeof approval.title === "string" ? approval.title : "待处理审批",
+          body: typeof approval.body === "string" ? approval.body : null,
+          requestedAt: typeof approval.created_at === "number" ? approval.created_at : event.occurred_at,
+          canDecide: true,
+        },
+      };
+    }
+    case "approval.resolved": {
+      const approvalId = payload.approval_id;
+      const decision = payload.decision;
+      if (typeof approvalId !== "string" || (decision !== "accepted" && decision !== "rejected")) return "refetch";
+      return {
+        type: "approval.resolved",
+        approvalId,
+        decision,
+        feedback: typeof payload.feedback === "string" ? payload.feedback : null,
+      };
+    }
+    case "result.completed":
+      return { type: "turn.result", result: adaptResult(payload.result) ?? { kind: "none" } };
+    case "message.completed": {
+      const message = payload.message as Record<string, unknown> | undefined;
+      const content = Array.isArray(message?.content) ? message?.content : null;
+      const text = content?.find(
+        (part): part is { type: string; text: string } =>
+          typeof part === "object" && part !== null && typeof (part as Record<string, unknown>).text === "string",
+      )?.text;
+      if (!text || !event.invocation_id) return null;
+      return { type: "message.appended", invocationId: event.invocation_id, text };
+    }
+    default:
+      return "refetch";
+  }
 }

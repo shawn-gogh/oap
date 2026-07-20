@@ -127,7 +127,7 @@ describe("createRealRunTransport", () => {
     expect(api.rejectApproval).toHaveBeenCalledWith("appr_1", "no thanks");
   });
 
-  it("subscribeRunEvents wires subscribeControlEvents and refetches the snapshot on every frame", async () => {
+  it("subscribeRunEvents wires subscribeControlEvents, and patches a turn.* frame in place without refetching", async () => {
     let capturedOnFrame: ((lastEventId: string | null, data: unknown) => void) | undefined;
     const unsubscribe = vi.fn();
     vi.mocked(api.subscribeControlEvents).mockImplementation((opts) => {
@@ -144,18 +144,61 @@ describe("createRealRunTransport", () => {
     );
     expect(capturedOnFrame).toBeDefined();
 
-    capturedOnFrame!("7", { anything: "ignored" });
-    // The refetch is fire-and-forget inside the transport; wait for it to land.
+    capturedOnFrame!("7", {
+      schema_version: 1,
+      type: "turn.completed",
+      sequence: 7,
+      session_id: "ses_1",
+      turn_id: "turn_1",
+      invocation_id: null,
+      request_id: "req_1",
+      occurred_at: 123,
+      payload: { status: "completed", error: null },
+    });
+
+    expect(onEvent).toHaveBeenCalledWith({
+      seq: 7,
+      ts: 123,
+      type: "turn.status_changed",
+      status: "completed",
+      error: null,
+    });
+    // The whole point of Stage 6's fine-grained handling: a patchable frame
+    // never triggers the fallback refetch.
+    expect(api.getRunTurn).not.toHaveBeenCalled();
+
+    stop();
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it("subscribeRunEvents falls back to a full refetch for invocation.accepted (payload can't rebuild a full row)", async () => {
+    let capturedOnFrame: ((lastEventId: string | null, data: unknown) => void) | undefined;
+    vi.mocked(api.subscribeControlEvents).mockImplementation((opts) => {
+      capturedOnFrame = opts.onFrame;
+      return vi.fn();
+    });
+
+    const transport = createRealRunTransport("ses_1");
+    const onEvent = vi.fn();
+    transport.subscribeRunEvents("turn_1", 5, onEvent);
+
+    capturedOnFrame!("8", {
+      schema_version: 1,
+      type: "invocation.accepted",
+      sequence: 8,
+      session_id: "ses_1",
+      turn_id: "turn_1",
+      invocation_id: "inv_new",
+      request_id: null,
+      occurred_at: 456,
+      payload: { status: "queued", parent_invocation_id: null, role: "tool" },
+    });
+
     await vi.waitFor(() => {
       expect(onEvent).toHaveBeenCalled();
     });
 
     expect(api.getRunTurn).toHaveBeenCalledWith("ses_1", "turn_1");
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ seq: 7, type: "snapshot.replaced" }),
-    );
-
-    stop();
-    expect(unsubscribe).toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ seq: 8, type: "snapshot.replaced" }));
   });
 });

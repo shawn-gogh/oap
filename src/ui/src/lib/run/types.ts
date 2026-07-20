@@ -68,6 +68,10 @@ export interface RunInputRequestField {
   kind: "text" | "choice" | "file" | "auth";
   required: boolean;
   choices?: string[];
+  /** `auth`-kind fields only — a link to complete authorization elsewhere.
+   * Never a place to collect credentials in-app. Optional because the real
+   * backend's auth-request shape isn't confirmed yet (see PendingInputCard). */
+  authUrl?: string;
 }
 
 export interface RunInputRequest {
@@ -146,10 +150,20 @@ export interface RunSnapshotV1 {
 }
 
 export type ControlEventV1 =
-  | { seq: number; ts: number; type: "turn.status_changed"; status: RunStatus }
+  // `error` is optional/additive: the real backend's turn-transition events
+  // (adapt-backend.ts's `adaptControlEvent`) always carry status+error
+  // together in one frame, and folding both into one frontend event (rather
+  // than emitting two events that would share one `seq`) keeps apply-event's
+  // per-event dedup-by-sequence check correct — see Stage 6 design notes.
+  | { seq: number; ts: number; type: "turn.status_changed"; status: RunStatus; error?: RunError | null }
   | { seq: number; ts: number; type: "turn.progress"; progress: RunProgress | null }
   | { seq: number; ts: number; type: "invocation.started"; invocation: RunInvocation }
   | { seq: number; ts: number; type: "invocation.updated"; invocation: RunInvocation }
+  // Real-transport-only: an invocation status transition whose backend event
+  // payload (`{status, error}`) can't rebuild a full RunInvocation (no
+  // label/adapter id/timestamps) — patches an already-known invocation by id
+  // instead of replacing it. See adapt-backend.ts's adaptControlEvent.
+  | { seq: number; ts: number; type: "invocation.status_changed"; invocationId: string; status: RunStatus }
   | { seq: number; ts: number; type: "message.appended"; invocationId: string; text: string }
   | { seq: number; ts: number; type: "input_request.created"; request: RunInputRequest }
   | { seq: number; ts: number; type: "input_request.resolved"; requestId: string }
@@ -165,13 +179,13 @@ export type ControlEventV1 =
   | { seq: number; ts: number; type: "artifact.added"; artifact: RunArtifact }
   | { seq: number; ts: number; type: "turn.result"; result: RunResult }
   | { seq: number; ts: number; type: "turn.error"; error: RunError }
-  // Real-transport-only (see real-client.ts): the backend's own control
-  // event taxonomy is broader than this union covers (confirmed examples:
-  // turn.accepted/started/completed/cancelled, step.progress,
-  // input.resolved, artifact.added — not a closed set), so rather than
-  // risk silently missing an event type, every real SSE frame triggers a
-  // full snapshot refetch delivered as this variant instead of a partial
-  // patch. The fixture transport never emits this.
+  // Real-transport-only (see real-client.ts's adaptControlEvent usage): the
+  // backend's control event taxonomy is now a confirmed closed set (see
+  // adapt-backend.ts's adaptControlEvent), but `invocation.accepted` (a
+  // brand-new invocation appearing) and any future/unrecognized event_type
+  // still can't be safely patched in place — those fall back to a full
+  // snapshot refetch delivered as this variant. The fixture transport never
+  // emits this.
   | { seq: number; ts: number; type: "snapshot.replaced"; snapshot: RunSnapshotV1 };
 
 // Commands — signatures the real API will satisfy once codex/run-control-plane

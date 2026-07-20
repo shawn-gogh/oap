@@ -1,26 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Loader2, Paperclip, RotateCcw, XCircle } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { StatusDot } from "@/components/status-dot";
-import { Input } from "@/components/ui/input";
 import { fixtureRunTransport } from "@/lib/run/fixture-client";
 import { applyRunEvent } from "@/lib/run/apply-event";
 import type { RunSnapshotV1 } from "@/lib/run/types";
 import type { RunTransport } from "@/lib/run/transport";
 import { buildRunView } from "./run-view-model";
 import { SchemaFieldsForm } from "./SchemaFieldsForm";
+import { InvocationTimeline } from "./InvocationTimeline";
+import { PendingInputCard } from "./PendingInputCard";
+import { ArtifactPreview } from "./ArtifactPreview";
 
 // Provider-neutral Run container (Stage 2 of docs/engineering/run-surface-branch-plan.mdx).
 // Every section reads only RunSnapshotV1 fields — `providerName` is shown as
-// a metadata badge and never selects behavior. Structured-input rendering
-// (Stage 3), step-level detail (Stage 4), and rich Artifact previews
-// (Stage 5) are intentionally out of scope here; see the module's fixture
-// index for representative snapshots this shell must already handle.
+// a metadata badge and never selects behavior. Step-level detail lives in
+// InvocationTimeline (Stage 4), structured input-request fields in
+// PendingInputCard, and Artifact previews in ArtifactPreview (Stage 5); see
+// the module's fixture index for representative snapshots this shell must
+// already handle.
 //
 // `transport` defaults to the fixture transport so every existing caller
 // (the /dev/run-shell/ fixture demos, Stage 1-3's tests) is unaffected;
@@ -38,6 +42,7 @@ export function RunShell({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"cancel" | "retry" | "input" | "approval" | null>(null);
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
+  const [rejectFeedback, setRejectFeedback] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -107,8 +112,10 @@ export function RunShell({
           runId,
           approvalId: snapshot.pendingApproval.id,
           decision,
+          feedback: decision === "rejected" ? rejectFeedback || undefined : undefined,
         }),
       );
+      setRejectFeedback("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -218,33 +225,7 @@ export function RunShell({
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             执行时间线
           </h3>
-          <ol className="grid gap-2">
-            {view.invocations.map((invocation) => (
-              <li
-                key={invocation.id}
-                className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-sm"
-              >
-                {invocation.status === "completed" ? (
-                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                ) : invocation.status === "failed" ? (
-                  <XCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
-                ) : (
-                  <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
-                )}
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{invocation.label}</span>
-                    <Badge variant="outline" className="text-[10px]">
-                      {invocation.role === "agent" ? "智能体" : "工具"}
-                    </Badge>
-                  </div>
-                  {invocation.summary && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{invocation.summary}</p>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
+          <InvocationTimeline invocations={view.invocations} />
         </Card>
       )}
 
@@ -257,6 +238,17 @@ export function RunShell({
           {snapshot.pendingApproval.body && (
             <p className="text-xs text-muted-foreground">{snapshot.pendingApproval.body}</p>
           )}
+          <div className="grid gap-1">
+            <label htmlFor="run-reject-feedback" className="text-xs text-muted-foreground">
+              拒绝理由（可选，仅拒绝时提交）
+            </label>
+            <Textarea
+              id="run-reject-feedback"
+              value={rejectFeedback}
+              onChange={(event) => setRejectFeedback(event.target.value)}
+              rows={2}
+            />
+          </div>
           <div className="flex gap-2">
             <Button size="sm" disabled={busy !== null} onClick={() => void resolveApproval("accepted")}>
               批准
@@ -274,35 +266,15 @@ export function RunShell({
       )}
 
       {snapshot.pendingInputRequest && (
-        <Card className="grid gap-2 border-amber-500/40 p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-            需要补充输入
-          </h3>
-          <p className="text-sm">{snapshot.pendingInputRequest.prompt}</p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {snapshot.pendingInputRequest.fields.map((field) => (
-              <div key={field.id} className="grid gap-1">
-                <label htmlFor={`run-input-${field.id}`} className="text-xs text-muted-foreground">
-                  {field.label}
-                  {field.required && <span className="text-destructive"> *</span>}
-                </label>
-                <Input
-                  id={`run-input-${field.id}`}
-                  value={inputValues[field.id] ?? ""}
-                  onChange={(event) =>
-                    setInputValues((current) => ({ ...current, [field.id]: event.target.value }))
-                  }
-                  placeholder={field.choices?.join(" / ")}
-                />
-              </div>
-            ))}
-          </div>
-          <div>
-            <Button size="sm" disabled={busy !== null} onClick={() => void submitInput()}>
-              {busy === "input" ? "提交中…" : "提交"}
-            </Button>
-          </div>
-        </Card>
+        <PendingInputCard
+          request={snapshot.pendingInputRequest}
+          values={inputValues}
+          onChange={(fieldId, value) =>
+            setInputValues((current) => ({ ...current, [fieldId]: value }))
+          }
+          onSubmit={() => void submitInput()}
+          busy={busy === "input"}
+        />
       )}
 
       {snapshot.error && (
@@ -325,20 +297,11 @@ export function RunShell({
             </pre>
           )}
           {snapshot.artifacts.length > 0 && (
-            <ul className="grid gap-1.5">
+            <div className="grid gap-1.5">
               {snapshot.artifacts.map((artifact) => (
-                <li
-                  key={artifact.id}
-                  className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs"
-                >
-                  <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 truncate font-medium">{artifact.name}</span>
-                  <Badge variant="outline" className="ml-auto shrink-0 font-mono text-[10px]">
-                    {artifact.mediaType}
-                  </Badge>
-                </li>
+                <ArtifactPreview key={artifact.id} artifact={artifact} />
               ))}
-            </ul>
+            </div>
           )}
         </Card>
       )}

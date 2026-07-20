@@ -67,6 +67,7 @@ import {
 import { setSessionApprovalMode } from "@/lib/api";
 import type { ApprovalMode, PendingApproval, RuntimeAgentEvent, SessionTurnSnapshot } from "@/lib/api";
 import { ApprovalDock } from "@/components/approval-dock";
+import { RunDrawer } from "@/components/run/RunDrawer";
 import { ExposedAppsMenu } from "@/components/exposed-apps-menu";
 import { toast } from "sonner";
 import type { Agent, AgentRuntimeId, HarnessMessage, RuntimeHarness } from "@/lib/types";
@@ -143,6 +144,7 @@ function ChatInner() {
   const [model, setModel] = useState(FALLBACK_MODELS[0]);
   const [sessionStatus, setSessionStatus] = useState<"idle" | "busy">("idle");
   const [activeTurn, setActiveTurn] = useState<SessionTurnSnapshot | null | undefined>(undefined);
+  const [runDrawerOpen, setRunDrawerOpen] = useState(false);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [approvalsLoaded, setApprovalsLoaded] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
@@ -1109,6 +1111,17 @@ function ChatInner() {
                 就绪空闲
               </span>
             )}
+
+            {activeTurn && (
+              <button
+                type="button"
+                onClick={() => setRunDrawerOpen(true)}
+                title="查看这个 Turn 的 Run 详情（执行时间线、结果、Artifact）"
+                className="shrink-0 whitespace-nowrap rounded-md border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                查看 Run
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -1447,6 +1460,15 @@ function ChatInner() {
         sessionId={sid}
         initialFrames={eventBufferRef.current}
       />
+
+      {activeTurn && (
+        <RunDrawer
+          sessionId={sid}
+          turnId={activeTurn.turn.id}
+          open={runDrawerOpen}
+          onOpenChange={setRunDrawerOpen}
+        />
+      )}
     </div>
   );
 }

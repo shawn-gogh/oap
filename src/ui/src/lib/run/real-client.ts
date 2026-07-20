@@ -1,8 +1,10 @@
 // Real transport: implements RunTransport against the live backend built by
 // codex/run-control-plane (now merged into main). See the Stage 7 plan's
 // "Design decisions" for why this exists alongside fixture-client.ts rather
-// than replacing it, and why events are handled via snapshot-reload rather
-// than fine-grained translation.
+// than replacing it. Event handling (subscribeRunEvents below) patches in
+// place using adaptControlEvent's per-event-type translation (Stage 6),
+// falling back to a full snapshot refetch only for the cases documented on
+// `AdaptedControlEvent`/`ControlEventV1["snapshot.replaced"]`.
 
 import {
   acceptApproval,
@@ -15,8 +17,8 @@ import {
   retryRunTurn,
   subscribeControlEvents,
 } from "@/lib/api";
-import { adaptArtifactResponse, adaptSnapshot } from "./adapt-backend";
-import type { BackendArtifactResponse, BackendRunSnapshotV1 } from "./backend-types";
+import { adaptArtifactResponse, adaptControlEvent, adaptSnapshot } from "./adapt-backend";
+import type { BackendArtifactResponse, BackendControlEventV1, BackendRunSnapshotV1 } from "./backend-types";
 import type {
   ControlEventV1,
   RunApprovalDecisionCommand,
@@ -61,13 +63,6 @@ export function createRealRunTransport(sessionId: string): RunTransport {
     getRunSnapshot,
 
     subscribeRunEvents(runId, fromSeq, onEvent) {
-      // Per design decision 2: each frame's own payload is ignored — the
-      // backend's real event taxonomy (turn.accepted/started/completed/
-      // cancelled, step.progress, input.resolved, artifact.added, and
-      // presumably more not enumerated in the sampled code) isn't a closed
-      // set the frontend can safely translate field-by-field. Every frame
-      // triggers one authoritative refetch instead.
-      //
       // Uses subscribeControlEvents (api.ts), NOT the native EventSource —
       // every real frame is a *named* SSE event (`event: turn.accepted`,
       // ...), and EventSource.onmessage only fires for frames with no
@@ -77,8 +72,21 @@ export function createRealRunTransport(sessionId: string): RunTransport {
       return subscribeControlEvents({
         sessionId,
         afterSequence: fromSeq,
-        onFrame: (lastEventId) => {
-          const sequence = lastEventId ? Number(lastEventId) : NaN;
+        onFrame: (lastEventId, data) => {
+          const event = data as BackendControlEventV1;
+          const sequence = event.sequence ?? (lastEventId ? Number(lastEventId) : NaN);
+          const adapted = adaptControlEvent(event);
+
+          if (adapted === null) return; // not worth patching or reloading over
+
+          if (adapted !== "refetch") {
+            onEvent({ seq: sequence, ts: event.occurred_at, ...adapted });
+            return;
+          }
+
+          // The one genuinely-unpatchable case (a brand-new invocation, or
+          // an unrecognized event_type) — fall back to one authoritative
+          // refetch, delivered as a wholesale snapshot replacement.
           void getRunSnapshot(runId)
             .then((snapshot) => {
               onEvent({

@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { adaptArtifactResponse, adaptSnapshot } from "./adapt-backend";
-import type { BackendArtifactResponse, BackendRunSnapshotV1 } from "./backend-types";
+import { adaptArtifactResponse, adaptControlEvent, adaptSnapshot } from "./adapt-backend";
+import type { BackendArtifactResponse, BackendControlEventV1, BackendRunSnapshotV1 } from "./backend-types";
 
 // Ground-truthed against the real backend's own committed contract
 // fixtures (tests/fixtures/run_contract/*.json, from codex/run-control-plane)
@@ -114,5 +114,188 @@ describe("adaptArtifactResponse", () => {
     };
     expect(adaptArtifactResponse(row).name).toBe("trace");
     expect(adaptArtifactResponse(row).url).toBeNull();
+  });
+});
+
+// The base envelope every backend control event carries — individual tests
+// override `type`/`payload`/`invocation_id` as needed. Matches
+// src/http/sessions/run_types.rs's ControlEventV1 exactly.
+function baseEvent(overrides: Partial<BackendControlEventV1>): BackendControlEventV1 {
+  return {
+    schema_version: 1,
+    type: "turn.updated",
+    sequence: 1,
+    session_id: "ses_1",
+    turn_id: "turn_1",
+    invocation_id: null,
+    request_id: "req_1",
+    occurred_at: 1000,
+    payload: {},
+    ...overrides,
+  };
+}
+
+describe("adaptControlEvent", () => {
+  it("adapts any turn.* event via its payload's own status/error, not the event_type suffix", () => {
+    const event = baseEvent({ type: "turn.failed", payload: { status: "failed", error: { code: "x", message: "boom", retryable: false } } });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "turn.status_changed",
+      status: "failed",
+      error: { code: "x", message: "boom", retryable: false },
+    });
+  });
+
+  it("adapts a turn.* event with a null error", () => {
+    const event = baseEvent({ type: "turn.completed", payload: { status: "completed", error: null } });
+    expect(adaptControlEvent(event)).toEqual({ type: "turn.status_changed", status: "completed", error: null });
+  });
+
+  it("always refetches for invocation.accepted (payload can't rebuild a full row)", () => {
+    const event = baseEvent({
+      type: "invocation.accepted",
+      invocation_id: "inv_1",
+      payload: { status: "queued", parent_invocation_id: null, role: "tool" },
+    });
+    expect(adaptControlEvent(event)).toBe("refetch");
+  });
+
+  it("patches an invocation status in place for any other invocation.* event", () => {
+    const event = baseEvent({
+      type: "invocation.completed",
+      invocation_id: "inv_1",
+      payload: { status: "completed", error: null },
+    });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "invocation.status_changed",
+      invocationId: "inv_1",
+      status: "completed",
+    });
+  });
+
+  it("refetches an invocation.* event missing invocation_id rather than guessing", () => {
+    const event = baseEvent({ type: "invocation.completed", invocation_id: null, payload: { status: "completed" } });
+    expect(adaptControlEvent(event)).toBe("refetch");
+  });
+
+  it("adapts artifact.added directly from the event's embedded full row", () => {
+    const event = baseEvent({
+      type: "artifact.added",
+      payload: {
+        schema_version: 1,
+        artifact: {
+          id: "artifact_1",
+          session_id: "ses_1",
+          turn_id: "turn_1",
+          invocation_id: null,
+          task_id: null,
+          source_artifact_id: "report",
+          media_type: "text/markdown",
+          digest: null,
+          size_bytes: 10,
+          status: "verified",
+          metadata: { name: "report.md" },
+          created_at: 0,
+          verified_at: 0,
+        },
+      },
+    });
+    const adapted = adaptControlEvent(event);
+    expect(adapted).toMatchObject({ type: "artifact.added", artifact: { id: "artifact_1", name: "report.md", mediaType: "text/markdown" } });
+  });
+
+  it("adapts input.requested into the known-gap generic field when payload.fields isn't recognizably structured", () => {
+    const event = baseEvent({
+      type: "input.requested",
+      payload: { request_id: "req_x", prompt: "Pick a region", schema: null, fields: null },
+    });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "input_request.created",
+      request: {
+        id: "req_x",
+        requestedAt: 1000,
+        prompt: "Pick a region",
+        fields: [{ id: "input", label: "Pick a region", kind: "text", required: true }],
+      },
+    });
+  });
+
+  it("adapts input.requested using real structured fields when payload.fields matches RunInputRequestField's shape", () => {
+    const event = baseEvent({
+      type: "input.requested",
+      payload: {
+        request_id: "req_y",
+        prompt: "More detail needed",
+        fields: [{ id: "count", label: "Count", kind: "text", required: true }],
+      },
+    });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "input_request.created",
+      request: {
+        id: "req_y",
+        requestedAt: 1000,
+        prompt: "More detail needed",
+        fields: [{ id: "count", label: "Count", kind: "text", required: true }],
+      },
+    });
+  });
+
+  it("adapts approval.requested directly from the event's embedded approval object", () => {
+    const event = baseEvent({
+      type: "approval.requested",
+      payload: {
+        approval: { id: "appr_1", kind: "runtime_permission", title: "Allow tool?", body: "details", created_at: 999 },
+      },
+    });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "approval.created",
+      approval: { id: "appr_1", kind: "runtime_permission", title: "Allow tool?", body: "details", requestedAt: 999, canDecide: true },
+    });
+  });
+
+  it("adapts approval.resolved", () => {
+    const event = baseEvent({
+      type: "approval.resolved",
+      payload: { approval_id: "appr_1", decision: "rejected", feedback: "no thanks" },
+    });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "approval.resolved",
+      approvalId: "appr_1",
+      decision: "rejected",
+      feedback: "no thanks",
+    });
+  });
+
+  it("adapts result.completed into the existing turn.result variant", () => {
+    const event = baseEvent({ type: "result.completed", payload: { result: { summary: "done" } } });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "turn.result",
+      result: { kind: "json", json: { summary: "done" } },
+    });
+  });
+
+  it("adapts message.completed into message.appended when a text part and invocation_id are present", () => {
+    const event = baseEvent({
+      type: "message.completed",
+      invocation_id: "inv_1",
+      payload: { message: { content: [{ type: "text", text: "hello" }] } },
+    });
+    expect(adaptControlEvent(event)).toEqual({ type: "message.appended", invocationId: "inv_1", text: "hello" });
+  });
+
+  it("ignores an unparseable message.completed rather than refetching over it", () => {
+    const event = baseEvent({ type: "message.completed", invocation_id: "inv_1", payload: { message: {} } });
+    expect(adaptControlEvent(event)).toBeNull();
+
+    const missingInvocation = baseEvent({
+      type: "message.completed",
+      invocation_id: null,
+      payload: { message: { content: [{ type: "text", text: "hello" }] } },
+    });
+    expect(adaptControlEvent(missingInvocation)).toBeNull();
+  });
+
+  it("refetches for any unrecognized event_type as a defensive fallback", () => {
+    const event = baseEvent({ type: "some_future_event_type", payload: {} });
+    expect(adaptControlEvent(event)).toBe("refetch");
   });
 });

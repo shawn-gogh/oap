@@ -16,9 +16,12 @@ import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { ToolApprovalPanel } from "@/components/tool-approval-panel";
+import { RunDrawer } from "@/components/run/RunDrawer";
 import { RevisionDiffPanel } from "./revision-diff-panel";
 import {
   acceptApproval,
+  apiErrorMessage,
+  getActiveTurn,
   listInbox,
   rejectApproval,
   retryApprovalDelivery,
@@ -164,6 +167,26 @@ function InboxInner() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [runDrawerTurn, setRunDrawerTurn] = useState<{ sessionId: string; turnId: string } | null>(null);
+  const [resolvingRun, setResolvingRun] = useState(false);
+  const [runResolveError, setRunResolveError] = useState<string | null>(null);
+
+  const openRun = useCallback(async (sessionId: string) => {
+    setResolvingRun(true);
+    setRunResolveError(null);
+    try {
+      const active = await getActiveTurn(sessionId);
+      if (!active) {
+        setRunResolveError("该会话当前没有活跃的 Turn。");
+        return;
+      }
+      setRunDrawerTurn({ sessionId, turnId: active.turn.id });
+    } catch (e) {
+      setRunResolveError(apiErrorMessage(e, "解析 Run 失败"));
+    } finally {
+      setResolvingRun(false);
+    }
+  }, []);
 
   const load = useCallback(async (t: InboxFilter) => {
     try {
@@ -474,17 +497,37 @@ function InboxInner() {
                         </div>
                       </div>
                       {selected.sessionId && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 text-xs gap-1.5 shrink-0"
-                          onClick={() => router.push(`/chat/?id=${encodeURIComponent(selected.sessionId!)}`)}
-                        >
-                          <ExternalLink className="size-3.5" />
-                          跳转至会话
-                        </Button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {selected.status === "pending" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 text-xs gap-1.5"
+                              disabled={resolvingRun}
+                              onClick={() => void openRun(selected.sessionId!)}
+                            >
+                              <Zap className="size-3.5" />
+                              {resolvingRun ? "解析中…" : "打开 Run"}
+                            </Button>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 text-xs gap-1.5"
+                            onClick={() => router.push(`/chat/?id=${encodeURIComponent(selected.sessionId!)}`)}
+                          >
+                            <ExternalLink className="size-3.5" />
+                            跳转至会话
+                          </Button>
+                        </div>
                       )}
                     </div>
+
+                    {runResolveError && (
+                      <div className="border-b border-border/70 bg-destructive/5 px-5 py-2.5 text-xs text-destructive">
+                        {runResolveError}
+                      </div>
+                    )}
 
                     {selected.body && (
                       <div className="border-b border-border/70 px-5 py-3.5 bg-background/50">
@@ -604,6 +647,17 @@ function InboxInner() {
           </div>
         </main>
       </div>
+
+      {runDrawerTurn && (
+        <RunDrawer
+          sessionId={runDrawerTurn.sessionId}
+          turnId={runDrawerTurn.turnId}
+          open={Boolean(runDrawerTurn)}
+          onOpenChange={(open) => {
+            if (!open) setRunDrawerTurn(null);
+          }}
+        />
+      )}
     </div>
   );
 }
