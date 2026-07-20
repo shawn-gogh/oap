@@ -463,6 +463,59 @@ function OpenClawIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+function DifyIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect width="48" height="48" rx="10" fill="#155EEF" />
+      <path
+        d="M14 14h20v6H20v8h14v6H14V14Z"
+        fill="#FFFFFF"
+      />
+      <circle cx="34" cy="31" r="3" fill="#6172F3" />
+    </svg>
+  );
+}
+
+function LangGraphIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect width="48" height="48" rx="10" fill="#0052CC" />
+      <circle cx="16" cy="16" r="4" fill="#6172F3" />
+      <circle cx="32" cy="16" r="4" fill="#00B8D9" />
+      <circle cx="24" cy="32" r="5" fill="#36B37E" />
+      <path d="M16 16L24 32L32 16" stroke="#FFFFFF" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CrewAIIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect width="48" height="48" rx="10" fill="#FF4F00" />
+      <path d="M14 24L24 14L34 24L24 34Z" fill="#FFFFFF" />
+      <circle cx="24" cy="24" r="4" fill="#111827" />
+    </svg>
+  );
+}
+
+function A2AIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect width="48" height="48" rx="10" fill="#0891B2" />
+      <path d="M14 24H34M20 18L14 24L20 30M28 18L34 24L28 30" stroke="#FFFFFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </svg>
+  );
+}
+
+function OpenAPIIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect width="48" height="48" rx="10" fill="#85EA2D" />
+      <path d="M24 10C16.27 10 10 16.27 10 24C10 31.73 16.27 38 24 38C31.73 38 38 31.73 38 24C38 16.27 31.73 10 24 10ZM24 32C19.58 32 16 28.42 16 24C16 19.58 19.58 16 24 16C28.42 16 32 19.58 32 24C32 28.42 28.42 32 24 32Z" fill="#111827" />
+    </svg>
+  );
+}
+
 function FallbackIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" {...props}>
@@ -472,20 +525,27 @@ function FallbackIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 const ICONS: Record<string, (p: SVGProps<SVGSVGElement>) => ReactNode> = {
+  a2a: A2AIcon,
+  agent_to_agent: A2AIcon,
   anthropic: AnthropicIcon,
   bedrock_agent_core: BedrockAgentCoreIcon,
   claude: ClaudeIcon,
   codex: CodexIcon,
+  crewai: CrewAIIcon,
   cursor: CursorIcon,
+  dify: DifyIcon,
   elastic: ElasticIcon,
   gemini: GeminiIcon,
   gemini_antigravity: GeminiIcon,
   gmail: GmailIcon,
   hermes: HermesIcon,
   langchain: LangChainIcon,
+  langgraph: LangGraphIcon,
   linear: LinearIcon,
   openclaw: OpenClawIcon,
   opencode: OpenCodeIcon,
+  openapi: OpenAPIIcon,
+  openapi_rest: OpenAPIIcon,
   pylon: PylonIcon,
   google_chat: GoogleChatIcon,
   slack: SlackIcon,
