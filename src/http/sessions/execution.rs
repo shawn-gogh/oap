@@ -19,7 +19,9 @@ use crate::{
     proxy::state::AppState,
 };
 
-use super::{runtime::execute_runtime_prompt, storage::persist_message_with_ids};
+use super::{
+    runtime::execute_runtime_prompt, runtime_lifecycle, storage::persist_message_with_ids,
+};
 
 pub(super) async fn execute_prompt(
     state: Arc<AppState>,
@@ -51,7 +53,9 @@ pub(super) async fn execute_prompt(
     )
     .await;
     let _ = sandbox.terminate(&session).await;
-    persist_assistant_message(&pool, &row.id, &context, &assistant_text?).await?;
+    let assistant_text = assistant_text?;
+    persist_assistant_message(&pool, &row.id, &context, &assistant_text).await?;
+    runtime_lifecycle::persist_text_result(&pool, &row.id, &assistant_text).await?;
     state
         .agent_runs
         .update_status(&row.id, AgentRunStatus::Completed);

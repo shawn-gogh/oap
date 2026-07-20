@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "turn": {
+    "id": "turn_completed",
+    "session_id": "session_example",
+    "request_id": "request_completed",
+    "status": "completed"
+  },
+  "interaction_profile": {
+    "schema_version": 1,
+    "primary_surface": "run",
+    "execution_mode": "async_stream",
+    "input_schema": {
+      "type": "object"
+    },
+    "output_schema": {
+      "type": "object"
+    },
+    "progress_mode": "steps",
+    "continuation_modes": [],
+    "accepted_input_types": [
+      "application/json"
+    ],
+    "artifact_media_types": [
+      "application/json"
+    ],
+    "supports_retry": true,
+    "supports_checkpoint_resume": false,
+    "supports_child_invocations": true
+  },
+  "input": {
+    "topic": "agent interoperability"
+  },
+  "result": {
+    "summary": "Assessment complete"
+  },
+  "invocations": [],
+  "operations": [],
+  "pending_requests": [],
+  "artifacts": [],
+  "latest_sequence": 12
+}

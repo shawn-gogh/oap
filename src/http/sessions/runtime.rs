@@ -78,12 +78,25 @@ pub(super) async fn create_runtime_session(
     }
     let initial_turn = if let Some(prompt) = created.initial_user_prompt.as_deref() {
         let request_id = crate::db::managed_agents::id("req");
+        let turn_input = json!({"message": prompt});
+        let input_schema = json!({"type": "object"});
+        let output_schema = json!({});
+        let interaction_profile = serde_json::to_value(
+            crate::managed_agents::adapters::types::InteractionProfileV1::default(),
+        )?;
         let turn = session_control::repository::create_or_get(
             pool,
             session_control::repository::NewTurn {
                 session_id: &created.row.id,
                 request_id: &request_id,
                 model: Some(&created.agent.model),
+                input: &turn_input,
+                input_schema: &input_schema,
+                output_schema: &output_schema,
+                interaction_profile: &interaction_profile,
+                trigger_type: "conversation",
+                retry_of_turn_id: None,
+                attempt_number: 1,
                 agent_id: Some(&created.agent.id),
                 runtime: created.row.runtime.as_deref(),
                 protocol: &created.resolved.protocol,
@@ -248,6 +261,12 @@ async fn create_generic_chat_session(
     state.agent_runs.track_run(&agent.id, &row.id);
     if let Some(prompt) = prompt {
         let request_id = crate::db::managed_agents::id("req");
+        let turn_input = json!({"message": prompt});
+        let input_schema = json!({"type": "object"});
+        let output_schema = json!({});
+        let interaction_profile = serde_json::to_value(
+            crate::managed_agents::adapters::types::InteractionProfileV1::default(),
+        )?;
         let descriptor =
             crate::http::runtime_resolution::describe_session_runtime(pool, &row).await?;
         let turn = session_control::repository::create_or_get(
@@ -256,6 +275,13 @@ async fn create_generic_chat_session(
                 session_id: &row.id,
                 request_id: &request_id,
                 model: Some(&agent.model),
+                input: &turn_input,
+                input_schema: &input_schema,
+                output_schema: &output_schema,
+                interaction_profile: &interaction_profile,
+                trigger_type: "conversation",
+                retry_of_turn_id: None,
+                attempt_number: 1,
                 agent_id,
                 runtime: Some(&alias),
                 protocol: &descriptor.protocol,

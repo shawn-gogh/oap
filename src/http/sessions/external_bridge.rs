@@ -59,6 +59,10 @@ pub(super) async fn execute_prompt(
         }
     };
     let source = agent_source(&agent)?;
+    let run_input = session_control::repository::active_turn(pool, &row.id)
+        .await?
+        .map(|snapshot| snapshot.turn.input_json)
+        .unwrap_or_else(|| json!({"message": prompt}));
     let spec = source
         .get("api_spec")
         .and_then(Value::as_str)
@@ -90,19 +94,42 @@ pub(super) async fn execute_prompt(
                 &trace,
             )
             .await
+            .map(|result| result.map(Value::String))
         }
-        DIFY_SPEC => invoke_dify(&state, pool, row, source, &credential, prompt, &trace)
-            .await
-            .map(Some),
-        OPENAPI_SPEC => invoke_openapi(&state, source, &credential, prompt, &trace)
-            .await
-            .map(Some),
-        LANGGRAPH_SPEC => invoke_langgraph(&state, source, &credential, prompt, &trace)
-            .await
-            .map(Some),
-        CREWAI_SPEC => invoke_crewai(&state, pool, row, source, &credential, prompt, &trace)
-            .await
-            .map(Some),
+        DIFY_SPEC => invoke_dify(
+            &state,
+            pool,
+            row,
+            source,
+            &credential,
+            &run_input,
+            prompt,
+            &trace,
+        )
+        .await
+        .map(Some),
+        OPENAPI_SPEC => {
+            invoke_openapi(&state, source, &credential, &run_input, prompt, &trace)
+                .await
+                .map(Some)
+        }
+        LANGGRAPH_SPEC => {
+            invoke_langgraph(&state, source, &credential, &run_input, prompt, &trace)
+                .await
+                .map(Some)
+        }
+        CREWAI_SPEC => invoke_crewai(
+            &state,
+            pool,
+            row,
+            source,
+            &credential,
+            &run_input,
+            prompt,
+            &trace,
+        )
+        .await
+        .map(Some),
         ACP_SPEC => Err(GatewayError::InvalidConfig(
             "ACP 接入必须选择并验证具体兼容配置后才能执行。".to_owned(),
         )),
@@ -118,8 +145,10 @@ pub(super) async fn execute_prompt(
         // left to do here — `resolve_continuation` picks it back up once the
         // approval is decided.
         Ok(None) => Ok(()),
-        Ok(Some(reply)) => {
+        Ok(Some(result)) => {
+            let reply = result_display_text(&result);
             persist_message(pool, &row.id, "assistant", &reply, Some("stop")).await?;
+            runtime_lifecycle::persist_turn_result(pool, &row.id, result).await?;
             append_event(
                 &state,
                 pool,
@@ -645,6 +674,7 @@ pub(crate) async fn resolve_continuation(
     match outcome {
         Ok(A2aOutcome::Completed(text)) => {
             persist_message(pool, session_id, "assistant", &text, Some("stop")).await?;
+            runtime_lifecycle::persist_text_result(pool, session_id, &text).await?;
             append_event(
                 state,
                 pool,
@@ -687,9 +717,10 @@ async fn invoke_dify(
     row: &sessions::schema::SessionRow,
     source: &Value,
     credential: &crate::http::agent_runtimes::RuntimeCredential,
+    input: &Value,
     prompt: &str,
     trace: &TraceHeaders,
-) -> Result<String, GatewayError> {
+) -> Result<Value, GatewayError> {
     let mode = source
         .pointer("/raw/mode")
         .and_then(Value::as_str)
@@ -709,7 +740,7 @@ async fn invoke_dify(
                 ))
                 .bearer_auth(&credential.api_key)
                 .json(&json!({
-                    "inputs": {},
+                    "inputs": input,
                     "query": prompt,
                     "response_mode": "blocking",
                     "conversation_id": row.provider_session_id,
@@ -742,8 +773,7 @@ async fn invoke_dify(
     }
     payload
         .get("answer")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+        .cloned()
         .ok_or_else(|| {
             GatewayError::SandboxError("Dify response did not contain answer".to_owned())
         })
@@ -753,9 +783,10 @@ async fn invoke_openapi(
     state: &AppState,
     source: &Value,
     credential: &crate::http::agent_runtimes::RuntimeCredential,
+    input: &Value,
     prompt: &str,
     trace: &TraceHeaders,
-) -> Result<String, GatewayError> {
+) -> Result<Value, GatewayError> {
     let mapping = source.pointer("/raw/x-lap-runtime").ok_or_else(|| {
         GatewayError::InvalidConfig(
             "OpenAPI 来源必须提供经过确认的 x-lap-runtime 映射后才能执行。".to_owned(),
@@ -785,7 +816,7 @@ async fn invoke_openapi(
                 .http
                 .post(format!("{}{}", base.trim_end_matches('/'), path))
                 .bearer_auth(&credential.api_key)
-                .json(&json!({input_field: prompt})),
+                .json(&json!({input_field: mapped_input(input, input_field, prompt)})),
         )
         .send()
         .await
@@ -793,8 +824,7 @@ async fn invoke_openapi(
     let payload = ensure_success(response).await?;
     payload
         .get(output_field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+        .cloned()
         .ok_or_else(|| {
             GatewayError::SandboxError(format!(
                 "OpenAPI response did not contain mapped field {output_field}"
@@ -813,9 +843,10 @@ async fn invoke_langgraph(
     state: &AppState,
     source: &Value,
     credential: &crate::http::agent_runtimes::RuntimeCredential,
+    input: &Value,
     prompt: &str,
     trace: &TraceHeaders,
-) -> Result<String, GatewayError> {
+) -> Result<Value, GatewayError> {
     let assistant_id = source
         .get("external_agent_id")
         .and_then(Value::as_str)
@@ -847,7 +878,7 @@ async fn invoke_langgraph(
                 .header("x-api-key", &credential.api_key)
                 .json(&json!({
                     "assistant_id": assistant_id,
-                    "input": { input_field: prompt }
+                    "input": { input_field: mapped_input(input, input_field, prompt) }
                 })),
         )
         .send()
@@ -856,8 +887,7 @@ async fn invoke_langgraph(
     let payload = ensure_success(response).await?;
     payload
         .pointer(output_path)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+        .cloned()
         .ok_or_else(|| {
             GatewayError::SandboxError(format!(
                 "LangGraph response did not contain mapped field {output_path}"
@@ -878,9 +908,10 @@ async fn invoke_crewai(
     row: &sessions::schema::SessionRow,
     source: &Value,
     credential: &crate::http::agent_runtimes::RuntimeCredential,
+    input: &Value,
     prompt: &str,
     trace: &TraceHeaders,
-) -> Result<String, GatewayError> {
+) -> Result<Value, GatewayError> {
     let mapping = source.pointer("/raw/x-lap-runtime").ok_or_else(|| {
         GatewayError::InvalidConfig(
             "CrewAI 来源必须提供经过确认的 kickoff 输入映射后才能执行。".to_owned(),
@@ -902,7 +933,9 @@ async fn invoke_crewai(
                 .http
                 .post(format!("{base}/kickoff"))
                 .bearer_auth(&credential.api_key)
-                .json(&json!({ "inputs": { input_field: prompt } })),
+                .json(&json!({
+                    "inputs": { input_field: mapped_input(input, input_field, prompt) }
+                })),
         )
         .send()
         .await
@@ -938,7 +971,7 @@ async fn poll_crewai_status(
     status_url: &str,
     output_path: &str,
     trace: &TraceHeaders,
-) -> Result<String, GatewayError> {
+) -> Result<Value, GatewayError> {
     for _ in 0..120 {
         if state.external_bridge_cancellations.is_cancelled(&row.id) {
             return Err(GatewayError::SandboxError(
@@ -962,8 +995,7 @@ async fn poll_crewai_status(
             "SUCCESS" | "COMPLETED" => {
                 return payload
                     .pointer(output_path)
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .cloned()
                     .ok_or_else(|| {
                         GatewayError::SandboxError(format!(
                             "CrewAI response did not contain mapped field {output_path}"

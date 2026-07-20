@@ -56,6 +56,100 @@ pub struct RuntimeCapabilityProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionProfileV1 {
+    #[serde(default = "interaction_profile_version")]
+    pub schema_version: u16,
+    #[serde(default)]
+    pub primary_surface: PrimarySurface,
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
+    #[serde(default = "object_schema")]
+    pub input_schema: Value,
+    #[serde(default)]
+    pub output_schema: Value,
+    #[serde(default)]
+    pub progress_mode: ProgressMode,
+    #[serde(default)]
+    pub continuation_modes: Vec<ContinuationMode>,
+    #[serde(default)]
+    pub accepted_input_types: Vec<String>,
+    #[serde(default)]
+    pub artifact_media_types: Vec<String>,
+    #[serde(default)]
+    pub supports_retry: bool,
+    #[serde(default)]
+    pub supports_checkpoint_resume: bool,
+    #[serde(default)]
+    pub supports_child_invocations: bool,
+}
+
+impl Default for InteractionProfileV1 {
+    fn default() -> Self {
+        Self {
+            schema_version: interaction_profile_version(),
+            primary_surface: PrimarySurface::default(),
+            execution_mode: ExecutionMode::default(),
+            input_schema: object_schema(),
+            output_schema: Value::Object(Default::default()),
+            progress_mode: ProgressMode::default(),
+            continuation_modes: Vec::new(),
+            accepted_input_types: vec!["application/json".to_owned(), "text/plain".to_owned()],
+            artifact_media_types: Vec::new(),
+            supports_retry: true,
+            supports_checkpoint_resume: false,
+            supports_child_invocations: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimarySurface {
+    #[default]
+    Conversation,
+    Run,
+    Workspace,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Blocking,
+    AsyncPoll,
+    #[default]
+    AsyncStream,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressMode {
+    #[default]
+    None,
+    Status,
+    Percent,
+    Steps,
+    Graph,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationMode {
+    Input,
+    Approval,
+    Authentication,
+    FileUpload,
+    Choice,
+}
+
+fn interaction_profile_version() -> u16 {
+    1
+}
+
+fn object_schema() -> Value {
+    serde_json::json!({"type": "object"})
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NegotiatedCapabilities {
     pub declared: RuntimeCapabilityProfile,
     pub verified: RuntimeCapabilityProfile,

@@ -6,7 +6,7 @@ use crate::{
     db::managed_agents::{id, runtime_events, session_control, sessions},
     errors::GatewayError,
     proxy::state::AppState,
-    sdk::agents::AgentEvent,
+    sdk::agents::{AgentEvent, AgentEventPayload},
 };
 
 pub(super) async fn emit_runtime_stage(
@@ -115,6 +115,64 @@ pub(super) async fn persist_runtime_event(
     let event_json = serde_json::to_value(event)
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     runtime_events::repository::append(pool, session_id, event_json).await?;
+    if let AgentEventPayload::AgentMessage(message) = event.payload() {
+        persist_turn_result(
+            pool,
+            session_id,
+            serde_json::json!({
+                "type": "message",
+                "content": message.content,
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn persist_text_result(
+    pool: &PgPool,
+    session_id: &str,
+    text: &str,
+) -> Result<(), GatewayError> {
+    persist_turn_result(
+        pool,
+        session_id,
+        serde_json::json!({
+            "type": "message",
+            "content": [{"type": "text", "text": text}],
+        }),
+    )
+    .await
+}
+
+pub(super) async fn persist_turn_result(
+    pool: &PgPool,
+    session_id: &str,
+    result: Value,
+) -> Result<(), GatewayError> {
+    let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? else {
+        return Ok(());
+    };
+    session_control::repository::set_turn_result(pool, &snapshot.turn.id, result.clone()).await?;
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(&snapshot.turn.id),
+            invocation_id: snapshot
+                .invocations
+                .first()
+                .map(|invocation| invocation.id.as_str()),
+            request_id: Some(&snapshot.turn.request_id),
+            event_key: &format!("turn:{}:result:completed", snapshot.turn.id),
+            event_type: "result.completed",
+            event: serde_json::json!({
+                "schema_version": 1,
+                "result": result,
+            }),
+        },
+    )
+    .await?;
     Ok(())
 }
 

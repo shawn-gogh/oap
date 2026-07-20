@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "primary_surface": "run",
+  "execution_mode": "async_stream",
+  "input_schema": {
+    "type": "object",
+    "required": ["topic"],
+    "properties": {
+      "topic": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object"
+  },
+  "progress_mode": "steps",
+  "continuation_modes": [
+    "input",
+    "approval"
+  ],
+  "accepted_input_types": [
+    "application/json",
+    "text/plain"
+  ],
+  "artifact_media_types": [
+    "application/json",
+    "text/markdown"
+  ],
+  "supports_retry": true,
+  "supports_checkpoint_resume": false,
+  "supports_child_invocations": true
+}

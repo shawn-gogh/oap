@@ -248,7 +248,10 @@ mod tests {
                 "context": {"type": "string"}
             }
         });
-        assert_eq!(super::guess_field_name(&schema, &["input", "message"]), None);
+        assert_eq!(
+            super::guess_field_name(&schema, &["input", "message"]),
+            None
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::{
     proxy::state::AppState,
 };
 
-use super::storage::persist_message;
+use super::{runtime_lifecycle, storage::persist_message};
 
 pub(crate) const GENERIC_CHAT_SPEC: &str = "generic_chat";
 
@@ -62,6 +62,7 @@ pub(super) async fn execute_prompt(
     match result {
         Ok(reply) => {
             persist_message(pool, &row.id, "assistant", &reply, Some("stop")).await?;
+            runtime_lifecycle::persist_text_result(pool, &row.id, &reply).await?;
             append_event(
                 &state,
                 pool,
