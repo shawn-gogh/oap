@@ -7,6 +7,7 @@ export function runtimeBrandIconId(alias: string, apiSpec?: string | null): stri
   if (search.includes("langgraph")) return "langgraph";
   if (search.includes("crewai") || search.includes("crew-ai")) return "crewai";
   if (search.includes("a2a") || search.includes("agent-to-agent")) return "a2a";
+  if (search.includes("acp")) return "acp";
   if (search.includes("openapi") || search.includes("rest")) return "openapi";
   if (search.includes("deepagents") || search.includes("deep-agents") || search.includes("langchain")) {
     return "langchain";

@@ -8,11 +8,14 @@ import type {
   ControlEventV1,
   RunApprovalDecisionCommand,
   RunCancelCommand,
+  RunCreateCommand,
   RunResumeCommand,
   RunRetryCommand,
   RunSnapshotV1,
 } from "./types";
 import { ALL_FIXTURES } from "./fixtures";
+import { buildCompletedRunFixture } from "./fixtures/shared";
+import { findRunAgentTemplate } from "./fixtures/templates";
 
 interface RunState {
   snapshot: RunSnapshotV1;
@@ -39,6 +42,38 @@ function stateFor(runId: string): RunState {
     BY_RUN_ID.set(runId, state);
   }
   return state;
+}
+
+let createdRunCounter = 0;
+
+/** Stage 3's "create a Run" entry point — looks up the matching
+ * `RunAgentTemplate` by `cmd.agentId`, synthesizes a completed run via the
+ * same `buildCompletedRunFixture` helper the 5 provider fixtures use, then
+ * overrides `inputSnapshot` with what the caller actually submitted so the
+ * "preserve the immutable input snapshot after submission" rule holds. */
+export async function createRun(cmd: RunCreateCommand): Promise<RunSnapshotV1> {
+  const template = findRunAgentTemplate(cmd.agentId);
+  if (!template) {
+    throw new Error(`no agent template registered for agent id "${cmd.agentId}"`);
+  }
+  createdRunCounter += 1;
+  const fixtureId = `created_${createdRunCounter}`;
+  const { snapshot, events } = buildCompletedRunFixture({
+    fixtureId,
+    providerName: template.providerName,
+    agentName: template.agentName,
+    toolLabel: template.toolLabel,
+    resultText: template.resultText,
+    artifact: template.artifact,
+  });
+  snapshot.agentId = template.agentId;
+  snapshot.inputSnapshot = cmd.input;
+  snapshot.interactionProfile = {
+    ...snapshot.interactionProfile,
+    inputSchema: template.inputSchema,
+  };
+  BY_RUN_ID.set(snapshot.runId, { snapshot, events });
+  return structuredClone(snapshot);
 }
 
 export async function getRunSnapshot(runId: string): Promise<RunSnapshotV1> {

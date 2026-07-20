@@ -19,6 +19,7 @@ import {
 import { applyRunEvent } from "@/lib/run/apply-event";
 import type { RunSnapshotV1 } from "@/lib/run/types";
 import { buildRunView } from "./run-view-model";
+import { SchemaFieldsForm } from "./SchemaFieldsForm";
 
 // Provider-neutral Run container (Stage 2 of docs/engineering/run-surface-branch-plan.mdx).
 // Every section reads only RunSnapshotV1 fields — `providerName` is shown as
@@ -191,9 +192,11 @@ export function RunShell({ runId }: { runId: string }) {
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           输入
         </h3>
-        <pre className="overflow-x-auto rounded-md bg-muted/40 p-2 text-xs">
-          {JSON.stringify(view.inputSnapshot, null, 2)}
-        </pre>
+        <SchemaFieldsForm
+          schema={snapshot.interactionProfile.inputSchema}
+          value={view.inputSnapshot}
+          readOnly
+        />
       </Card>
 
       {view.invocations.length > 0 && (

@@ -82,6 +82,7 @@ pub(super) async fn execute_prompt(
     .await?;
 
     let response = match spec {
+<<<<<<< HEAD
         A2A_SPEC => {
             invoke_a2a(
                 &state,
@@ -96,6 +97,20 @@ pub(super) async fn execute_prompt(
             .await
             .map(|result| result.map(Value::String))
         }
+=======
+        A2A_SPEC => invoke_a2a(
+            &state,
+            pool,
+            row,
+            source,
+            &credential,
+            prompt,
+            &agent.name,
+            &trace,
+        )
+        .await
+        .map(|result| result.map(Value::String)),
+>>>>>>> codex/run-control-plane
         DIFY_SPEC => invoke_dify(
             &state,
             pool,
@@ -108,6 +123,7 @@ pub(super) async fn execute_prompt(
         )
         .await
         .map(Some),
+<<<<<<< HEAD
         OPENAPI_SPEC => {
             invoke_openapi(&state, source, &credential, &run_input, prompt, &trace)
                 .await
@@ -118,6 +134,14 @@ pub(super) async fn execute_prompt(
                 .await
                 .map(Some)
         }
+=======
+        OPENAPI_SPEC => invoke_openapi(&state, source, &credential, &run_input, prompt, &trace)
+            .await
+            .map(Some),
+        LANGGRAPH_SPEC => invoke_langgraph(&state, source, &credential, &run_input, prompt, &trace)
+            .await
+            .map(Some),
+>>>>>>> codex/run-control-plane
         CREWAI_SPEC => invoke_crewai(
             &state,
             pool,
@@ -148,6 +172,10 @@ pub(super) async fn execute_prompt(
         Ok(Some(result)) => {
             let reply = result_display_text(&result);
             persist_message(pool, &row.id, "assistant", &reply, Some("stop")).await?;
+<<<<<<< HEAD
+=======
+            runtime_lifecycle::persist_text_message(pool, &row.id, &reply).await?;
+>>>>>>> codex/run-control-plane
             runtime_lifecycle::persist_turn_result(pool, &row.id, result).await?;
             append_event(
                 &state,
@@ -771,12 +799,18 @@ async fn invoke_dify(
         )
         .await?;
     }
+<<<<<<< HEAD
     payload
         .get("answer")
         .cloned()
         .ok_or_else(|| {
             GatewayError::SandboxError("Dify response did not contain answer".to_owned())
         })
+=======
+    payload.get("answer").cloned().ok_or_else(|| {
+        GatewayError::SandboxError("Dify response did not contain answer".to_owned())
+    })
+>>>>>>> codex/run-control-plane
 }
 
 async fn invoke_openapi(
@@ -822,6 +856,7 @@ async fn invoke_openapi(
         .await
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     let payload = ensure_success(response).await?;
+<<<<<<< HEAD
     payload
         .get(output_field)
         .cloned()
@@ -830,6 +865,13 @@ async fn invoke_openapi(
                 "OpenAPI response did not contain mapped field {output_field}"
             ))
         })
+=======
+    payload.get(output_field).cloned().ok_or_else(|| {
+        GatewayError::SandboxError(format!(
+            "OpenAPI response did not contain mapped field {output_field}"
+        ))
+    })
+>>>>>>> codex/run-control-plane
 }
 
 /// Synchronous LangGraph run: POST {base}/runs/wait with the confirmed
@@ -885,6 +927,7 @@ async fn invoke_langgraph(
         .await
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     let payload = ensure_success(response).await?;
+<<<<<<< HEAD
     payload
         .pointer(output_path)
         .cloned()
@@ -893,6 +936,13 @@ async fn invoke_langgraph(
                 "LangGraph response did not contain mapped field {output_path}"
             ))
         })
+=======
+    payload.pointer(output_path).cloned().ok_or_else(|| {
+        GatewayError::SandboxError(format!(
+            "LangGraph response did not contain mapped field {output_path}"
+        ))
+    })
+>>>>>>> codex/run-control-plane
 }
 
 /// CrewAI is asynchronous: POST {base}/kickoff starts the crew and returns a
@@ -993,6 +1043,7 @@ async fn poll_crewai_status(
             .as_str()
         {
             "SUCCESS" | "COMPLETED" => {
+<<<<<<< HEAD
                 return payload
                     .pointer(output_path)
                     .cloned()
@@ -1001,6 +1052,13 @@ async fn poll_crewai_status(
                             "CrewAI response did not contain mapped field {output_path}"
                         ))
                     });
+=======
+                return payload.pointer(output_path).cloned().ok_or_else(|| {
+                    GatewayError::SandboxError(format!(
+                        "CrewAI response did not contain mapped field {output_path}"
+                    ))
+                });
+>>>>>>> codex/run-control-plane
             }
             "FAILED" | "ERROR" => {
                 return Err(GatewayError::SandboxError(
@@ -1177,11 +1235,38 @@ fn extract_text(value: &Value) -> Option<String> {
     None
 }
 
+fn mapped_input(input: &Value, field: &str, prompt: &str) -> Value {
+    input
+        .get(field)
+        .cloned()
+        .or_else(|| {
+            let object = input.as_object()?;
+            (object.len() == 1)
+                .then(|| object.get("message").cloned())
+                .flatten()
+        })
+        .unwrap_or_else(|| {
+            if input.is_null() {
+                Value::String(prompt.to_owned())
+            } else {
+                input.clone()
+            }
+        })
+}
+
+fn result_display_text(result: &Value) -> String {
+    result
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| extract_text(result))
+        .unwrap_or_else(|| result.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{extract_text, TraceHeaders};
+    use super::{extract_text, mapped_input, result_display_text, TraceHeaders};
 
     #[test]
     fn extracts_text_from_a2a_task_artifact() {
@@ -1212,6 +1297,28 @@ mod tests {
             "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
         );
         assert_eq!(request.headers()["tracestate"], "vendor=value");
+    }
+
+    #[test]
+    fn mapped_input_preserves_structured_values() {
+        let input = json!({"topic": "agents", "depth": 3});
+        assert_eq!(mapped_input(&input, "topic", "fallback"), json!("agents"));
+        assert_eq!(
+            mapped_input(&input, "request", "fallback"),
+            json!({"topic": "agents", "depth": 3})
+        );
+        assert_eq!(
+            mapped_input(&json!({"message": "hello"}), "input", "fallback"),
+            json!("hello")
+        );
+    }
+
+    #[test]
+    fn structured_results_have_a_legacy_display_message() {
+        assert_eq!(
+            result_display_text(&json!({"score": 0.9, "passed": true})),
+            r#"{"passed":true,"score":0.9}"#
+        );
     }
 }
 
