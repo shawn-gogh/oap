@@ -469,7 +469,7 @@ pub async fn cancel_turn(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((session_id, turn_id)): Path<(String, String)>,
-) -> Result<Json<run_types::RunSnapshotV1>, GatewayError> {
+) -> Result<Json<session_control::schema::TurnSnapshot>, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     let row = owned_session(pool, &auth, &session_id).await?;
     let snapshot = session_control::repository::get_turn(pool, &session_id, &turn_id)
@@ -479,191 +479,13 @@ pub async fn cancel_turn(
         snapshot.turn.status.as_str(),
         "completed" | "failed" | "rejected" | "cancelled" | "timed_out"
     ) {
-        return Ok(Json(
-            run_projection::load(pool, &session_id, &turn_id).await?,
-        ));
+        return Ok(Json(snapshot));
     }
     abort_session_internal(&state, pool, &row, "cancelled by user").await?;
-    Ok(Json(
-        run_projection::load(pool, &session_id, &turn_id).await?,
-    ))
-}
-
-pub async fn resume_turn(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((session_id, turn_id)): Path<(String, String)>,
-    Json(input): Json<run_types::ResumeRunRequestV1>,
-) -> Result<Json<run_types::RunSnapshotV1>, GatewayError> {
-    let (pool, auth) = auth_db(&state, &headers).await?;
-    let pool = pool.clone();
-    let row = owned_session(&pool, &auth, &session_id).await?;
-    let snapshot = session_control::repository::get_turn(&pool, &session_id, &turn_id)
+    let snapshot = session_control::repository::get_turn(pool, &session_id, &turn_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound(format!("turn {turn_id} not found")))?;
-    if snapshot.turn.status != "waiting_input" {
-        return Err(GatewayError::BadRequest(format!(
-            "turn {turn_id} can only resume from waiting_input, current status is {}",
-            snapshot.turn.status
-        )));
-    }
-    let request_id = input.request_id.trim();
-    if request_id.is_empty() {
-        return Err(GatewayError::BadRequest(
-            "resume request_id is required".to_owned(),
-        ));
-    }
-    let patch = input
-        .input
-        .as_object()
-        .filter(|input| !input.is_empty())
-        .ok_or_else(|| {
-            GatewayError::BadRequest("resume input must be a non-empty object".to_owned())
-        })?;
-    let turn =
-        session_control::repository::merge_turn_input(&pool, &session_id, &turn_id, patch).await?;
-    session_control::repository::append_event(
-        &pool,
-        session_control::repository::NewControlEvent {
-            session_id: &session_id,
-            turn_id: Some(&turn_id),
-            invocation_id: snapshot
-                .invocations
-                .first()
-                .map(|invocation| invocation.id.as_str()),
-            request_id: Some(request_id),
-            event_key: &format!("turn:{turn_id}:input:{request_id}:resolved"),
-            event_type: "input.resolved",
-            event: json!({
-                "schema_version": 1,
-                "request_id": request_id,
-                "input": Value::Object(patch.clone())
-            }),
-        },
-    )
-    .await?;
-    let prompt = types::execution_prompt_for_input(&turn.input_json)?;
-    persist_message(&pool, &session_id, "user", &prompt, None).await?;
-    session_control::repository::transition(&pool, &turn_id, "running", None).await?;
-    sessions::repository::set_status(&pool, &session_id, "running").await?;
-    spawn_existing_turn_execution(state, pool.clone(), row, turn, prompt);
-    Ok(Json(
-        run_projection::load(&pool, &session_id, &turn_id).await?,
-    ))
-}
-
-pub async fn retry_turn(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path((session_id, turn_id)): Path<(String, String)>,
-    Json(input): Json<run_types::RetryRunRequestV1>,
-) -> Result<Json<run_types::RunSnapshotV1>, GatewayError> {
-    let (pool, auth) = auth_db(&state, &headers).await?;
-    let pool = pool.clone();
-    owned_session(&pool, &auth, &session_id).await?;
-    let previous = session_control::repository::get_turn(&pool, &session_id, &turn_id)
-        .await?
-        .ok_or_else(|| GatewayError::NotFound(format!("turn {turn_id} not found")))?;
-    if !matches!(
-        previous.turn.status.as_str(),
-        "completed" | "failed" | "rejected" | "cancelled" | "timed_out"
-    ) {
-        return Err(GatewayError::BadRequest(format!(
-            "turn {turn_id} must be terminal before retry"
-        )));
-    }
-    let retry_request_id = input.request_id().map(str::to_owned);
-    let run_input = input
-        .input
-        .unwrap_or_else(|| previous.turn.input_json.clone());
-    if !run_input.is_object() {
-        return Err(GatewayError::BadRequest(
-            "retry input must be a JSON object".to_owned(),
-        ));
-    }
-    let prompt = types::execution_prompt_for_input(&run_input)?;
-    let model = previous
-        .turn
-        .model
-        .clone()
-        .ok_or(GatewayError::MissingModel)?;
-    let request_id = request_id(&headers, retry_request_id.as_deref());
-    enqueue_prompt_text_with_runtime_model(
-        state,
-        pool.clone(),
-        &session_id,
-        prompt,
-        run_input,
-        true,
-        "retry",
-        Some(turn_id),
-        previous.turn.attempt_number.saturating_add(1),
-        model.clone(),
-        Some(model),
-        request_id.clone(),
-        None,
-        None,
-    )
-    .await?;
-    let next_turn_id = session_control::repository::get_by_request(&pool, &session_id, &request_id)
-        .await?
-        .ok_or_else(|| GatewayError::NotFound("retry turn was not created".to_owned()))?
-        .turn
-        .id;
-    Ok(Json(
-        run_projection::load(&pool, &session_id, &next_turn_id).await?,
-    ))
-}
-
-fn spawn_existing_turn_execution(
-    state: Arc<AppState>,
-    pool: sqlx::PgPool,
-    row: sessions::schema::SessionRow,
-    turn: session_control::schema::SessionTurnRow,
-    prompt: String,
-) {
-    tokio::spawn(async move {
-        let result = if row.runtime.is_some() {
-            execute_runtime_prompt(
-                state.clone(),
-                &pool,
-                row.clone(),
-                prompt,
-                turn.model.clone(),
-            )
-            .await
-        } else {
-            let model = turn.model.clone().ok_or(GatewayError::MissingModel);
-            match model {
-                Ok(model) => {
-                    execute_prompt(state.clone(), pool.clone(), row.clone(), prompt, model).await
-                }
-                Err(error) => Err(error),
-            }
-        };
-        match result {
-            Ok(()) => {
-                let _ = session_control::repository::transition(&pool, &turn.id, "completed", None)
-                    .await;
-            }
-            Err(error) => {
-                let _ = session_control::repository::transition(
-                    &pool,
-                    &turn.id,
-                    "failed",
-                    Some(json!({"code": "resume_error", "message": error.to_string()})),
-                )
-                .await;
-                let _ = runtime_lifecycle::mark_session_error(
-                    &state,
-                    &pool,
-                    &row.id,
-                    error.to_string(),
-                )
-                .await;
-            }
-        }
-    });
+    Ok(Json(snapshot))
 }
 
 pub async fn resume_turn(
@@ -852,7 +674,7 @@ pub async fn control_events(
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Query(query): Query<ControlEventsQuery>,
-) -> Result<Json<Vec<run_types::ControlEventV1>>, GatewayError> {
+) -> Result<Json<Vec<session_control::schema::SessionControlEventRow>>, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     owned_session(pool, &auth, &session_id).await?;
     Ok(Json(
@@ -861,10 +683,7 @@ pub async fn control_events(
             &session_id,
             query.after_sequence.unwrap_or_default().max(0),
         )
-        .await?
-        .into_iter()
-        .map(run_types::ControlEventV1::from)
-        .collect(),
+        .await?,
     ))
 }
 
