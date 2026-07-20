@@ -10,13 +10,27 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { Activity, ChevronRight, Radio, Trash2, X } from "lucide-react";
+import {
+  Activity,
+  ChevronRight,
+  Radio,
+  Trash2,
+  X,
+  FileText,
+  KeyRound,
+  Wrench,
+  Sparkles,
+  Clock,
+  Layers,
+  CheckCircle2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { runtimeEventSourceUrl } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-const DEFAULT_PANEL_WIDTH = 420;
-const MIN_PANEL_WIDTH = 320;
-const MAX_PANEL_WIDTH = 720;
+const DEFAULT_PANEL_WIDTH = 440;
+const MIN_PANEL_WIDTH = 340;
+const MAX_PANEL_WIDTH = 760;
 
 interface OcEvent {
   type: string;
@@ -28,6 +42,8 @@ export interface Frame {
   ev: OcEvent;
 }
 
+type InspectorTab = "timeline" | "files" | "context";
+
 function summarize(ev: OcEvent): string {
   const text =
     typeof ev.text === "string"
@@ -37,33 +53,38 @@ function summarize(ev: OcEvent): string {
         : "";
   switch (ev.type) {
     case "session.status_idle":
-      return "智能体已返回控制权";
+      return "智能体已完成当前步骤控制权返回";
     case "session.error":
       return String(
         typeof ev.error === "object" && ev.error
-          ? ((ev.error as { message?: unknown }).message ?? "运行错误")
-          : (ev.error ?? "运行错误"),
+          ? ((ev.error as { message?: unknown }).message ?? "运行时执行异常")
+          : (ev.error ?? "运行时执行异常"),
       );
     case "assistant_response":
     case "thinking_back":
     case "agent.message":
     case "agent.thinking":
     case "agent.reasoning":
-      return text ? text.replace(/\s+/g, " ").slice(0, 96) : "无文本负载";
+      return text ? text.replace(/\s+/g, " ").slice(0, 110) : "接收到消息负载";
     case "session.status": {
       const status = ev.status as { type?: string } | string | undefined;
-      return typeof status === "string" ? status : (status?.type ?? "状态已更新");
+      return typeof status === "string" ? status : (status?.type ?? "会话状态更新");
     }
     default:
-      return JSON.stringify(ev).slice(0, 96);
+      return JSON.stringify(ev).slice(0, 110);
   }
 }
 
-function eventTone(type: string): string {
-  if (type === "session.error") return "bg-red-500";
-  if (type === "session.status_idle") return "bg-emerald-500";
-  if (type === "session.status") return "bg-amber-500";
-  return "bg-muted-foreground";
+function eventTone(type: string): { dot: string; text: string; bg: string } {
+  if (type === "session.error")
+    return { dot: "bg-destructive animate-pulse", text: "text-destructive", bg: "bg-destructive/10 border-destructive/30" };
+  if (type === "session.status_idle")
+    return { dot: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" };
+  if (type.includes("tool") || type.includes("action"))
+    return { dot: "bg-blue-500", text: "text-blue-600 dark:text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" };
+  if (type.includes("thinking") || type.includes("reasoning"))
+    return { dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" };
+  return { dot: "bg-muted-foreground", text: "text-muted-foreground", bg: "bg-muted/40 border-border/60" };
 }
 
 function fmtTime(ts: number): string {
@@ -74,32 +95,49 @@ function fmtTime(ts: number): string {
   });
 }
 
-function EventRow({ frame }: { frame: Frame }) {
+function TimelineEventNode({ frame, isLast }: { frame: Frame; isLast: boolean }) {
   const [open, setOpen] = useState(false);
+  const tone = eventTone(frame.ev.type);
 
   return (
-    <div className="border-b border-border/70 last:border-b-0">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
-      >
-        <span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${eventTone(frame.ev.type)}`} />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate font-mono text-[11px] font-medium text-foreground">{frame.ev.type}</span>
-            <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{fmtTime(frame.ts)}</span>
-          </div>
-          <p className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">{summarize(frame.ev)}</p>
-        </div>
-        <ChevronRight className={`mt-1 size-3.5 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />
-      </button>
-      {open && (
-        <pre className="mx-3 mb-3 max-h-56 overflow-auto rounded-md border border-border bg-muted/30 p-2.5 font-mono text-[11px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">
-          {JSON.stringify(frame.ev, null, 2)}
-        </pre>
+    <div className="relative pl-6 pb-4">
+      {/* Connecting Timeline Line */}
+      {!isLast && (
+        <span className="absolute left-2.5 top-3 -bottom-1 w-px bg-border/80" />
       )}
+      {/* Node Bullet Dot */}
+      <span className={cn("absolute left-1.5 top-2.5 size-2 rounded-full ring-4 ring-background", tone.dot)} />
+
+      <div className="rounded-xl border border-border/70 bg-card/90 shadow-2xs overflow-hidden transition-all hover:border-border">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          className="flex w-full items-start justify-between gap-2 p-3 text-left transition-colors hover:bg-muted/30"
+        >
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex items-center gap-2">
+              <span className={cn("font-mono text-[11px] font-bold tracking-tight", tone.text)}>
+                {frame.ev.type}
+              </span>
+              <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+                {fmtTime(frame.ts)}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed font-mono truncate">
+              {summarize(frame.ev)}
+            </p>
+          </div>
+          <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform mt-0.5", open && "rotate-90")} />
+        </button>
+        {open && (
+          <div className="border-t border-border/60 bg-muted/20 p-3">
+            <pre className="max-h-60 overflow-auto rounded-lg border border-border/80 bg-background p-3 font-mono text-[11px] leading-relaxed text-foreground whitespace-pre-wrap break-words selection:bg-blue-500/20">
+              {JSON.stringify(frame.ev, null, 2)}
+            </pre>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -116,6 +154,7 @@ export function InspectorPanel({
   initialFrames?: Frame[];
 }) {
   const [frames, setFrames] = useState<Frame[]>([]);
+  const [activeTab, setActiveTab] = useState<InspectorTab>("timeline");
   const [hideHeartbeat, setHideHeartbeat] = useState(true);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -146,22 +185,6 @@ export function InspectorPanel({
     window.addEventListener("pointercancel", stop);
   };
 
-  const handlePanelResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      resizePanel(panelWidth + 24);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      resizePanel(panelWidth - 24);
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      resizePanel(MIN_PANEL_WIDTH);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      resizePanel(MAX_PANEL_WIDTH);
-    }
-  };
-
   useEffect(() => {
     if (!open) return;
     setFrames(initialFrames.slice(-500));
@@ -180,7 +203,6 @@ export function InspectorPanel({
       }
     };
     return () => source?.close();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionId]);
 
   const shown = useMemo(
@@ -197,82 +219,146 @@ export function InspectorPanel({
 
   return (
     <aside
-      className="fixed inset-y-0 right-0 z-40 flex w-[min(420px,calc(100vw-1rem))] min-w-0 flex-col border-l border-border bg-background shadow-xl xl:relative xl:inset-auto xl:z-auto xl:h-screen xl:w-[var(--inspector-panel-width)] xl:shrink-0 xl:shadow-none"
+      className="fixed inset-y-0 right-0 z-40 flex w-[min(440px,calc(100vw-1rem))] min-w-0 flex-col border-l border-border/80 bg-background shadow-xl xl:relative xl:inset-auto xl:z-auto xl:h-screen xl:w-[var(--inspector-panel-width)] xl:shrink-0 xl:shadow-none selection:bg-blue-500/20"
       style={{ "--inspector-panel-width": `${panelWidth}px` } as CSSProperties}
     >
+      {/* Resize Handle */}
       <div
         role="separator"
         aria-label="调整检查器宽度"
-        aria-orientation="vertical"
-        aria-valuemin={MIN_PANEL_WIDTH}
-        aria-valuemax={MAX_PANEL_WIDTH}
-        aria-valuenow={panelWidth}
         tabIndex={0}
         onPointerDown={startPanelResize}
-        onKeyDown={handlePanelResizeKeyDown}
         onDoubleClick={() => setPanelWidth(DEFAULT_PANEL_WIDTH)}
         className="group absolute inset-y-0 -left-1 z-50 hidden w-2 cursor-col-resize touch-none xl:block focus-visible:outline-none"
         title="拖动调整宽度，双击复位"
       >
-        <span className="mx-auto block h-full w-px bg-transparent transition-colors group-hover:bg-primary group-focus-visible:bg-primary" />
+        <span className="mx-auto block h-full w-px bg-transparent transition-colors group-hover:bg-blue-500 group-focus-visible:bg-blue-500" />
       </div>
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-        <span className="flex size-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
-          <Activity className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-[13.5px] font-semibold tracking-tight">检查器</h2>
-          <p className="truncate font-mono text-[10px] text-muted-foreground">{sessionId.slice(0, 12)}…</p>
+
+      {/* Header */}
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/80 px-4 bg-background/80 backdrop-blur">
+        <div className="flex items-center gap-2">
+          <div className="flex size-7 items-center justify-center rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+            <Activity className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-xs font-bold tracking-tight text-foreground">控制台轨迹与检查器</h2>
+            <p className="truncate font-mono text-[10px] text-muted-foreground">{sessionId.slice(0, 14)}…</p>
+          </div>
         </div>
-        <Button variant="ghost" size="icon-sm" className="ml-auto" onClick={onClose} aria-label="关闭检查器">
+        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="关闭检查器">
           <X className="size-4" />
         </Button>
       </header>
 
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3 py-2">
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-border/80 bg-muted/30 px-3 py-1.5">
         <button
           type="button"
-          onClick={() => setHideHeartbeat((value) => !value)}
-          aria-pressed={hideHeartbeat}
-          className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          onClick={() => setActiveTab("timeline")}
+          className={cn(
+            "flex-1 rounded-lg py-1 text-xs font-medium transition-all text-center",
+            activeTab === "timeline" ? "bg-background font-bold text-foreground shadow-2xs border border-border/70" : "text-muted-foreground hover:text-foreground",
+          )}
         >
-          <Radio className="size-3.5" />
-          {hideHeartbeat ? "仅显示重要事件" : "显示全部事件"}
+          01 轨迹 (Timeline)
         </button>
-        <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-          <span className="size-1.5 rounded-full bg-emerald-500" />
-          {shown.length}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => setFrames([])}
-          aria-label="清空检查器事件"
-          title="清空事件"
+        <button
+          type="button"
+          onClick={() => setActiveTab("context")}
+          className={cn(
+            "flex-1 rounded-lg py-1 text-xs font-medium transition-all text-center",
+            activeTab === "context" ? "bg-background font-bold text-foreground shadow-2xs border border-border/70" : "text-muted-foreground hover:text-foreground",
+          )}
         >
-          <Trash2 className="size-3.5" />
-        </Button>
+          02 上下文监视
+        </button>
       </div>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" aria-live="polite">
-        {shown.length > 0 ? (
-          shown.map((frame, index) => <EventRow key={`${frame.ts}-${index}`} frame={frame} />)
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-            <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <Activity className="size-5" />
+      {/* Sub Toolbar for Timeline */}
+      {activeTab === "timeline" && (
+        <div className="flex shrink-0 items-center justify-between border-b border-border/70 bg-muted/20 px-4 py-2 text-xs font-mono text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => setHideHeartbeat((value) => !value)}
+            className="inline-flex items-center gap-1.5 hover:text-foreground transition-colors"
+          >
+            <Radio className="size-3.5 text-blue-500" />
+            {hideHeartbeat ? "只看关键轨迹" : "显示全部心跳"}
+          </button>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
+              <span className="size-1.5 rounded-full bg-emerald-500" />
+              {shown.length} 节点
             </span>
-            <div>
-              <p className="text-sm font-medium text-foreground">等待运行事件</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">新的模型、工具和会话事件会实时显示在这里。</p>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="h-6 w-6"
+              onClick={() => setFrames([])}
+              title="清空记录"
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4" aria-live="polite">
+        {activeTab === "timeline" && (
+          shown.length > 0 ? (
+            <div className="pt-2">
+              {shown.map((frame, index) => (
+                <TimelineEventNode
+                  key={`${frame.ts}-${index}`}
+                  frame={frame}
+                  isLast={index === shown.length - 1}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center gap-3 py-16 text-center">
+              <div className="flex size-12 items-center justify-center rounded-2xl bg-blue-500/10 text-blue-500">
+                <Activity className="size-6" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-foreground">等待智能体运行轨迹...</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground max-w-xs">
+                  模型思考、工具调起、会话状态切换事件将实时在此展示。
+                </p>
+              </div>
+            </div>
+          )
+        )}
+
+        {activeTab === "context" && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-border/70 bg-card p-4 space-y-3 shadow-2xs">
+              <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                <Sparkles className="size-4 text-blue-500" />
+                <span>当前会话算力与上下文监视</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono pt-1">
+                <div className="rounded-xl border border-border/60 bg-muted/30 p-2.5">
+                  <span className="text-[10px] text-muted-foreground block">会话 ID</span>
+                  <span className="font-bold text-foreground truncate block mt-0.5">{sessionId}</span>
+                </div>
+                <div className="rounded-xl border border-border/60 bg-muted/30 p-2.5">
+                  <span className="text-[10px] text-muted-foreground block">事件推流</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-0.5">
+                    <CheckCircle2 className="size-3" /> SSE 联通
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      <footer className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-2 text-[10px] text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-emerald-500" />
-        已连接到运行时事件流
+      <footer className="flex shrink-0 items-center gap-2 border-t border-border/80 px-4 py-2.5 text-[11px] font-mono text-muted-foreground bg-muted/20">
+        <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+        智能体控制平面 · 实时事件链路监视中
       </footer>
     </aside>
   );

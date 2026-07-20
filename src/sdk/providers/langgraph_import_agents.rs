@@ -214,4 +214,55 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].name, "fallback-name");
     }
+
+    #[test]
+    fn guess_field_name_picks_sole_string_property() {
+        let schema = json!({"type": "object", "properties": {"question": {"type": "string"}}});
+        assert_eq!(
+            super::guess_field_name(&schema, &["input", "message"]),
+            Some("question".to_owned())
+        );
+    }
+
+    #[test]
+    fn guess_field_name_prefers_a_preferred_name_when_ambiguous() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string"},
+                "input": {"type": "string"}
+            }
+        });
+        assert_eq!(
+            super::guess_field_name(&schema, &["input", "topic"]),
+            Some("input".to_owned())
+        );
+    }
+
+    #[test]
+    fn guess_field_name_gives_up_when_truly_ambiguous() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string"},
+                "context": {"type": "string"}
+            }
+        });
+        assert_eq!(super::guess_field_name(&schema, &["input", "message"]), None);
+    }
+
+    #[test]
+    fn guess_field_name_ignores_non_string_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "answer": {"type": "string"}
+            }
+        });
+        assert_eq!(
+            super::guess_field_name(&schema, &["output"]),
+            Some("answer".to_owned())
+        );
+    }
 }

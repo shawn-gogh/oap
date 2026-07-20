@@ -25,6 +25,7 @@ import {
   Trash2,
   Users,
   LogOut,
+  Search,
 } from "lucide-react";
 import { useSidebarCollapsed } from "@/lib/use-sidebar-collapsed";
 import type { LucideIcon } from "lucide-react";
@@ -448,69 +449,76 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
       <div className={`flex-1 overflow-y-auto py-2 ${blockCls}`}>
         {isAgentPlatform && (
           <>
-            <div className="px-4 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              会话历史
+            <div className="flex items-center justify-between px-3 pb-1.5 pt-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">会话历史</span>
+              {sessions && (
+                <span className="text-[10px] font-mono text-muted-foreground">{sessions.length} 条</span>
+              )}
             </div>
-            {sessions && sessions.length > 8 && (
-              <div className="px-2 pb-1.5">
-                <input
-                  value={sessionQuery}
-                  onChange={(event) => setSessionQuery(event.target.value)}
-                  placeholder="搜索会话…"
-                  aria-label="搜索会话"
-                  className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-                />
+            
+            {sessions && (
+              <div className="px-2 pb-2">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <input
+                    value={sessionQuery}
+                    onChange={(event) => setSessionQuery(event.target.value)}
+                    placeholder="搜索历史会话..."
+                    aria-label="搜索历史会话"
+                    className="h-7 w-full rounded-lg border border-border/70 bg-card pl-7 pr-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                  />
+                </div>
               </div>
             )}
             {error && (
-              <div className="px-3 py-2 text-xs text-destructive">{error}</div>
+              <div className="px-3 py-2 text-xs font-mono text-destructive">{error}</div>
             )}
             {!sessions && !error && (
-              <div className="px-3 py-2 text-xs text-muted-foreground">加载中...</div>
+              <div className="px-3 py-2 text-xs font-mono text-muted-foreground">正在加载历史...</div>
             )}
             {sessions && sessions.length === 0 && (
               <div className="px-3 py-2 text-xs text-muted-foreground">
-                还没有会话。
+                暂无历史会话。
               </div>
             )}
             {visibleSessions?.map((s) => {
               const short = s.id.slice(0, 12);
               const title = s.title?.trim() || short;
               const active = s.id === activeId;
+              const tone = sessionTone(s);
               return (
                 <div
                   key={s.id}
                   onClick={() => router.push(`/chat/?id=${encodeURIComponent(s.id)}`)}
-                  className={`group mx-2 px-2 py-1.5 rounded text-xs cursor-pointer flex items-center justify-between gap-2 ${
+                  className={`group mx-2 px-2.5 py-2 rounded-xl text-xs cursor-pointer flex items-center justify-between gap-2 transition-all ${
                     active
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-accent/50"
+                      ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold border border-blue-500/20 shadow-2xs"
+                      : "hover:bg-muted/40 text-foreground"
                   }`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      {(() => {
-                        const tone = sessionTone(s);
-                        if (tone === "idle") return null;
-                        return (
-                          <span
-                            title={tone === "busy" ? "运行中" : "上次运行失败"}
-                            className={`size-1.5 shrink-0 rounded-full ${
-                              tone === "busy" ? "animate-pulse bg-emerald-500 motion-reduce:animate-none" : "bg-red-500"
-                            }`}
-                          />
-                        );
-                      })()}
-                      <span className="truncate font-medium">{title}</span>
+                      <span
+                        title={tone === "busy" ? "智能体运行中" : tone === "failed" ? "上次执行异常" : "准备就绪"}
+                        className={`size-1.5 shrink-0 rounded-full ${
+                          tone === "busy"
+                            ? "animate-ping bg-emerald-500"
+                            : tone === "failed"
+                              ? "bg-destructive"
+                              : "bg-emerald-500/60"
+                        }`}
+                      />
+                      <span className="truncate font-medium text-xs">{title}</span>
                     </div>
-                    <div className="font-mono text-[11px] text-muted-foreground truncate">
-                      {(s.agent ?? s.harness) === "claude-code" ? "cc" : (s.agent ?? s.harness) === "github-copilot" ? "gh" : "oc"} · {short} · {timeAgo(s.time?.created)}
+                    <div className="font-mono text-[10px] text-muted-foreground truncate mt-0.5">
+                      {short} · {timeAgo(s.time?.created)}
                     </div>
                   </div>
                   <button
                     onClick={(e) => onDelete(e, s.id)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-background rounded focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-destructive/10 hover:text-destructive rounded-md focus-visible:opacity-100 focus-visible:outline-none"
                     aria-label="删除会话"
+                    title="删除会话"
                   >
                     <Trash2 className="size-3" />
                   </button>
