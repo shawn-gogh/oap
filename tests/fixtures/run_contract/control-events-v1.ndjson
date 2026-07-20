@@ -1,0 +1,4 @@
+{"schema_version":1,"type":"turn.accepted","sequence":1,"session_id":"session_example","turn_id":"turn_example","invocation_id":"invocation_example","occurred_at":1720000000000,"payload":{"status":"queued"}}
+{"schema_version":1,"type":"turn.started","sequence":2,"session_id":"session_example","turn_id":"turn_example","invocation_id":"invocation_example","occurred_at":1720000000100,"payload":{"status":"running"}}
+{"schema_version":1,"type":"step.progress","sequence":3,"session_id":"session_example","turn_id":"turn_example","invocation_id":"invocation_example","occurred_at":1720000000200,"payload":{"step_id":"research","label":"Research","progress":50}}
+{"schema_version":1,"type":"turn.completed","sequence":4,"session_id":"session_example","turn_id":"turn_example","invocation_id":"invocation_example","occurred_at":1720000000300,"payload":{"status":"completed"}}
