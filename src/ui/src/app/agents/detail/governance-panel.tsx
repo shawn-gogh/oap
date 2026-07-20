@@ -51,6 +51,7 @@ import {
   rollbackAgent,
   saveAgentByoCredential,
   setAgentSourceRuntimeMapping,
+  suggestAgentSourceRuntimeMapping,
   syncAgentSource,
   testAgentGovernance,
   type AgentGovernanceResponse,
@@ -356,6 +357,8 @@ export function ManagedGovernancePanel({
   const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
   const [mappingDraft, setMappingDraft] = useState<RuntimeMapping>({});
   const [mappingSaving, setMappingSaving] = useState(false);
+  const [mappingSuggestLoading, setMappingSuggestLoading] = useState(false);
+  const [mappingSuggestNote, setMappingSuggestNote] = useState<string | null>(null);
   const governance = response.governance;
   const testedCurrentRevision =
     governance.runtime_health === "healthy" &&
@@ -395,6 +398,26 @@ export function ManagedGovernancePanel({
       toast.success("已保存你的 BYO 密钥");
     } catch (e) {
       toast.error(apiErrorMessage(e, "保存密钥失败"));
+    }
+  };
+
+  const openMappingDialog = async () => {
+    setMappingDraft({});
+    setMappingSuggestNote(null);
+    setMappingDialogOpen(true);
+    setMappingSuggestLoading(true);
+    try {
+      const suggestion = await suggestAgentSourceRuntimeMapping(governance.agent_id);
+      setMappingDraft((draft) => ({
+        ...draft,
+        input_field: draft.input_field || suggestion.input_field || undefined,
+        output_path: draft.output_path || suggestion.output_path || undefined,
+      }));
+      setMappingSuggestNote(suggestion.note);
+    } catch (e) {
+      setMappingSuggestNote(apiErrorMessage(e, "自动获取失败，请手动确认。"));
+    } finally {
+      setMappingSuggestLoading(false);
     }
   };
 
@@ -764,10 +787,7 @@ export function ManagedGovernancePanel({
                     该来源需要人工确认请求/响应字段映射后才能运行会话
                     <button
                       type="button"
-                      onClick={() => {
-                        setMappingDraft({});
-                        setMappingDialogOpen(true);
-                      }}
+                      onClick={() => void openMappingDialog()}
                       className="underline underline-offset-2 text-muted-foreground hover:text-foreground"
                     >
                       配置映射
@@ -1037,6 +1057,17 @@ export function ManagedGovernancePanel({
                 : "告诉平台请求/响应里提示词和答案分别放在哪个字段；留空则使用该运行时的默认字段名。"}
             </DialogDescription>
           </DialogHeader>
+          {mappingSuggestLoading && (
+            <p className="text-xs text-muted-foreground">正在尝试自动获取输入/输出结构…</p>
+          )}
+          {!mappingSuggestLoading && mappingSuggestNote && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">{mappingSuggestNote}</p>
+          )}
+          {!mappingSuggestLoading && !mappingSuggestNote && (mappingDraft.input_field || mappingDraft.output_path) && (
+            <p className="text-xs text-emerald-700 dark:text-emerald-400">
+              已根据来源的 schema 接口自动填入建议值，可直接确认或按需修改。
+            </p>
+          )}
           <div className="grid gap-3 py-1">
             {governance.source_provider === "openapi" && (
               <div className="grid gap-1.5">

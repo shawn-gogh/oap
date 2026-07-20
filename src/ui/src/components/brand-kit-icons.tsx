@@ -198,3 +198,84 @@ export function SkillsBrandIcon({ size = 20, className = "", ...props }: BrandIc
     </svg>
   );
 }
+
+/**
+ * 5. AI Gateway Brand Icon (AI 网关基础设施)
+ * Concept: Mesh Routing Gateway + High-Dimension Pulse
+ * Color Accent: Cyan & Electric Blue (No purple)
+ */
+export function AiGatewayBrandIcon({ size = 20, className = "", ...props }: BrandIconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      {...props}
+    >
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="16"
+        rx="3"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        className="opacity-90"
+      />
+      <path
+        d="M7 9H17M7 15H13"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        className="text-cyan-500"
+      />
+      <circle cx="17" cy="15" r="1.5" fill="currentColor" className="text-blue-500 animate-pulse" />
+      <path
+        d="M12 4V20"
+        stroke="currentColor"
+        strokeWidth="1"
+        strokeDasharray="2 2"
+        className="opacity-30"
+      />
+    </svg>
+  );
+}
+
+/**
+ * 6. Access Control Brand Icon (零信任访问控制)
+ * Concept: Identity Lock Enclave + Vault Shield
+ * Color Accent: Emerald & Steel Gold
+ */
+export function AccessControlBrandIcon({ size = 20, className = "", ...props }: BrandIconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      {...props}
+    >
+      <path
+        d="M12 2L4 6V11C4 16.55 7.4 21.74 12 23C16.6 21.74 20 16.55 20 11V6L12 2Z"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="opacity-90"
+      />
+      <path
+        d="M9 12L11 14L15 10"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-emerald-500"
+      />
+    </svg>
+  );
+}

@@ -194,6 +194,10 @@ fn agent_routes() -> Router<Arc<AppState>> {
             post(super::source_management::set_runtime_mapping),
         )
         .route(
+            "/api/agents/{agent_id}/source/runtime-mapping/suggest",
+            get(super::source_management::suggest_runtime_mapping),
+        )
+        .route(
             "/api/agents/{agent_id}/source/drift/accept",
             post(super::source_management::accept_drift),
         )

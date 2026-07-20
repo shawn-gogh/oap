@@ -30,6 +30,7 @@ import { useSidebarCollapsed } from "@/lib/use-sidebar-collapsed";
 import type { LucideIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { AccessControlBrandIcon, AiGatewayBrandIcon } from "@/components/brand-kit-icons";
 import { OapLogoMark } from "@/components/oap-logo";
 import {
   DropdownMenu,
@@ -62,7 +63,7 @@ type NavItem = {
 
 type NavSection = {
   label: string;
-  icon: LucideIcon;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
   home: string;
   description: string;
   items: NavItem[];
@@ -193,7 +194,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const sections: NavSection[] = [
     ...(currentUser?.is_admin ? [{
       label: "AI 网关",
-      icon: ShieldCheck,
+      icon: AiGatewayBrandIcon,
       home: "/providers/",
       description: "密钥、团队、日志、模型提供方与运行时",
       items: [
@@ -264,7 +265,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
     }] : []),
     ...(currentUser?.can_manage_groups ? [{
       label: "访问控制",
-      icon: ShieldCheck,
+      icon: AccessControlBrandIcon,
       home: "/groups/",
       description: "用户组与授权",
       items: [{

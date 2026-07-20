@@ -82,6 +82,63 @@ impl ImportAgentsProvider for LangGraphImportAgents {
     }
 }
 
+/// `GET /assistants/{assistant_id}/schemas` — LangGraph Platform's own
+/// introspection endpoint, returning the graph's real `input_schema`/
+/// `output_schema` (JSON Schema) instead of making the operator guess field
+/// names by hand. Used to pre-fill (not silently commit) the execution
+/// mapping confirmation UI — see `source_management::suggest_runtime_mapping`.
+pub async fn fetch_schemas(
+    http: &reqwest::Client,
+    endpoint: &str,
+    assistant_id: &str,
+    api_key: &str,
+) -> Result<Value, ImportAgentsError> {
+    let url = format!(
+        "{}/assistants/{}/schemas",
+        endpoint.trim_end_matches('/'),
+        assistant_id
+    );
+    let mut request = http.get(url).header("accept", "application/json");
+    if !api_key.is_empty() {
+        request = request.bearer_auth(api_key).header("x-api-key", api_key);
+    }
+    let response = request.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(ImportAgentsError::Upstream {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(serde_json::from_str(&body)?)
+}
+
+/// Best-effort guess at which top-level field of a JSON Schema object holds
+/// the free-text prompt/answer — only when the schema unambiguously has
+/// exactly one string-typed property, or a property named like one of
+/// `preferred_names` (checked in order). Anything more ambiguous than that
+/// (multiple plausible string fields, non-object schema) returns `None`
+/// rather than a wrong guess — the operator still confirms/overrides in the
+/// mapping UI either way.
+pub fn guess_field_name(schema: &Value, preferred_names: &[&str]) -> Option<String> {
+    let properties = schema.pointer("/properties")?.as_object()?;
+    let string_props: Vec<&String> = properties
+        .iter()
+        .filter(|(_, def)| def.get("type").and_then(Value::as_str) == Some("string"))
+        .map(|(key, _)| key)
+        .collect();
+    for preferred in preferred_names {
+        if let Some(found) = string_props.iter().find(|key| key.as_str() == *preferred) {
+            return Some((*found).clone());
+        }
+    }
+    if string_props.len() == 1 {
+        return Some(string_props[0].clone());
+    }
+    None
+}
+
 fn parse_assistants(raw: Value) -> Result<Vec<ImportedAgent>, ImportAgentsError> {
     let values = raw.as_array().ok_or_else(|| {
         ImportAgentsError::InvalidDocument(

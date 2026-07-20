@@ -31,7 +31,7 @@ use crate::{
             canonical::{normalize_agent, CanonicalAgentSpec},
             conformance::inspect_runtime_contract,
         },
-        providers::import_agents::{ImportAgentsProvider, ImportedAgent},
+        providers::import_agents::{ImportAgentsError, ImportAgentsProvider, ImportedAgent},
     },
 };
 
@@ -398,6 +398,102 @@ pub async fn set_runtime_mapping(
     )
     .await?;
     Ok(Json(row))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RuntimeMappingSuggestion {
+    pub input_field: Option<String>,
+    pub output_path: Option<String>,
+    /// Present when a schema was actually fetched, so the UI can show the
+    /// raw JSON Schema for cases the guess couldn't resolve automatically.
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    /// Why no suggestion could be made — e.g. provider unsupported, schema
+    /// endpoint unreachable — shown as a hint, not an error, since manual
+    /// entry always remains available.
+    pub note: Option<String>,
+}
+
+/// Best-effort mapping suggestion, fetched from the source's own schema
+/// introspection endpoint where one exists (currently just LangGraph
+/// Platform's `GET /assistants/{id}/schemas`) rather than making the operator
+/// hand-derive field names. Never fails the request — schema-fetch problems
+/// become a `note` so the confirmation dialog still opens with blank fields.
+pub async fn suggest_runtime_mapping(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<RuntimeMappingSuggestion>, GatewayError> {
+    let (pool, _auth, _agent) = editable_agent(&state, &headers, &agent_id).await?;
+    let governance = governance::get(&pool, &agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("governance not found".to_owned()))?;
+    if governance.source_provider != "langgraph" {
+        return Ok(Json(RuntimeMappingSuggestion {
+            input_field: None,
+            output_path: None,
+            input_schema: None,
+            output_schema: None,
+            note: Some("该来源暂不支持自动获取输入/输出结构，请手动确认。".to_owned()),
+        }));
+    }
+    let endpoint = validate_connector_endpoint(&governance.source_endpoint).await?;
+    let api_key = credential_api_key(
+        &state,
+        &pool,
+        governance.credential_name.as_deref(),
+        &governance.owner_id,
+    )
+    .await?;
+    match crate::sdk::providers::langgraph_import_agents::fetch_schemas(
+        &state.http,
+        &endpoint,
+        &governance.external_agent_id,
+        &api_key,
+    )
+    .await
+    {
+        Ok(schemas) => {
+            let input_schema = schemas.get("input_schema").cloned();
+            let output_schema = schemas.get("output_schema").cloned();
+            let input_field = input_schema
+                .as_ref()
+                .and_then(|s| crate::sdk::providers::langgraph_import_agents::guess_field_name(
+                    s,
+                    &["input", "message", "messages", "text", "query"],
+                ));
+            let output_field = output_schema.as_ref().and_then(|s| {
+                crate::sdk::providers::langgraph_import_agents::guess_field_name(
+                    s,
+                    &["output", "answer", "result", "response"],
+                )
+            });
+            Ok(Json(RuntimeMappingSuggestion {
+                input_field,
+                output_path: output_field.map(|field| format!("/{field}")),
+                input_schema,
+                output_schema,
+                note: None,
+            }))
+        }
+        Err(error) => {
+            let reason = match error {
+                ImportAgentsError::Upstream { status, .. } => {
+                    format!("来源返回 HTTP {status}")
+                }
+                ImportAgentsError::Request(_) => "无法连接来源".to_owned(),
+                ImportAgentsError::Decode(_) => "来源返回的内容不是有效 JSON".to_owned(),
+                ImportAgentsError::InvalidDocument(message) => message,
+            };
+            Ok(Json(RuntimeMappingSuggestion {
+                input_field: None,
+                output_path: None,
+                input_schema: None,
+                output_schema: None,
+                note: Some(format!("自动获取失败（{reason}），请手动确认。")),
+            }))
+        }
+    }
 }
 
 pub async fn accept_drift(

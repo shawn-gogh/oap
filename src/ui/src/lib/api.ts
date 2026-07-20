@@ -2776,6 +2776,25 @@ export async function setAgentSourceRuntimeMapping(
   );
 }
 
+export interface RuntimeMappingSuggestion {
+  input_field: string | null;
+  output_path: string | null;
+  input_schema: unknown;
+  output_schema: unknown;
+  note: string | null;
+}
+
+// Best-effort guess at the mapping, read from the source's own schema
+// introspection endpoint where one exists (currently LangGraph Platform
+// only) — spares the operator from hand-deriving field names via curl.
+export async function suggestAgentSourceRuntimeMapping(
+  id: string,
+): Promise<RuntimeMappingSuggestion> {
+  return jsonOrThrow<RuntimeMappingSuggestion>(
+    await req(`/api/agents/${encodeURIComponent(id)}/source/runtime-mapping/suggest`),
+  );
+}
+
 export async function resolveAgentDrift(
   id: string,
   resolution: "accept" | "reject",
