@@ -16,6 +16,8 @@ const FEDERATED_BRIDGE_RUNTIMES: Record<string, string> = {
   acp_legacy: "acp-remote",
   dify_app: "dify-managed",
   openapi_rest: "openapi-mapped",
+  langgraph_assistant: "langgraph-managed",
+  crewai_crew: "crewai-managed",
 };
 
 export function isFederatedBridgeRuntime(runtime?: string | null): boolean {
