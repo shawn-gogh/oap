@@ -9,6 +9,14 @@ pub struct SessionTurnRow {
     pub request_id: String,
     pub status: String,
     pub model: Option<String>,
+    pub input_json: Value,
+    pub input_schema_json: Value,
+    pub output_schema_json: Value,
+    pub interaction_profile_json: Value,
+    pub result_json: Option<Value>,
+    pub trigger_type: String,
+    pub retry_of_turn_id: Option<String>,
+    pub attempt_number: i32,
     pub error_json: Option<Value>,
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
@@ -55,6 +63,23 @@ pub struct SessionControlEventRow {
     pub event_type: String,
     pub event_json: Value,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct SessionOperationRow {
+    pub id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub invocation_id: String,
+    pub operation_key: String,
+    pub operation_type: String,
+    pub status: String,
+    pub request_json: Value,
+    pub result_json: Option<Value>,
+    pub error_json: Option<Value>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub completed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

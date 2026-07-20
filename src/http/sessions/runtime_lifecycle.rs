@@ -1,3 +1,5 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -6,7 +8,7 @@ use crate::{
     db::managed_agents::{id, runtime_events, session_control, sessions},
     errors::GatewayError,
     proxy::state::AppState,
-    sdk::agents::AgentEvent,
+    sdk::agents::{AgentEvent, AgentEventPayload},
 };
 
 pub(super) async fn emit_runtime_stage(
@@ -115,6 +117,165 @@ pub(super) async fn persist_runtime_event(
     let event_json = serde_json::to_value(event)
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     runtime_events::repository::append(pool, session_id, event_json).await?;
+    if event_requests_input(event) {
+        persist_input_request(pool, session_id, event).await?;
+    }
+    if let AgentEventPayload::AgentMessage(message) = event.payload() {
+        persist_turn_message(
+            pool,
+            session_id,
+            serde_json::json!({"content": message.content}),
+        )
+        .await?;
+        persist_turn_result(
+            pool,
+            session_id,
+            serde_json::json!({
+                "type": "message",
+                "content": message.content,
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn persist_input_request(
+    pool: &PgPool,
+    session_id: &str,
+    event: &AgentEvent,
+) -> Result<(), GatewayError> {
+    let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? else {
+        return Ok(());
+    };
+    if snapshot.turn.status == "running" {
+        session_control::repository::transition(pool, &snapshot.turn.id, "waiting_input", None)
+            .await?;
+    }
+    let request_id = event
+        .data
+        .get("request_id")
+        .or_else(|| event.data.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or(&snapshot.turn.request_id);
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(&snapshot.turn.id),
+            invocation_id: snapshot
+                .invocations
+                .first()
+                .map(|invocation| invocation.id.as_str()),
+            request_id: Some(request_id),
+            event_key: &format!("turn:{}:input:{request_id}:requested", snapshot.turn.id),
+            event_type: "input.requested",
+            event: serde_json::json!({
+                "schema_version": 1,
+                "request_id": request_id,
+                "prompt": event.data.get("prompt"),
+                "schema": event.data.get("schema"),
+                "fields": event.data.get("fields"),
+            }),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn persist_text_result(
+    pool: &PgPool,
+    session_id: &str,
+    text: &str,
+) -> Result<(), GatewayError> {
+    persist_text_message(pool, session_id, text).await?;
+    persist_turn_result(
+        pool,
+        session_id,
+        serde_json::json!({
+            "type": "message",
+            "content": [{"type": "text", "text": text}],
+        }),
+    )
+    .await
+}
+
+pub(super) async fn persist_text_message(
+    pool: &PgPool,
+    session_id: &str,
+    text: &str,
+) -> Result<(), GatewayError> {
+    persist_turn_message(
+        pool,
+        session_id,
+        serde_json::json!({
+            "content": [{"type": "text", "text": text}],
+        }),
+    )
+    .await
+}
+
+async fn persist_turn_message(
+    pool: &PgPool,
+    session_id: &str,
+    message: Value,
+) -> Result<(), GatewayError> {
+    let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? else {
+        return Ok(());
+    };
+    let mut hasher = DefaultHasher::new();
+    message.to_string().hash(&mut hasher);
+    let message_key = hasher.finish();
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(&snapshot.turn.id),
+            invocation_id: snapshot
+                .invocations
+                .first()
+                .map(|invocation| invocation.id.as_str()),
+            request_id: Some(&snapshot.turn.request_id),
+            event_key: &format!("turn:{}:message:{message_key:016x}", snapshot.turn.id),
+            event_type: "message.completed",
+            event: serde_json::json!({
+                "schema_version": 1,
+                "message": message,
+            }),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn persist_turn_result(
+    pool: &PgPool,
+    session_id: &str,
+    result: Value,
+) -> Result<(), GatewayError> {
+    let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? else {
+        return Ok(());
+    };
+    session_control::repository::set_turn_result(pool, &snapshot.turn.id, result.clone()).await?;
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(&snapshot.turn.id),
+            invocation_id: snapshot
+                .invocations
+                .first()
+                .map(|invocation| invocation.id.as_str()),
+            request_id: Some(&snapshot.turn.request_id),
+            event_key: &format!("turn:{}:result:completed", snapshot.turn.id),
+            event_type: "result.completed",
+            event: serde_json::json!({
+                "schema_version": 1,
+                "result": result,
+            }),
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -149,6 +310,13 @@ pub(super) fn terminal_event_status(event: &AgentEvent) -> Option<&'static str> 
         "session.error" => Some("error"),
         _ => None,
     }
+}
+
+fn event_requests_input(event: &AgentEvent) -> bool {
+    matches!(
+        event.event_type.as_str(),
+        "input.required" | "input_request.created" | "agent.input_required"
+    )
 }
 
 pub(super) fn event_keeps_turn_running(event: &AgentEvent) -> bool {
@@ -194,4 +362,32 @@ fn provider_error_message(raw: &Value) -> String {
         })
         .unwrap_or("managed agent interaction failed")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Map};
+
+    use crate::sdk::agents::AgentEvent;
+
+    use super::event_requests_input;
+
+    #[test]
+    fn recognizes_provider_neutral_input_request_events() {
+        for event_type in [
+            "input.required",
+            "input_request.created",
+            "agent.input_required",
+        ] {
+            let data = serde_json::from_value::<Map<String, serde_json::Value>>(json!({
+                "request_id": "request_1"
+            }))
+            .unwrap();
+            assert!(event_requests_input(&AgentEvent::new(event_type, data)));
+        }
+        assert!(!event_requests_input(&AgentEvent::new(
+            "agent.message",
+            Map::new()
+        )));
+    }
 }

@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    db::managed_agents::artifacts::{repository, schema::ManagedArtifactRow},
+    db::managed_agents::{
+        artifacts::{repository, schema::ManagedArtifactRow},
+        session_control,
+    },
     errors::GatewayError,
     managed_agents::adapters::{
         artifacts::DatabaseArtifactAdapter, types::ArtifactReference, AdapterError, ArtifactAdapter,
@@ -66,6 +69,22 @@ pub async fn create_artifact(
     let row = repository::get(pool, &session_id, &artifact_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("artifact not found".to_owned()))?;
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id: &session_id,
+            turn_id: Some(&turn_id),
+            invocation_id: row.invocation_id.as_deref(),
+            request_id: None,
+            event_key: &format!("turn:{turn_id}:artifact:{}", row.id),
+            event_type: "artifact.added",
+            event: serde_json::json!({
+                "schema_version": 1,
+                "artifact": row.clone(),
+            }),
+        },
+    )
+    .await?;
     let response = response(&state, row).await?;
     Ok((StatusCode::CREATED, Json(response)))
 }

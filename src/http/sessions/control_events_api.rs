@@ -10,7 +10,10 @@ use serde::Deserialize;
 
 use crate::{db::managed_agents::session_control, errors::GatewayError, proxy::state::AppState};
 
-use super::storage::{auth_db, owned_session};
+use super::{
+    run_types::ControlEventV1,
+    storage::{auth_db, owned_session},
+};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ControlEventStreamQuery {
@@ -43,10 +46,12 @@ pub async fn control_event_stream(
                     idle_ticks = 0;
                     for event in events {
                         sequence = event.seq;
-                        let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned());
+                        let event_type = event.event_type.clone();
+                        let data = serde_json::to_string(&ControlEventV1::from(event))
+                            .unwrap_or_else(|_| "{}".to_owned());
                         let frame = format!(
                             "id: {}\nevent: {}\ndata: {}\n\n",
-                            event.seq, event.event_type, data
+                            sequence, event_type, data
                         );
                         yield Ok::<Bytes, Infallible>(Bytes::from(frame));
                     }

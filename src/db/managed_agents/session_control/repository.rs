@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::schema::{
-    SessionControlEventRow, SessionInvocationRow, SessionTurnRow, TurnRecoveryCandidate,
-    TurnSnapshot,
+    SessionControlEventRow, SessionInvocationRow, SessionOperationRow, SessionTurnRow,
+    TurnRecoveryCandidate, TurnSnapshot,
 };
 
 const ACTIVE_STATUSES: &[&str] = &[
@@ -26,6 +26,13 @@ pub struct NewTurn<'a> {
     pub session_id: &'a str,
     pub request_id: &'a str,
     pub model: Option<&'a str>,
+    pub input: &'a Value,
+    pub input_schema: &'a Value,
+    pub output_schema: &'a Value,
+    pub interaction_profile: &'a Value,
+    pub trigger_type: &'a str,
+    pub retry_of_turn_id: Option<&'a str>,
+    pub attempt_number: i32,
     pub agent_id: Option<&'a str>,
     pub runtime: Option<&'a str>,
     pub protocol: &'a str,
@@ -39,6 +46,18 @@ pub struct NewTurn<'a> {
 pub struct CreatedTurn {
     pub snapshot: TurnSnapshot,
     pub created: bool,
+}
+
+pub struct NewChildInvocation<'a> {
+    pub parent_invocation_id: &'a str,
+    pub agent_id: Option<&'a str>,
+    pub agent_revision: Option<i32>,
+    pub runtime: Option<&'a str>,
+    pub protocol: &'a str,
+    pub protocol_version: &'a str,
+    pub adapter_id: &'a str,
+    pub role: &'a str,
+    pub metadata: &'a Value,
 }
 
 pub struct NewControlEvent<'a> {
@@ -81,8 +100,10 @@ pub async fn create_or_get(pool: &PgPool, input: NewTurn<'_>) -> Result<CreatedT
     let turn = sqlx::query_as::<_, SessionTurnRow>(
         r#"
         INSERT INTO "LiteLLM_SessionTurnsTable"
-          (id, session_id, request_id, status, model, created_at, updated_at)
-        VALUES ($1, $2, $3, 'queued', $4, $5, $5)
+          (id, session_id, request_id, status, model, input_json, input_schema_json,
+           output_schema_json, interaction_profile_json, trigger_type,
+           retry_of_turn_id, attempt_number, created_at, updated_at)
+        VALUES ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
         RETURNING *
         "#,
     )
@@ -90,6 +111,13 @@ pub async fn create_or_get(pool: &PgPool, input: NewTurn<'_>) -> Result<CreatedT
     .bind(input.session_id)
     .bind(input.request_id)
     .bind(input.model)
+    .bind(input.input)
+    .bind(input.input_schema)
+    .bind(input.output_schema)
+    .bind(input.interaction_profile)
+    .bind(input.trigger_type)
+    .bind(input.retry_of_turn_id)
+    .bind(input.attempt_number)
     .bind(now)
     .fetch_one(tx.as_mut())
     .await
@@ -187,6 +215,10 @@ pub async fn transition(
             current.status
         )));
     }
+    if current.status == status {
+        tx.commit().await.map_err(GatewayError::Database)?;
+        return Ok(current);
+    }
     if !can_transition(&current.status, status) {
         return Err(GatewayError::BadRequest(format!(
             "turn {turn_id} cannot transition from {} to {status}",
@@ -244,7 +276,7 @@ pub async fn transition(
             turn_id: Some(&row.id),
             invocation_id: None,
             request_id: Some(&row.request_id),
-            event_key: &format!("turn:{}:{status}", row.id),
+            event_key: &format!("turn:{}:{}:{status}", row.id, current.status),
             event_type: turn_event_type(status),
             event: json!({"status": status, "error": row.error_json}),
         },
@@ -343,6 +375,162 @@ pub async fn get_by_request(
     Ok(Some(TurnSnapshot { turn, invocations }))
 }
 
+pub async fn create_child_invocation(
+    pool: &PgPool,
+    turn_id: &str,
+    input: NewChildInvocation<'_>,
+) -> Result<SessionInvocationRow, GatewayError> {
+    if !matches!(input.role, "delegate" | "tool" | "workflow") {
+        return Err(GatewayError::BadRequest(format!(
+            "invalid child invocation role {}",
+            input.role
+        )));
+    }
+    let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
+    let parent = sqlx::query_as::<_, SessionInvocationRow>(
+        r#"
+        SELECT * FROM "LiteLLM_SessionInvocationsTable"
+        WHERE id = $1 AND turn_id = $2 FOR UPDATE
+        "#,
+    )
+    .bind(input.parent_invocation_id)
+    .bind(turn_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| {
+        GatewayError::NotFound(format!(
+            "parent invocation {} not found for turn {turn_id}",
+            input.parent_invocation_id
+        ))
+    })?;
+    let now = now_ms();
+    let invocation = sqlx::query_as::<_, SessionInvocationRow>(
+        r#"
+        INSERT INTO "LiteLLM_SessionInvocationsTable" (
+          id, session_id, turn_id, parent_invocation_id, agent_id, agent_revision,
+          runtime, protocol, protocol_version, adapter_id, role, status, metadata,
+          created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued', $12, $13, $13)
+        RETURNING *
+        "#,
+    )
+    .bind(id("inv"))
+    .bind(&parent.session_id)
+    .bind(turn_id)
+    .bind(input.parent_invocation_id)
+    .bind(input.agent_id)
+    .bind(input.agent_revision)
+    .bind(input.runtime)
+    .bind(input.protocol)
+    .bind(input.protocol_version)
+    .bind(input.adapter_id)
+    .bind(input.role)
+    .bind(input.metadata)
+    .bind(now)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(GatewayError::Database)?;
+    append_event_tx(
+        &mut tx,
+        NewControlEvent {
+            session_id: &parent.session_id,
+            turn_id: Some(turn_id),
+            invocation_id: Some(&invocation.id),
+            request_id: None,
+            event_key: &format!("invocation:{}:accepted", invocation.id),
+            event_type: "invocation.accepted",
+            event: json!({
+                "status": "queued",
+                "parent_invocation_id": input.parent_invocation_id,
+                "role": input.role,
+            }),
+        },
+    )
+    .await?;
+    tx.commit().await.map_err(GatewayError::Database)?;
+    Ok(invocation)
+}
+
+pub async fn transition_invocation(
+    pool: &PgPool,
+    invocation_id: &str,
+    status: &str,
+    error: Option<Value>,
+) -> Result<SessionInvocationRow, GatewayError> {
+    if !ACTIVE_STATUSES.contains(&status) && !TERMINAL_STATUSES.contains(&status) {
+        return Err(GatewayError::BadRequest(format!(
+            "invalid invocation status {status}"
+        )));
+    }
+    let mut tx = pool.begin().await.map_err(GatewayError::Database)?;
+    let current = sqlx::query_as::<_, SessionInvocationRow>(
+        r#"
+        SELECT * FROM "LiteLLM_SessionInvocationsTable"
+        WHERE id = $1 FOR UPDATE
+        "#,
+    )
+    .bind(invocation_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| GatewayError::NotFound(format!("invocation {invocation_id} not found")))?;
+    if current.status == status {
+        tx.commit().await.map_err(GatewayError::Database)?;
+        return Ok(current);
+    }
+    if TERMINAL_STATUSES.contains(&current.status.as_str()) {
+        return Err(GatewayError::BadRequest(format!(
+            "invocation {invocation_id} is already terminal ({})",
+            current.status
+        )));
+    }
+    if !can_transition(&current.status, status) {
+        return Err(GatewayError::BadRequest(format!(
+            "invocation {invocation_id} cannot transition from {} to {status}",
+            current.status
+        )));
+    }
+    let now = now_ms();
+    let terminal = TERMINAL_STATUSES.contains(&status);
+    let row = sqlx::query_as::<_, SessionInvocationRow>(
+        r#"
+        UPDATE "LiteLLM_SessionInvocationsTable"
+        SET status = $2,
+            error_json = COALESCE($3, error_json),
+            started_at = CASE WHEN $2 = 'running' THEN COALESCE(started_at, $4) ELSE started_at END,
+            finished_at = CASE WHEN $5 THEN $4 ELSE finished_at END,
+            updated_at = $4
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(status)
+    .bind(error)
+    .bind(now)
+    .bind(terminal)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(GatewayError::Database)?;
+    append_event_tx(
+        &mut tx,
+        NewControlEvent {
+            session_id: &row.session_id,
+            turn_id: Some(&row.turn_id),
+            invocation_id: Some(&row.id),
+            request_id: None,
+            event_key: &format!("invocation:{}:{}:{status}", row.id, current.status),
+            event_type: invocation_event_type(status),
+            event: json!({"status": status, "error": row.error_json}),
+        },
+    )
+    .await?;
+    tx.commit().await.map_err(GatewayError::Database)?;
+    Ok(row)
+}
+
 pub async fn list_turns(
     pool: &PgPool,
     session_id: &str,
@@ -398,6 +586,82 @@ pub async fn list_events(
     .fetch_all(pool)
     .await
     .map_err(GatewayError::Database)
+}
+
+pub async fn operations_for_turn(
+    pool: &PgPool,
+    turn_id: &str,
+) -> Result<Vec<SessionOperationRow>, GatewayError> {
+    sqlx::query_as::<_, SessionOperationRow>(
+        r#"
+        SELECT * FROM "LiteLLM_SessionOperationsTable"
+        WHERE turn_id = $1 ORDER BY created_at, id
+        "#,
+    )
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn latest_event_sequence(pool: &PgPool, session_id: &str) -> Result<i32, GatewayError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(MAX(seq), 0)
+        FROM "LiteLLM_SessionControlEventsTable" WHERE session_id = $1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn merge_turn_input(
+    pool: &PgPool,
+    session_id: &str,
+    turn_id: &str,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<SessionTurnRow, GatewayError> {
+    sqlx::query_as::<_, SessionTurnRow>(
+        r#"
+        UPDATE "LiteLLM_SessionTurnsTable"
+        SET input_json = input_json || $3::JSONB,
+            updated_at = $4
+        WHERE id = $1 AND session_id = $2
+        RETURNING *
+        "#,
+    )
+    .bind(turn_id)
+    .bind(session_id)
+    .bind(Value::Object(patch.clone()))
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| GatewayError::NotFound(format!("turn {turn_id} not found")))
+}
+
+pub async fn set_turn_result(
+    pool: &PgPool,
+    turn_id: &str,
+    result: Value,
+) -> Result<SessionTurnRow, GatewayError> {
+    sqlx::query_as::<_, SessionTurnRow>(
+        r#"
+        UPDATE "LiteLLM_SessionTurnsTable"
+        SET result_json = $2, updated_at = $3
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(turn_id)
+    .bind(result)
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| GatewayError::NotFound(format!("turn {turn_id} not found")))
 }
 
 pub async fn append_event(
@@ -566,6 +830,21 @@ fn turn_event_type(status: &str) -> &'static str {
         "cancelled" => "turn.cancelled",
         "timed_out" => "turn.timed_out",
         _ => "turn.updated",
+    }
+}
+
+fn invocation_event_type(status: &str) -> &'static str {
+    match status {
+        "running" => "invocation.started",
+        "waiting_input" => "invocation.waiting_input",
+        "waiting_approval" => "invocation.waiting_approval",
+        "cancelling" => "invocation.cancelling",
+        "completed" => "invocation.completed",
+        "failed" => "invocation.failed",
+        "rejected" => "invocation.rejected",
+        "cancelled" => "invocation.cancelled",
+        "timed_out" => "invocation.timed_out",
+        _ => "invocation.updated",
     }
 }
 

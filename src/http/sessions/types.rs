@@ -40,6 +40,7 @@ pub struct PromptRequest {
     request_id: Option<String>,
     model: Option<PromptModel>,
     parts: Option<Vec<PromptPart>>,
+    input: Option<Value>,
 }
 
 impl PromptRequest {
@@ -63,6 +64,32 @@ impl PromptRequest {
         Ok(text)
     }
 
+    pub(super) fn run_input(&self) -> Result<Value, GatewayError> {
+        if let Some(input) = self.input.as_ref() {
+            if !input.is_object() {
+                return Err(GatewayError::InvalidJsonMessage(
+                    "run input must be a JSON object".to_owned(),
+                ));
+            }
+            if input.as_object().is_some_and(serde_json::Map::is_empty) {
+                return Err(GatewayError::InvalidJsonMessage(
+                    "run input must not be empty".to_owned(),
+                ));
+            }
+            return Ok(input.clone());
+        }
+        Ok(serde_json::json!({"message": self.prompt_text()?}))
+    }
+
+    pub(super) fn execution_prompt(&self) -> Result<String, GatewayError> {
+        let input = self.run_input()?;
+        execution_prompt_for_input(&input)
+    }
+
+    pub(super) fn has_structured_input(&self) -> bool {
+        self.input.is_some()
+    }
+
     pub(super) fn model_id(&self) -> Option<&str> {
         self.model
             .as_ref()
@@ -76,6 +103,20 @@ impl PromptRequest {
             .map(str::trim)
             .filter(|request_id| !request_id.is_empty())
     }
+}
+
+pub(super) fn execution_prompt_for_input(input: &Value) -> Result<String, GatewayError> {
+    for field in ["message", "prompt", "request", "query", "input"] {
+        if let Some(text) = input
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return Ok(text.to_owned());
+        }
+    }
+    serde_json::to_string_pretty(input).map_err(GatewayError::from)
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +156,30 @@ mod tests {
 
         assert_eq!(blank.model_id(), None);
         assert_eq!(trimmed.model_id(), Some("cursor-model"));
+    }
+
+    #[test]
+    fn structured_input_is_preserved_and_produces_execution_prompt() {
+        let request: PromptRequest = serde_json::from_value(json!({
+            "input": {"topic": "agents", "depth": 3}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            request.run_input().unwrap(),
+            json!({"topic": "agents", "depth": 3})
+        );
+        assert!(request.execution_prompt().unwrap().contains("\"depth\": 3"));
+    }
+
+    #[test]
+    fn legacy_text_parts_map_to_message_input() {
+        let request: PromptRequest = serde_json::from_value(json!({
+            "parts": [{"type": "text", "text": "hello"}]
+        }))
+        .unwrap();
+
+        assert_eq!(request.run_input().unwrap(), json!({"message": "hello"}));
     }
 }
 

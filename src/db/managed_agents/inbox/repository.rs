@@ -299,6 +299,28 @@ pub async fn create_approval(
             None,
         )
         .await?;
+        crate::db::managed_agents::session_control::repository::append_event(
+            pool,
+            crate::db::managed_agents::session_control::repository::NewControlEvent {
+                session_id,
+                turn_id: Some(turn_id),
+                invocation_id: bound.invocation_id.as_deref(),
+                request_id: bound.request_id.as_deref(),
+                event_key: &format!("turn:{turn_id}:approval:{}:requested", bound.id),
+                event_type: "approval.requested",
+                event: serde_json::json!({
+                    "schema_version": 1,
+                    "approval": {
+                        "id": &bound.id,
+                        "kind": &bound.kind,
+                        "title": &bound.title,
+                        "body": &bound.body,
+                        "created_at": bound.created_at,
+                    }
+                }),
+            },
+        )
+        .await?;
     }
     Ok(bound)
 }
@@ -343,6 +365,7 @@ pub async fn decide_approval(
             ))
         }
     };
+    let event_feedback = feedback.clone();
     let args_json = arguments.map(|value| value.to_string());
     let result = sqlx::query(
         r#"
@@ -372,7 +395,34 @@ pub async fn decide_approval(
     .await
     .map_err(GatewayError::Database)?;
 
-    Ok(result.rows_affected() > 0)
+    let applied = result.rows_affected() > 0;
+    if applied {
+        if let Some(item) = get(pool, item_id).await? {
+            if let (Some(session_id), Some(turn_id)) =
+                (item.session_id.as_deref(), item.turn_id.as_deref())
+            {
+                crate::db::managed_agents::session_control::repository::append_event(
+                    pool,
+                    crate::db::managed_agents::session_control::repository::NewControlEvent {
+                        session_id,
+                        turn_id: Some(turn_id),
+                        invocation_id: item.invocation_id.as_deref(),
+                        request_id: item.request_id.as_deref(),
+                        event_key: &format!("turn:{turn_id}:approval:{}:resolved", item.id),
+                        event_type: "approval.resolved",
+                        event: serde_json::json!({
+                            "schema_version": 1,
+                            "approval_id": item.id,
+                            "decision": status,
+                            "feedback": event_feedback,
+                        }),
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(applied)
 }
 
 pub async fn mark_delivery_applied(pool: &PgPool, item_id: &str) -> Result<(), GatewayError> {

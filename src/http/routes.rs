@@ -266,6 +266,14 @@ fn session_routes() -> Router<Arc<AppState>> {
             post(sessions::cancel_turn),
         )
         .route(
+            "/api/sessions/{session_id}/turns/{turn_id}/resume",
+            post(sessions::resume_turn),
+        )
+        .route(
+            "/api/sessions/{session_id}/turns/{turn_id}/retry",
+            post(sessions::retry_turn),
+        )
+        .route(
             "/api/sessions/{session_id}/control-events",
             get(sessions::control_events),
         )
