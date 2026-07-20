@@ -4,24 +4,38 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { createRun } from "@/lib/run/fixture-client";
+import { fixtureRunTransport } from "@/lib/run/fixture-client";
 import { describeSchema, validateValue } from "@/lib/run/schema-form";
 import type { JsonSchema } from "@/lib/run/types";
+import type { RunTransport } from "@/lib/run/transport";
 import { SchemaFieldsForm } from "./SchemaFieldsForm";
 
 // Stage 3's pre-submission input form. Validation and field rendering are
 // entirely delegated to lib/run/schema-form.ts + SchemaFieldsForm — this
 // component only owns the draft value, submit state, and the
 // createRun round trip. No agent- or provider-specific branching.
+//
+// `transport` defaults to the fixture transport, same rationale as
+// RunShell — pass `real-client.ts`'s `createRealRunTransport(sessionId)`
+// (with `sessionId` also set on the submitted command) to create a real Run.
 
 interface RunInputFormProps {
   agentId: string;
   agentName: string;
   schema: JsonSchema | null;
   onCreated: (runId: string) => void;
+  transport?: RunTransport;
+  sessionId?: string;
 }
 
-export function RunInputForm({ agentId, agentName, schema, onCreated }: RunInputFormProps) {
+export function RunInputForm({
+  agentId,
+  agentName,
+  schema,
+  onCreated,
+  transport = fixtureRunTransport,
+  sessionId,
+}: RunInputFormProps) {
   const [value, setValue] = useState<unknown>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -36,7 +50,7 @@ export function RunInputForm({ agentId, agentName, schema, onCreated }: RunInput
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const created = await createRun({ agentId, input: value });
+      const created = await transport.createRun({ agentId, input: value, sessionId });
       onCreated(created.runId);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));

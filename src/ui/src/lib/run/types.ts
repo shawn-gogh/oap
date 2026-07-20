@@ -164,13 +164,25 @@ export type ControlEventV1 =
     }
   | { seq: number; ts: number; type: "artifact.added"; artifact: RunArtifact }
   | { seq: number; ts: number; type: "turn.result"; result: RunResult }
-  | { seq: number; ts: number; type: "turn.error"; error: RunError };
+  | { seq: number; ts: number; type: "turn.error"; error: RunError }
+  // Real-transport-only (see real-client.ts): the backend's own control
+  // event taxonomy is broader than this union covers (confirmed examples:
+  // turn.accepted/started/completed/cancelled, step.progress,
+  // input.resolved, artifact.added — not a closed set), so rather than
+  // risk silently missing an event type, every real SSE frame triggers a
+  // full snapshot refetch delivered as this variant instead of a partial
+  // patch. The fixture transport never emits this.
+  | { seq: number; ts: number; type: "snapshot.replaced"; snapshot: RunSnapshotV1 };
 
 // Commands — signatures the real API will satisfy once codex/run-control-plane
 // ships (Stage 7 swaps the fixture-backed transport for these).
 export interface RunCreateCommand {
   agentId: string;
   input: unknown;
+  // Required by the real transport (a Turn is created inside an existing
+  // Session — there is no agent-scoped create-a-run endpoint); ignored by
+  // the fixture transport, which still keys off `agentId`.
+  sessionId?: string;
 }
 
 export interface RunResumeCommand {

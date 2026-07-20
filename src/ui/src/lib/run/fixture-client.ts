@@ -16,6 +16,7 @@ import type {
 import { ALL_FIXTURES } from "./fixtures";
 import { buildCompletedRunFixture } from "./fixtures/shared";
 import { findRunAgentTemplate } from "./fixtures/templates";
+import type { RunTransport } from "./transport";
 
 interface RunState {
   snapshot: RunSnapshotV1;
@@ -185,3 +186,17 @@ export async function retryRun(cmd: RunRetryCommand): Promise<RunSnapshotV1> {
   appendEvent(state, { seq: nextSeq(state), ts: now, type: "turn.status_changed", status: "running" });
   return structuredClone(state.snapshot);
 }
+
+// RunShell/RunInputForm's default `transport` prop — bundles the functions
+// above to satisfy RunTransport, so existing dev-page fixture demos and
+// Stage 1-3's tests keep working unmodified now that a real transport
+// (real-client.ts) also exists.
+export const fixtureRunTransport: RunTransport = {
+  getRunSnapshot,
+  subscribeRunEvents,
+  submitRunInput,
+  decideRunApproval,
+  cancelRun,
+  retryRun,
+  createRun,
+};

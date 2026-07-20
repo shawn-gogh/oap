@@ -13,6 +13,7 @@ export default function nextConfig(phase) {
   const isDev = phase === PHASE_DEVELOPMENT_SERVER;
   return {
     output: isDev ? undefined : "export",
+    compress: !isDev,
     trailingSlash: !isDev,
     images: { unoptimized: true },
     allowedDevOrigins: ["127.0.0.1"],

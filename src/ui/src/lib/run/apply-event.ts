@@ -57,6 +57,11 @@ export function applyRunEvent(snapshot: RunSnapshotV1, event: ControlEventV1): R
     case "turn.error":
       next.error = event.error;
       return next;
+    case "snapshot.replaced":
+      // Real-transport-only: the event *is* the new authoritative snapshot
+      // (see the type's doc comment in types.ts) — replace wholesale rather
+      // than patching individual fields.
+      return { ...event.snapshot, lastEventSeq: event.seq };
     default:
       return next;
   }

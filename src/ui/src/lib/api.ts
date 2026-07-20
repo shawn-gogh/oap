@@ -1166,6 +1166,181 @@ export async function cancelTurn(
   return jsonOrThrow<SessionTurnSnapshot>(res);
 }
 
+// The Run-surface endpoints below return the *full* RunSnapshotV1 shape
+// (schema_version/turn/interaction_profile/input/result/invocations/
+// operations/pending_requests/artifacts/latest_sequence — see
+// src/http/sessions/run_types.rs), which sendMessage/getActiveTurn/
+// cancelTurn's narrower `SessionTurnSnapshot` return type above doesn't
+// capture. Kept untyped here (Promise<unknown>) rather than importing
+// Run-specific types into this foundational module — src/ui/src/lib/run/
+// real-client.ts owns typing/adapting the response via backend-types.ts
+// and adapt-backend.ts.
+export async function createRunTurn(
+  sessionId: string,
+  body: { request_id?: string; model?: { modelID: string }; input?: unknown },
+): Promise<unknown> {
+  const res = await reqHarness(`/api/sessions/${encodeURIComponent(sessionId)}/turns`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow<unknown>(res);
+}
+
+export async function getRunTurn(sessionId: string, turnId: string): Promise<unknown> {
+  const res = await reqHarness(
+    `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`,
+  );
+  return jsonOrThrow<unknown>(res);
+}
+
+export async function resumeRunTurn(
+  sessionId: string,
+  turnId: string,
+  body: { request_id: string; input: unknown },
+): Promise<unknown> {
+  const res = await reqHarness(
+    `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/resume`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return jsonOrThrow<unknown>(res);
+}
+
+export async function retryRunTurn(
+  sessionId: string,
+  turnId: string,
+  body: { input?: unknown } = {},
+): Promise<unknown> {
+  const res = await reqHarness(
+    `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/retry`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return jsonOrThrow<unknown>(res);
+}
+
+export async function getRunArtifact(sessionId: string, artifactId: string): Promise<unknown> {
+  const res = await reqHarness(
+    `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}`,
+  );
+  return jsonOrThrow<unknown>(res);
+}
+
+const CONTROL_EVENTS_RECONNECT_INITIAL_MS = 1000;
+const CONTROL_EVENTS_RECONNECT_MAX_MS = 15000;
+
+/**
+ * Streams `/api/sessions/{id}/control-events/stream` via a manual
+ * fetch+ReadableStream reader — NOT the native `EventSource`, deliberately.
+ * Every real frame is sent as a *named* SSE event (`event: turn.accepted`,
+ * `event: artifact.added`, ...), and `EventSource.onmessage` only fires for
+ * frames with no `event:` field (defaulting to "message") — so a plain
+ * `new EventSource(url)` silently receives nothing for this endpoint. This
+ * mirrors `subscribeRuntimeEvents` above (same reason, same fix), and lets
+ * `onFrame` fire for every event regardless of its `event:` name, matching
+ * src/ui/src/lib/run/real-client.ts's "any frame triggers a reload" design
+ * (it doesn't need to know the full event taxonomy).
+ */
+export function subscribeControlEvents(opts: {
+  sessionId: string;
+  afterSequence: number;
+  onFrame: (lastEventId: string | null, data: unknown) => void;
+  onError?: (err: unknown) => void;
+}): () => void {
+  const abort = new AbortController();
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let sequence = opts.afterSequence;
+
+  const connect = (delayMs: number) => {
+    if (abort.signal.aborted) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void readStream(delayMs);
+    }, delayMs);
+  };
+
+  const readStream = async (lastDelayMs: number) => {
+    try {
+      const res = await fetch(
+        `${BASE}/api/sessions/${encodeURIComponent(opts.sessionId)}/control-events/stream?after_sequence=${sequence}`,
+        withAuth({ headers: { accept: "text/event-stream" }, signal: abort.signal }),
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new ApiError(res.status, body);
+      }
+      if (!res.body) throw new Error("Control event stream did not return a body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sawChunk = false;
+
+      while (!abort.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sawChunk = true;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundary = sseBoundaryIndex(buffer);
+        while (boundary !== -1) {
+          const frame = buffer.slice(0, boundary.index);
+          buffer = buffer.slice(boundary.index + boundary.length);
+          const emitted = emitControlEventFrame(frame, opts.onFrame, opts.onError);
+          if (emitted !== null) sequence = emitted;
+          boundary = sseBoundaryIndex(buffer);
+        }
+      }
+      if (!abort.signal.aborted) {
+        const nextDelayMs = sawChunk
+          ? CONTROL_EVENTS_RECONNECT_INITIAL_MS
+          : Math.min(lastDelayMs * 2, CONTROL_EVENTS_RECONNECT_MAX_MS);
+        connect(nextDelayMs);
+      }
+    } catch (e) {
+      if (!abort.signal.aborted) {
+        opts.onError?.(e);
+        connect(Math.min(lastDelayMs * 2, CONTROL_EVENTS_RECONNECT_MAX_MS));
+      }
+    }
+  };
+
+  void readStream(CONTROL_EVENTS_RECONNECT_INITIAL_MS);
+
+  return () => {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    abort.abort();
+  };
+}
+
+function emitControlEventFrame(
+  frame: string,
+  onFrame: (lastEventId: string | null, data: unknown) => void,
+  onError?: (err: unknown) => void,
+): number | null {
+  const lines = frame.split(/\r?\n/);
+  const id = lines.find((line) => line.startsWith("id:"))?.slice(3).trim() ?? null;
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+  if (!data) return null; // keepalive comment frames (": keepalive") have no data: line
+  try {
+    onFrame(id, JSON.parse(data));
+  } catch (e) {
+    onError?.(e);
+  }
+  return id ? Number(id) : null;
+}
+
 export async function abortSession(id: string): Promise<void> {
   const res = await reqHarness(`/session/${encodeURIComponent(id)}/abort`, {
     method: "POST",

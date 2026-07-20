@@ -8,16 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { StatusDot } from "@/components/status-dot";
 import { Input } from "@/components/ui/input";
-import {
-  cancelRun,
-  decideRunApproval,
-  getRunSnapshot,
-  retryRun,
-  submitRunInput,
-  subscribeRunEvents,
-} from "@/lib/run/fixture-client";
+import { fixtureRunTransport } from "@/lib/run/fixture-client";
 import { applyRunEvent } from "@/lib/run/apply-event";
 import type { RunSnapshotV1 } from "@/lib/run/types";
+import type { RunTransport } from "@/lib/run/transport";
 import { buildRunView } from "./run-view-model";
 import { SchemaFieldsForm } from "./SchemaFieldsForm";
 
@@ -27,8 +21,19 @@ import { SchemaFieldsForm } from "./SchemaFieldsForm";
 // (Stage 3), step-level detail (Stage 4), and rich Artifact previews
 // (Stage 5) are intentionally out of scope here; see the module's fixture
 // index for representative snapshots this shell must already handle.
+//
+// `transport` defaults to the fixture transport so every existing caller
+// (the /dev/run-shell/ fixture demos, Stage 1-3's tests) is unaffected;
+// pass `real-client.ts`'s `createRealRunTransport(sessionId)` to point this
+// same component at a live backend Run (Stage 7).
 
-export function RunShell({ runId }: { runId: string }) {
+export function RunShell({
+  runId,
+  transport = fixtureRunTransport,
+}: {
+  runId: string;
+  transport?: RunTransport;
+}) {
   const [snapshot, setSnapshot] = useState<RunSnapshotV1 | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"cancel" | "retry" | "input" | "approval" | null>(null);
@@ -36,27 +41,32 @@ export function RunShell({ runId }: { runId: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
     setSnapshot(null);
     setError(null);
-    getRunSnapshot(runId)
+    transport
+      .getRunSnapshot(runId)
       .then((next) => {
-        if (!cancelled) setSnapshot(next);
+        if (cancelled) return;
+        setSnapshot(next);
+        // Subscribing here (rather than a separate effect keyed on
+        // `snapshot`) is deliberate: a second effect depending on `[runId]`
+        // alone would only ever see `snapshot === null` on its first (and
+        // only, since `runId` hasn't changed) run, silently never
+        // subscribing. Chaining it onto the same async load ties the
+        // subscription's lifetime to this effect's cleanup instead.
+        unsubscribe = transport.subscribeRunEvents(runId, next.lastEventSeq, (event) => {
+          setSnapshot((current) => (current ? applyRunEvent(current, event) : current));
+        });
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;
+      unsubscribe?.();
     };
-  }, [runId]);
-
-  useEffect(() => {
-    if (!snapshot) return;
-    const unsubscribe = subscribeRunEvents(runId, snapshot.lastEventSeq, (event) => {
-      setSnapshot((current) => (current ? applyRunEvent(current, event) : current));
-    });
-    return unsubscribe;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resubscribes only when the run identity changes, not on every snapshot update
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- transport identity isn't expected to change independently of runId
   }, [runId]);
 
   if (error) {
@@ -93,7 +103,11 @@ export function RunShell({ runId }: { runId: string }) {
     setBusy("approval");
     try {
       setSnapshot(
-        await decideRunApproval({ runId, approvalId: snapshot.pendingApproval.id, decision }),
+        await transport.decideRunApproval({
+          runId,
+          approvalId: snapshot.pendingApproval.id,
+          decision,
+        }),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -107,7 +121,7 @@ export function RunShell({ runId }: { runId: string }) {
     setBusy("input");
     try {
       setSnapshot(
-        await submitRunInput({
+        await transport.submitRunInput({
           runId,
           requestId: snapshot.pendingInputRequest.id,
           values: inputValues,
@@ -145,7 +159,7 @@ export function RunShell({ runId }: { runId: string }) {
                 size="sm"
                 variant="outline"
                 disabled={busy !== null}
-                onClick={() => void runAction("cancel", () => cancelRun({ runId }))}
+                onClick={() => void runAction("cancel", () => transport.cancelRun({ runId }))}
               >
                 {busy === "cancel" ? "取消中…" : "取消"}
               </Button>
@@ -155,7 +169,7 @@ export function RunShell({ runId }: { runId: string }) {
                 size="sm"
                 variant="outline"
                 disabled={busy !== null}
-                onClick={() => void runAction("retry", () => retryRun({ runId }))}
+                onClick={() => void runAction("retry", () => transport.retryRun({ runId }))}
               >
                 <RotateCcw className="size-3.5" />
                 {busy === "retry" ? "重试中…" : "重试"}

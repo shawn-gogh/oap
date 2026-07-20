@@ -40,4 +40,18 @@ describe("applyRunEvent", () => {
     const result = applyRunEvent(alreadyCaughtUp, stale);
     expect(result).toBe(alreadyCaughtUp);
   });
+
+  it("replaces the snapshot wholesale on a real-transport snapshot.replaced event", () => {
+    const stale = emptyRunFromSnapshot(ALL_FIXTURES.a2a.snapshot);
+    const replacement: RunSnapshotV1 = { ...ALL_FIXTURES.langgraph.snapshot };
+    const result = applyRunEvent(stale, {
+      seq: 99,
+      ts: 123,
+      type: "snapshot.replaced",
+      snapshot: replacement,
+    });
+    expect(result.runId).toBe(replacement.runId);
+    expect(result.status).toBe(replacement.status);
+    expect(result.lastEventSeq).toBe(99);
+  });
 });
