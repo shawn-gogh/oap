@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub type ImportAgentsFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ImportAgentsError>> + Send + 'a>>;
@@ -51,6 +51,45 @@ pub struct ImportProviderCapabilities {
     pub runtime_contract: &'static str,
 }
 
+/// Provider-neutral interaction contract persisted with every imported agent.
+/// Provider modules translate their discovery payload into this shape once;
+/// session execution can then snapshot it without knowing which provider was
+/// used to import the agent.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportedInteractionContract {
+    pub schema_version: u16,
+    pub primary_surface: &'static str,
+    pub execution_mode: &'static str,
+    pub input_schema: Value,
+    pub output_schema: Value,
+    pub progress_mode: &'static str,
+    pub continuation_modes: Vec<String>,
+    pub accepted_input_types: Vec<String>,
+    pub artifact_media_types: Vec<String>,
+    pub supports_retry: bool,
+    pub supports_checkpoint_resume: bool,
+    pub supports_child_invocations: bool,
+}
+
+impl Default for ImportedInteractionContract {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            primary_surface: "conversation",
+            execution_mode: "async_stream",
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({}),
+            progress_mode: "none",
+            continuation_modes: Vec::new(),
+            accepted_input_types: vec!["application/json".to_owned(), "text/plain".to_owned()],
+            artifact_media_types: Vec::new(),
+            supports_retry: true,
+            supports_checkpoint_resume: false,
+            supports_child_invocations: false,
+        }
+    }
+}
+
 pub trait ImportAgentsProvider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
@@ -72,6 +111,13 @@ pub trait ImportAgentsProvider: Send + Sync {
 
     fn requires_session_workspace(&self) -> bool {
         false
+    }
+
+    /// Normalize provider discovery evidence into the canonical interaction
+    /// shape used by Run. Providers override this only for capabilities they
+    /// can substantiate from their protocol or discovery response.
+    fn interaction_contract(&self, _raw: &Value) -> ImportedInteractionContract {
+        ImportedInteractionContract::default()
     }
 
     fn capabilities(&self) -> ImportProviderCapabilities {

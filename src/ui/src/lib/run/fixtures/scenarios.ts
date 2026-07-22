@@ -51,6 +51,7 @@ function baseSnapshot(
     inputSnapshot: { prompt: "请帮我预订下周三的会议室" },
     progress: { label: "等待处理", current: 1, total: 3 },
     invocations: [rootInvocation(suffix)],
+    operations: [],
     artifacts: [],
   };
 }

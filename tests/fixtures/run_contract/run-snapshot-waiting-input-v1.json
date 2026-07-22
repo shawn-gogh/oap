@@ -32,16 +32,25 @@
   "result": null,
   "invocations": [],
   "operations": [],
-  "pending_requests": [
-    {
-      "id": "input_request_example",
-      "kind": "input",
-      "title": "Select a region",
-      "status": "pending",
-      "request_id": "input_request_example",
-      "turn_id": "turn_waiting"
-    }
-  ],
+  "progress": null,
+  "steps": [],
+  "pending_input_request": {
+    "request_id": "input_request_example",
+    "invocation_id": null,
+    "prompt": "Select a region",
+    "schema": null,
+    "fields": [
+      {
+        "id": "region",
+        "label": "Region",
+        "kind": "choice",
+        "required": true,
+        "choices": ["us", "eu"]
+      }
+    ],
+    "requested_at": 1720000005000
+  },
+  "pending_requests": [],
   "artifacts": [],
   "latest_sequence": 8
 }

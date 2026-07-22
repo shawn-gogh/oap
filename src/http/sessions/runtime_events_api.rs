@@ -12,8 +12,11 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    callbacks::events::CallbackEventPayload, db::managed_agents::runtime_events,
-    errors::GatewayError, proxy::state::AppState, sdk::agents::AgentEventStream,
+    callbacks::events::CallbackEventPayload,
+    db::managed_agents::{runtime_events, session_control, sessions},
+    errors::GatewayError,
+    proxy::state::AppState,
+    sdk::agents::AgentEventStream,
 };
 
 use super::{
@@ -76,11 +79,19 @@ pub async fn runtime_events(
     }
     // Subscribe first so no event published during consumer startup is lost.
     let local_rx = state.local_session_events.subscribe(&row.id);
-    // Idle sessions do not need a provider connection. The prompt submission
-    // path installs the canonical consumer with the same SDK client that
-    // accepted the turn. On reconnect, a persisted running state is enough to
-    // restore consumption here.
-    if matches!(row.status.as_str(), "starting" | "running" | "busy") {
+    // Ensure a persisting consumer is running whenever the session could still
+    // produce events: a session the store reports as busy, OR an active
+    // (non-terminal) turn. The active-turn check matters for SSE reconnects
+    // mid-turn where `row.status` momentarily lagged behind an in-flight turn —
+    // without it no consumer runs, the local channel stays silent, and nothing
+    // is persisted, so the transcript is empty on the next reload. Idle
+    // sessions with no active turn deliberately skip this: opening a provider
+    // stream there would re-run the idle-completion side effects (output
+    // capture, verifying transition) on every subscribe.
+    let has_active_turn = session_control::repository::active_turn(pool, &row.id)
+        .await?
+        .is_some();
+    if has_active_turn || matches!(row.status.as_str(), "starting" | "running" | "busy") {
         ensure_provider_consumer(&state, pool, &row, runtime).await?;
     }
     Response::builder()
@@ -121,23 +132,13 @@ pub(super) async fn ensure_provider_consumer(
     if state.provider_consumers.is_running(&row.id) {
         return Ok(());
     }
-    let resolved =
-        crate::http::runtime_resolution::resolve_runtime_for_session(pool, state, runtime, row)
-            .await?;
-    let client = runtime_sdk_client(&resolved)?;
-    register_runtime_session(&client, pool, row, &resolved).await?;
-    let provider_stream = client
-        .beta()
-        .sessions()
-        .events()
-        .stream(&row.id)
-        .await
-        .map_err(agent_sdk_error)?;
+    let provider_stream = open_provider_stream(state, pool, row, runtime).await?;
     let empty_stream_status =
         (row.provider_run_id.is_none() && row.status == "idle").then_some("idle");
     let task_pool = pool.clone();
     let task_state = state.clone();
     let task_session_id = row.id.clone();
+    let task_runtime = runtime.to_owned();
     // If we lost the race to another request, the extra provider stream is
     // dropped unconsumed — install() rejects the second task.
     state.provider_consumers.install(&row.id, move || {
@@ -146,10 +147,35 @@ pub(super) async fn ensure_provider_consumer(
             task_pool,
             task_session_id,
             task_state,
+            task_runtime,
             empty_stream_status,
         ))
     });
     Ok(())
+}
+
+/// Opens a fresh provider event stream for a session: resolves the runtime,
+/// builds the SDK client, (re)registers the session, and subscribes to the
+/// provider's live event feed. Factored out so both initial consumer startup
+/// and mid-turn reconnects share one code path.
+async fn open_provider_stream(
+    state: &Arc<AppState>,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+    runtime: &str,
+) -> Result<AgentEventStream, GatewayError> {
+    let resolved =
+        crate::http::runtime_resolution::resolve_runtime_for_session(pool, state, runtime, row)
+            .await?;
+    let client = runtime_sdk_client(&resolved)?;
+    register_runtime_session(&client, pool, row, &resolved).await?;
+    client
+        .beta()
+        .sessions()
+        .events()
+        .stream(&row.id)
+        .await
+        .map_err(agent_sdk_error)
 }
 
 /// Owns the provider event stream for one session: persists each event,
@@ -157,13 +183,100 @@ pub(super) async fn ensure_provider_consumer(
 /// subscribers, and marks the terminal session status when the stream ends.
 /// The task exits when the provider closes the stream (turn finished); the
 /// next SSE subscribe or prompt spawns a fresh one.
+/// How one pass over a provider stream ended, before deciding whether to
+/// reconnect or mark the session terminal.
+struct StreamOutcome {
+    terminal_status: Option<&'static str>,
+    terminal_error: Option<String>,
+    saw_event: bool,
+}
+
+/// Upper bound on mid-turn reconnects before the consumer gives up, so a
+/// provider that keeps dropping the stream can't spin forever.
+const MAX_STREAM_RECONNECTS: u32 = 5;
+
 async fn consume_provider_stream(
-    provider_stream: AgentEventStream,
+    initial_stream: AgentEventStream,
     pool: PgPool,
     session_id: String,
     state: Arc<AppState>,
+    runtime: String,
     empty_stream_status: Option<&'static str>,
 ) {
+    let mut stream = initial_stream;
+    let mut reconnects: u32 = 0;
+    loop {
+        let outcome = drive_provider_stream(stream, &pool, &session_id, &state).await;
+        // The "empty idle" fallback only applies on the first pass with no
+        // events (an idle session that produced nothing); a later reconnect
+        // seeing no events means the turn is genuinely over, not idle-empty.
+        let terminal = outcome.terminal_status.or_else(|| {
+            (reconnects == 0 && !outcome.saw_event)
+                .then_some(empty_stream_status)
+                .flatten()
+        });
+        if let Some(status) = terminal {
+            tracing::info!(
+                session_id,
+                status,
+                saw_event = outcome.saw_event,
+                "provider event consumer reached terminal state"
+            );
+            let _ = mark_session_status(&state, &pool, &session_id, status, outcome.terminal_error)
+                .await;
+            return;
+        }
+        // The provider stream ended without a terminal signal (dropped
+        // mid-turn). Reconnect while the turn is still active so the model's
+        // output isn't lost — the durable copy dedups by event_key, so any
+        // replayed events are harmless.
+        if reconnects >= MAX_STREAM_RECONNECTS {
+            tracing::warn!(
+                session_id,
+                "provider stream ended without a terminal status; giving up after max reconnects"
+            );
+            return;
+        }
+        let Ok(Some(row)) = sessions::repository::get(&pool, &session_id).await else {
+            return;
+        };
+        let still_active = matches!(row.status.as_str(), "starting" | "running" | "busy")
+            || session_control::repository::active_turn(&pool, &session_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+        if !still_active {
+            return;
+        }
+        reconnects += 1;
+        tokio::time::sleep(Duration::from_millis(250 * u64::from(reconnects))).await;
+        match open_provider_stream(&state, &pool, &row, &runtime).await {
+            Ok(next) => {
+                tracing::info!(
+                    session_id,
+                    reconnects,
+                    "reconnected provider event stream mid-turn"
+                );
+                stream = next;
+            }
+            Err(error) => {
+                tracing::warn!(session_id, error = %error, "failed to reconnect provider stream");
+                return;
+            }
+        }
+    }
+}
+
+/// Drives one provider stream to its end, persisting/emitting/republishing each
+/// event. Returns how it ended so the caller can decide between marking the
+/// session terminal and reconnecting.
+async fn drive_provider_stream(
+    provider_stream: AgentEventStream,
+    pool: &PgPool,
+    session_id: &str,
+    state: &Arc<AppState>,
+) -> StreamOutcome {
     let callbacks = state.callbacks.clone();
     futures_util::pin_mut!(provider_stream);
     let mut saw_event = false;
@@ -190,13 +303,9 @@ async fn consume_provider_stream(
                     .and_then(Value::as_str)
                     .filter(|run_id| !run_id.is_empty())
                 {
-                    let _ = crate::db::managed_agents::sessions::repository::set_provider_run(
-                        &pool,
-                        &session_id,
-                        run_id,
-                        "running",
-                    )
-                    .await;
+                    let _ =
+                        sessions::repository::set_provider_run(pool, session_id, run_id, "running")
+                            .await;
                 }
                 if let Some(status) = terminal_event_status(&event) {
                     terminal_status = Some(status);
@@ -207,10 +316,10 @@ async fn consume_provider_stream(
                     terminal_status = None;
                     terminal_error = None;
                 }
-                let _ = persist_runtime_event(&pool, &session_id, &event).await;
-                emit_runtime_event(&callbacks, &session_id, &event).await;
+                let _ = persist_runtime_event(pool, session_id, &event).await;
+                emit_runtime_event(&callbacks, session_id, &event).await;
                 if let Ok(value) = serde_json::to_value(&event) {
-                    state.local_session_events.publish(&session_id, value);
+                    state.local_session_events.publish(session_id, value);
                 }
                 if terminal_status == Some("error") {
                     break;
@@ -221,23 +330,16 @@ async fn consume_provider_stream(
                 let message = agent_sdk_error_message(error);
                 terminal_error = Some(message.clone());
                 state.local_session_events.publish(
-                    &session_id,
+                    session_id,
                     json!({ "type": "session.error", "error": { "message": message } }),
                 );
             }
         }
     }
-    if !saw_event && terminal_status.is_none() {
-        terminal_status = empty_stream_status;
-    }
-    if let Some(status) = terminal_status {
-        tracing::info!(
-            session_id,
-            status,
-            saw_event,
-            "provider event consumer reached terminal state"
-        );
-        let _ = mark_session_status(&state, &pool, &session_id, status, terminal_error).await;
+    StreamOutcome {
+        terminal_status,
+        terminal_error,
+        saw_event,
     }
 }
 
@@ -245,18 +347,21 @@ pub(super) fn replace_provider_consumer(
     state: &Arc<AppState>,
     pool: &PgPool,
     session_id: &str,
+    runtime: &str,
     provider_stream: AgentEventStream,
 ) {
     tracing::info!(session_id, "installing canonical provider event consumer");
     let task_pool = pool.clone();
     let task_state = state.clone();
     let task_session_id = session_id.to_owned();
+    let task_runtime = runtime.to_owned();
     state.provider_consumers.replace(session_id, move || {
         tokio::spawn(consume_provider_stream(
             provider_stream,
             task_pool,
             task_session_id,
             task_state,
+            task_runtime,
             None,
         ))
     });

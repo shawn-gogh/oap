@@ -60,6 +60,7 @@ async fn seed_granted_turn(fixture: &AppFixture, session_id: &str, agent_id: &st
             trigger_type: "conversation",
             retry_of_turn_id: None,
             attempt_number: 1,
+            deadline_at: i64::MAX,
             agent_id: Some(agent_id),
             runtime: None,
             protocol: "platform",

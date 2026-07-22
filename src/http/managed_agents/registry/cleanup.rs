@@ -35,8 +35,7 @@ pub async fn run_cleanup_once(state: &AppState) -> Result<(), GatewayError> {
     let due_agents: Vec<String> = sqlx::query_scalar(
         r#"
         SELECT id FROM "LiteLLM_ManagedAgentsTable"
-        WHERE status = 'archived_pending_delete'
-          AND (config->>'deleted_at')::BIGINT < $1
+        WHERE (config->>'deleted_at')::BIGINT < $1
         "#,
     )
     .bind(cutoff)

@@ -77,7 +77,7 @@ pub async fn create_artifact(
             invocation_id: row.invocation_id.as_deref(),
             request_id: None,
             event_key: &format!("turn:{turn_id}:artifact:{}", row.id),
-            event_type: "artifact.added",
+            event_type: "artifact.available",
             event: serde_json::json!({
                 "schema_version": 1,
                 "artifact": row.clone(),

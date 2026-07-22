@@ -55,6 +55,26 @@ pub fn external_source_kind(agent: &ManagedAgentRow) -> Option<&str> {
         .filter(|kind| !kind.is_empty())
 }
 
+/// Resolves the api_spec (managed protocol) the agent's runtime actually
+/// speaks, for use by the runtime-contract conformance check. Built-in static
+/// runtimes carry their api_spec directly in `config.runtime`; custom harnesses
+/// (e.g. `local-opencode`) carry an alias that must be resolved through the
+/// harnesses table to its underlying api_spec (e.g. `claude_managed_agents`).
+/// Returns `None` when there is no runtime alias or no matching custom harness,
+/// leaving the conformance check to fall back to the raw alias.
+pub async fn resolve_runtime_api_spec(pool: &PgPool, agent: &ManagedAgentRow) -> Option<String> {
+    let alias = agent
+        .config
+        .get("runtime")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    match crate::db::managed_agents::harnesses::repository::get_by_alias(pool, alias).await {
+        Ok(Some(harness)) => Some(harness.api_spec),
+        _ => None,
+    }
+}
+
 pub fn requires_governance(agent: &ManagedAgentRow) -> bool {
     matches!(
         external_source_kind(agent),

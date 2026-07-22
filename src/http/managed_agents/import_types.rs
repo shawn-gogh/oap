@@ -107,7 +107,7 @@ pub(crate) fn provider_error(error: ImportAgentsError) -> GatewayError {
             GatewayError::InvalidConfig(format!("invalid provider response: {error}"))
         }
         ImportAgentsError::InvalidDocument(error) => {
-            GatewayError::InvalidConfig(format!("invalid provider document: {error}"))
+            GatewayError::BadRequest(format!("invalid provider document: {error}"))
         }
     }
 }

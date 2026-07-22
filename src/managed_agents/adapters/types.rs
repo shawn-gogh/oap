@@ -131,7 +131,7 @@ pub enum ProgressMode {
     Graph,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContinuationMode {
     Input,
@@ -306,6 +306,10 @@ pub struct ApprovalResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactReference {
     pub id: Option<String>,
+    /// Invocation that produced the artifact. Omit only for primary-invocation
+    /// output; child or delegated output should identify its producer.
+    #[serde(default)]
+    pub invocation_id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     pub media_type: String,

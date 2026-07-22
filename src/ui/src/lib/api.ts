@@ -1168,7 +1168,7 @@ export async function cancelTurn(
 
 // The Run-surface endpoints below return the *full* RunSnapshotV1 shape
 // (schema_version/turn/interaction_profile/input/result/invocations/
-// operations/pending_requests/artifacts/latest_sequence — see
+// operations/pending_input_request/pending_requests/artifacts/latest_sequence — see
 // src/http/sessions/run_types.rs), which sendMessage/getActiveTurn/
 // cancelTurn's narrower `SessionTurnSnapshot` return type above doesn't
 // capture. Kept untyped here (Promise<unknown>) rather than importing
@@ -1213,7 +1213,7 @@ export async function resumeRunTurn(
 export async function retryRunTurn(
   sessionId: string,
   turnId: string,
-  body: { input?: unknown } = {},
+  body: { request_id?: string; input?: unknown } = {},
 ): Promise<unknown> {
   const res = await reqHarness(
     `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/retry`,
@@ -1240,7 +1240,7 @@ const CONTROL_EVENTS_RECONNECT_MAX_MS = 15000;
  * Streams `/api/sessions/{id}/control-events/stream` via a manual
  * fetch+ReadableStream reader — NOT the native `EventSource`, deliberately.
  * Every real frame is sent as a *named* SSE event (`event: turn.accepted`,
- * `event: artifact.added`, ...), and `EventSource.onmessage` only fires for
+ * `event: artifact.available`, ...), and `EventSource.onmessage` only fires for
  * frames with no `event:` field (defaulting to "message") — so a plain
  * `new EventSource(url)` silently receives nothing for this endpoint. This
  * mirrors `subscribeRuntimeEvents` above (same reason, same fix), and lets
@@ -2936,6 +2936,8 @@ export interface RuntimeMapping {
   input_field?: string;
   output_field?: string;
   output_path?: string;
+  input_schema?: unknown;
+  output_schema?: unknown;
 }
 
 export async function setAgentSourceRuntimeMapping(
@@ -2951,12 +2953,27 @@ export async function setAgentSourceRuntimeMapping(
   );
 }
 
+// One callable POST route from an OpenAPI source's stored spec, with field
+// guesses derived from its request/response schemas. Unlike LangGraph — where
+// the route is fixed and only the fields are in question — an OpenAPI document
+// enumerates its routes, so `path` can be picked rather than typed.
+export interface RuntimePathSuggestion {
+  path: string;
+  summary: string | null;
+  input_field: string | null;
+  output_field: string | null;
+  input_schema: unknown;
+  output_schema: unknown;
+}
+
 export interface RuntimeMappingSuggestion {
   input_field: string | null;
   output_path: string | null;
   input_schema: unknown;
   output_schema: unknown;
   note: string | null;
+  // Present for openapi sources only; absent (undefined) elsewhere.
+  paths?: RuntimePathSuggestion[];
 }
 
 // Best-effort guess at the mapping, read from the source's own schema
@@ -2967,6 +2984,41 @@ export async function suggestAgentSourceRuntimeMapping(
 ): Promise<RuntimeMappingSuggestion> {
   return jsonOrThrow<RuntimeMappingSuggestion>(
     await req(`/api/agents/${encodeURIComponent(id)}/source/runtime-mapping/suggest`),
+  );
+}
+
+export interface RuntimeMappingProbe {
+  input_field: string;
+  sentinel: string;
+  // Complete upstream response. This — not string_paths — is what the operator
+  // picks output_path from, since a valid mapping may address a whole array
+  // (e.g. /messages) rather than a string leaf.
+  response: unknown;
+  // Pointers whose string leaf echoed the sentinel. Empty means the probed
+  // input field never reached the source.
+  sentinel_paths: string[];
+  // Always RFC 6901 pointers. LangGraph's output_path takes them verbatim;
+  // OpenAPI's output_field is a top-level field name, so only depth-1 entries
+  // apply there and the leading "/" is dropped when filling the field.
+  string_paths: string[];
+  string_paths_truncated: boolean;
+}
+
+// Runs the remote agent once with a sentinel input so the operator confirms the
+// output field against an observed payload instead of guessing. This really
+// executes the source (side effects, model spend), so it must stay behind an
+// explicit operator action. Supported for langgraph and openapi; `path` is
+// required for openapi, which has no default route to probe.
+export async function probeAgentSourceRuntimeMapping(
+  id: string,
+  options?: { inputField?: string; path?: string },
+): Promise<RuntimeMappingProbe> {
+  return jsonOrThrow<RuntimeMappingProbe>(
+    await req(`/api/agents/${encodeURIComponent(id)}/source/runtime-mapping/probe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input_field: options?.inputField, path: options?.path }),
+    }),
   );
 }
 

@@ -142,6 +142,7 @@ export function buildCompletedRunFixture(input: CompletedRunFixtureInput): RunFi
     inputSnapshot: { prompt: `请帮我处理一下 ${input.agentName} 的任务` },
     progress: { label: "已完成", current: 4, total: 4 },
     invocations: [rootInvocationDone, toolInvocationDone],
+    operations: [],
     pendingInputRequest: null,
     pendingApproval: null,
     result: { kind: "text", text: input.resultText, artifactIds: [artifactId] },

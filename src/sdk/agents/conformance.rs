@@ -51,24 +51,26 @@ fn runtime_contract_capabilities(
             event_recovery: true,
         };
     }
+    if runtime == Some("langgraph_assistant") {
+        return RuntimeContractCapabilities {
+            terminal_events: true,
+            interrupt_or_abort: true,
+            approval_terminal_result: true,
+            event_recovery: true,
+        };
+    }
     if matches!(
         runtime,
-        Some("a2a_v1" | "dify_app" | "openapi_rest" | "langgraph_assistant" | "crewai_crew")
+        Some("a2a_v1" | "dify_app" | "openapi_rest" | "crewai_crew")
     ) {
         // Bridges that sessions::external_bridge actually executes:
         // - a2a_v1: poll_a2a_task maps completed/failed/cancelled/rejected to
         //   terminal events; cancel() sends tasks/cancel; resolve_continuation
         //   resumes or cancels a task paused on input/auth-required, so an
         //   approval rejection converges to a terminal turn state.
-        // - dify_app / openapi_rest / langgraph_assistant: invoke_dify
-        //   (blocking chat), invoke_openapi, and invoke_langgraph (runs/wait)
-        //   issue one synchronous request per prompt and return a terminal
-        //   answer or a failure — the platform owns the HTTP call lifecycle so
-        //   it can force-abort, and none ever parks a session on an unresolved
-        //   approval, so approval_terminal_result holds vacuously.
-        // Only A2A has resumable polling, and even that is not a replayable
-        // event stream, so event_recovery stays false for all — it's optional
-        // and does not block `conformant`.
+        // - dify_app / openapi_rest issue provider calls whose lifecycle is
+        //   owned by the platform and always converges to a terminal state.
+        // These bridges do not expose replayable provider event streams.
         return RuntimeContractCapabilities {
             terminal_events: true,
             interrupt_or_abort: true,
@@ -85,6 +87,23 @@ fn runtime_contract_capabilities(
 }
 
 pub fn inspect_runtime_contract(agent: &ManagedAgentRow) -> ConformanceReport {
+    inspect_runtime_contract_with_api_spec(agent, None)
+}
+
+/// Same as [`inspect_runtime_contract`], but keys the contract capabilities off
+/// the harness's resolved `api_spec` rather than the raw runtime alias.
+///
+/// Custom harnesses (e.g. an imported `local-opencode` bundle) carry an
+/// arbitrary alias in `config.runtime` while actually speaking a first-class
+/// managed protocol (`local-opencode` → `claude_managed_agents`). Contract
+/// conformance is a property of the protocol the platform executes, not the
+/// display alias, so callers holding a DB pool should resolve the alias via the
+/// harnesses table and pass the api_spec here. Pass `None` for built-in static
+/// runtimes whose alias already equals their api_spec.
+pub fn inspect_runtime_contract_with_api_spec(
+    agent: &ManagedAgentRow,
+    resolved_api_spec: Option<&str>,
+) -> ConformanceReport {
     let runtime = agent
         .config
         .get("runtime")
@@ -92,7 +111,13 @@ pub fn inspect_runtime_contract(agent: &ManagedAgentRow) -> ConformanceReport {
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let runtime_declared = runtime.is_some();
-    let capabilities = runtime_contract_capabilities(runtime, &agent.harness);
+    // A resolved api_spec (custom harness) wins; otherwise the raw alias, which
+    // for static runtimes already equals its api_spec.
+    let capability_runtime = resolved_api_spec
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(runtime);
+    let capabilities = runtime_contract_capabilities(capability_runtime, &agent.harness);
     let checks = vec![
         check(
             "stable_identity",
@@ -225,10 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_execution_bridges_are_conformant() {
-        // Dify (blocking chat) and OpenAPI both have real synchronous execution
-        // bridges in sessions::external_bridge, so they earn the same terminal
-        // guarantees as A2A and must be publishable through governance.
+    fn execution_bridges_are_conformant() {
         for runtime in [
             "dify_app",
             "openapi_rest",
@@ -241,6 +263,29 @@ mod tests {
                 "{runtime}"
             );
         }
+        let langgraph = inspect_runtime_contract(&agent(Some("langgraph_assistant")));
+        assert!(
+            langgraph
+                .checks
+                .iter()
+                .find(|check| check.id == "event_recovery")
+                .unwrap()
+                .passed
+        );
+    }
+
+    #[test]
+    fn custom_harness_alias_is_conformant_via_resolved_api_spec() {
+        // An imported opencode bundle carries runtime="local-opencode" and
+        // harness="claude-code"; on its own that is partial, but once the alias
+        // resolves to the claude_managed_agents api_spec it is fully conformant.
+        let mut agent = agent(Some("local-opencode"));
+        agent.harness = "claude-code".to_owned();
+        assert_eq!(inspect_runtime_contract(&agent).status, "partial");
+        assert_eq!(
+            inspect_runtime_contract_with_api_spec(&agent, Some("claude_managed_agents")).status,
+            "conformant"
+        );
     }
 
     #[test]

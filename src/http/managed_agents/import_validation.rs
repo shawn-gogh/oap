@@ -59,19 +59,6 @@ fn provider_issue(provider_id: &str, raw: Option<&Value>) -> Option<Value> {
             "field": "source.raw.url",
             "message": "A2A Agent Card 缺少运行端点 URL。"
         })),
-        "dify"
-            if raw
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| mode.contains("workflow")) =>
-        {
-            Some(json!({
-                "severity": "approval_required",
-                "code": "dify_workflow_mapping_required",
-                "field": "execution.input_mapping",
-                "message": "Dify 工作流必须确认输入映射后才能执行。"
-            }))
-        }
         "openapi" if raw.get("x-lap-runtime").is_none() => Some(json!({
             "severity": "approval_required",
             "code": "openapi_runtime_mapping_required",

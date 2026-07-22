@@ -57,10 +57,7 @@ beforeEach(() => {
   vi.mocked(api.createRunTurn).mockResolvedValue(BACKEND_SNAPSHOT);
   vi.mocked(api.resumeRunTurn).mockResolvedValue(BACKEND_SNAPSHOT);
   vi.mocked(api.retryRunTurn).mockResolvedValue(BACKEND_SNAPSHOT);
-  vi.mocked(api.cancelTurn).mockResolvedValue({
-    turn: BACKEND_SNAPSHOT.turn,
-    invocations: [],
-  } as never);
+  vi.mocked(api.cancelTurn).mockResolvedValue(BACKEND_SNAPSHOT as never);
 });
 
 describe("createRealRunTransport", () => {
@@ -85,27 +82,33 @@ describe("createRealRunTransport", () => {
     ).rejects.toThrow(/sessionId/);
   });
 
-  it("submitRunInput calls resumeRunTurn with the known-gap generic input wrapper", async () => {
+  it("submitRunInput preserves all continuation fields", async () => {
     const transport = createRealRunTransport("ses_1");
-    await transport.submitRunInput({ runId: "turn_1", requestId: "req_x", values: { input: "answer" } });
+    await transport.submitRunInput({
+      runId: "turn_1",
+      requestId: "req_x",
+      values: { region: "eu", detail: "answer" },
+    });
     expect(api.resumeRunTurn).toHaveBeenCalledWith("ses_1", "turn_1", {
       request_id: "req_x",
-      input: { input: "answer" },
+      input: { region: "eu", detail: "answer" },
     });
   });
 
-  it("cancelRun calls cancelTurn then re-fetches the full snapshot (asymmetric response)", async () => {
+  it("cancelRun consumes the authoritative snapshot returned by cancelTurn", async () => {
     const transport = createRealRunTransport("ses_1");
     const snapshot = await transport.cancelRun({ runId: "turn_1" });
     expect(api.cancelTurn).toHaveBeenCalledWith("ses_1", "turn_1");
-    expect(api.getRunTurn).toHaveBeenCalledWith("ses_1", "turn_1");
+    expect(api.getRunTurn).not.toHaveBeenCalled();
     expect(snapshot.runId).toBe("turn_1");
   });
 
   it("retryRun calls retryRunTurn and adapts the new turn's snapshot", async () => {
     const transport = createRealRunTransport("ses_1");
-    const snapshot = await transport.retryRun({ runId: "turn_1" });
-    expect(api.retryRunTurn).toHaveBeenCalledWith("ses_1", "turn_1");
+    const snapshot = await transport.retryRun({ runId: "turn_1", requestId: "retry_1" });
+    expect(api.retryRunTurn).toHaveBeenCalledWith("ses_1", "turn_1", {
+      request_id: "retry_1",
+    });
     expect(snapshot.runId).toBe("turn_1");
   });
 
@@ -144,6 +147,67 @@ describe("createRealRunTransport", () => {
     );
     expect(capturedOnFrame).toBeDefined();
 
+    capturedOnFrame!("6", {
+      schema_version: 1,
+      type: "turn.completed",
+      sequence: 6,
+      session_id: "ses_1",
+      turn_id: "turn_1",
+      invocation_id: null,
+      request_id: "req_1",
+      occurred_at: 123,
+      payload: { status: "completed", error: null },
+    });
+
+    expect(onEvent).toHaveBeenCalledWith({
+      seq: 6,
+      ts: 123,
+      type: "turn.status_changed",
+      status: "completed",
+      error: null,
+    });
+    // The whole point of Stage 6's fine-grained handling: a patchable frame
+    // never triggers the fallback refetch.
+    expect(api.getRunTurn).not.toHaveBeenCalled();
+
+    stop();
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it("ignores events that belong to another turn in the same session", () => {
+    let capturedOnFrame: ((lastEventId: string | null, data: unknown) => void) | undefined;
+    vi.mocked(api.subscribeControlEvents).mockImplementation((opts) => {
+      capturedOnFrame = opts.onFrame;
+      return vi.fn();
+    });
+    const onEvent = vi.fn();
+    createRealRunTransport("ses_1").subscribeRunEvents("turn_1", 5, onEvent);
+
+    capturedOnFrame!("6", {
+      schema_version: 1,
+      type: "turn.completed",
+      sequence: 6,
+      session_id: "ses_1",
+      turn_id: "turn_2",
+      invocation_id: null,
+      request_id: "req_2",
+      occurred_at: 123,
+      payload: { status: "completed", error: null },
+    });
+
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(api.getRunTurn).not.toHaveBeenCalled();
+  });
+
+  it("reloads the authoritative snapshot when the session event sequence has a gap", async () => {
+    let capturedOnFrame: ((lastEventId: string | null, data: unknown) => void) | undefined;
+    vi.mocked(api.subscribeControlEvents).mockImplementation((opts) => {
+      capturedOnFrame = opts.onFrame;
+      return vi.fn();
+    });
+    const onEvent = vi.fn();
+    createRealRunTransport("ses_1").subscribeRunEvents("turn_1", 5, onEvent);
+
     capturedOnFrame!("7", {
       schema_version: 1,
       type: "turn.completed",
@@ -156,19 +220,10 @@ describe("createRealRunTransport", () => {
       payload: { status: "completed", error: null },
     });
 
-    expect(onEvent).toHaveBeenCalledWith({
-      seq: 7,
-      ts: 123,
-      type: "turn.status_changed",
-      status: "completed",
-      error: null,
+    await vi.waitFor(() => {
+      expect(api.getRunTurn).toHaveBeenCalledWith("ses_1", "turn_1");
+      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "snapshot.replaced" }));
     });
-    // The whole point of Stage 6's fine-grained handling: a patchable frame
-    // never triggers the fallback refetch.
-    expect(api.getRunTurn).not.toHaveBeenCalled();
-
-    stop();
-    expect(unsubscribe).toHaveBeenCalled();
   });
 
   it("subscribeRunEvents falls back to a full refetch for invocation.accepted (payload can't rebuild a full row)", async () => {

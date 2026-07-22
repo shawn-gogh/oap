@@ -64,6 +64,7 @@ export interface RunView {
   canRetry: boolean;
   progress: RunSnapshotV1["progress"];
   invocations: RunSnapshotV1["invocations"];
+  operations: RunSnapshotV1["operations"];
   pendingInputRequest: RunSnapshotV1["pendingInputRequest"];
   pendingApproval: RunSnapshotV1["pendingApproval"];
   result: RunSnapshotV1["result"];
@@ -86,6 +87,7 @@ export function buildRunView(snapshot: RunSnapshotV1): RunView {
     canRetry: isTerminal && snapshot.interactionProfile.supportsRetry,
     progress: snapshot.progress,
     invocations: snapshot.invocations,
+    operations: snapshot.operations,
     pendingInputRequest: snapshot.pendingInputRequest,
     pendingApproval: snapshot.pendingApproval,
     result: snapshot.result,

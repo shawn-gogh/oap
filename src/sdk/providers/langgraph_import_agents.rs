@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::sdk::providers::import_agents::{
     ImportAgentsError, ImportAgentsFuture, ImportAgentsProvider, ImportProviderCapabilities,
-    ImportedAgent,
+    ImportedAgent, ImportedInteractionContract,
 };
 
 pub static LANGGRAPH_IMPORT_AGENTS: LangGraphImportAgents = LangGraphImportAgents;
@@ -24,6 +24,45 @@ impl ImportAgentsProvider for LangGraphImportAgents {
 
     fn expose_runtime_harness(&self) -> bool {
         false
+    }
+
+    fn interaction_contract(&self, raw: &Value) -> ImportedInteractionContract {
+        ImportedInteractionContract {
+            primary_surface: "run",
+            execution_mode: "async_stream",
+            input_schema: raw
+                .pointer("/x-lap-runtime/input_schema")
+                .cloned()
+                .unwrap_or_else(|| {
+                    json!({
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"]
+                    })
+                }),
+            output_schema: raw
+                .pointer("/x-lap-runtime/output_schema")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            progress_mode: "steps",
+            continuation_modes: vec![
+                "input".to_owned(),
+                "approval".to_owned(),
+                "choice".to_owned(),
+                "file_upload".to_owned(),
+            ],
+            artifact_media_types: vec![
+                "application/json".to_owned(),
+                "text/plain".to_owned(),
+                "image/*".to_owned(),
+                "audio/*".to_owned(),
+                "video/*".to_owned(),
+                "application/pdf".to_owned(),
+            ],
+            supports_checkpoint_resume: true,
+            supports_child_invocations: true,
+            ..Default::default()
+        }
     }
 
     fn capabilities(&self) -> ImportProviderCapabilities {

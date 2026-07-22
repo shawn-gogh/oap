@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use wiremock::{
-    matchers::{method, path},
+    matchers::{body_json, method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -20,6 +20,7 @@ use super::super::{request_json, start_reachable_mock_server, AppFixture};
 pub async fn exercise_openapi_governance(fixture: &AppFixture) {
     let server = start_reachable_mock_server().await;
     mount_spec(&server, "Weather Service", "Answers weather questions").await;
+    mount_run(&server, "weather answer from the native service").await;
 
     let discovered = discover(fixture, &server).await;
     assert_eq!(discovered["agents"].as_array().unwrap().len(), 1);
@@ -57,6 +58,7 @@ pub async fn exercise_openapi_governance(fixture: &AppFixture) {
 
     assert_governance_passes(fixture, &agent_id).await;
     publish_and_activate(fixture, &agent_id).await;
+    assert_execution_round_trip(fixture, &agent_id).await;
 }
 
 /// The governance test must pass: openapi_rest is conformant and every other
@@ -123,6 +125,60 @@ async fn publish_and_activate(fixture: &AppFixture, agent_id: &str) {
     assert_eq!(activated["status"], "active");
 }
 
+async fn assert_execution_round_trip(fixture: &AppFixture, agent_id: &str) {
+    let session = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/session",
+        Some(json!({
+            "agent": agent_id,
+            "agent_id": agent_id,
+            "runtime": "openapi_rest",
+            "title": "openapi structured run"
+        })),
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap().to_owned();
+    request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/session/{session_id}/message"),
+        Some(json!({
+            "model": { "modelID": "openapi-remote" },
+            "input": {
+                "messages": [{"role": "user", "content": "will it rain?"}]
+            }
+        })),
+    )
+    .await;
+    assert!(
+        wait_for_assistant_reply(
+            fixture,
+            &session_id,
+            "weather answer from the native service"
+        )
+        .await,
+        "expected the structured OpenAPI response to be persisted"
+    );
+}
+
+async fn wait_for_assistant_reply(fixture: &AppFixture, session_id: &str, expected: &str) -> bool {
+    for _ in 0..40 {
+        let rows =
+            litellm_rust::db::managed_agents::messages::repository::list(&fixture.pool, session_id)
+                .await
+                .unwrap();
+        if rows.iter().any(|message| {
+            message.info_json.contains("\"role\":\"assistant\"")
+                && message.parts_json.contains(expected)
+        }) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    false
+}
+
 async fn discover(fixture: &AppFixture, server: &MockServer) -> Value {
     request_json(
         fixture.app.clone(),
@@ -150,7 +206,7 @@ async fn preview(fixture: &AppFixture, server: &MockServer, external_agent: &Val
         "/api/agents/import/openapi/preview",
         Some(json!({
             "endpoint": server.uri(),
-            "credential_mode": "byo",
+            "credential_mode": "shared",
             "agents": [agent_payload(external_agent)]
         })),
     )
@@ -164,7 +220,8 @@ async fn import(fixture: &AppFixture, server: &MockServer, external_agent: &Valu
         "/api/agents/import/openapi",
         Some(json!({
             "endpoint": server.uri(),
-            "credential_mode": "byo",
+            "credential_mode": "shared",
+            "api_key": "openapi-exec-key",
             "agents": [agent_payload(external_agent)]
         })),
     )
@@ -180,15 +237,42 @@ async fn mount_spec(server: &MockServer, title: &str, description: &str) {
             "openapi": "3.1.0",
             "info": { "title": title, "description": description },
             "paths": {
-                "/v1/run": {
-                    "post": { "operationId": "run", "responses": { "200": { "description": "ok" } } }
+                "/api/v1/runs": {
+                    "post": {
+                        "operationId": "run",
+                        "requestBody": {"content": {"application/json": {"schema": {
+                            "type": "object",
+                            "required": ["messages"],
+                            "properties": {"messages": {"type": "array"}}
+                        }}}},
+                        "responses": { "200": {"description": "ok", "content": {
+                            "application/json": {"schema": {"type": "object", "properties": {
+                                "messages": {"type": "array"}
+                            }}}
+                        }}}
+                    }
                 }
             },
             "x-lap-runtime": {
-                "path": "/v1/run",
-                "input_field": "input",
-                "output_field": "output"
+                "path": "/api/v1/runs",
+                "input_field": "messages",
+                "output_field": "messages"
             }
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_run(server: &MockServer, answer: &str) {
+    Mock::given(method("POST"))
+        .and(path("/api/v1/runs"))
+        .and(body_json(json!({
+            "messages": [{"role": "user", "content": "will it rain?"}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "run_id": "run-native-1",
+            "status": "completed",
+            "messages": [{"role": "assistant", "content": answer}]
         })))
         .mount(server)
         .await;

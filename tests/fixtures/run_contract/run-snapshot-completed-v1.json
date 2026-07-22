@@ -36,6 +36,16 @@
   },
   "invocations": [],
   "operations": [],
+  "progress": {
+    "schema_version": 1,
+    "mode": "steps",
+    "label": "Completed",
+    "current": 4,
+    "total": 4,
+    "percent": 100
+  },
+  "steps": [],
+  "pending_input_request": null,
   "pending_requests": [],
   "artifacts": [],
   "latest_sequence": 12

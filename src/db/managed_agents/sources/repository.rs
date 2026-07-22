@@ -869,9 +869,12 @@ pub async fn list_due_sources(
         r#"
         SELECT source.*
         FROM "LiteLLM_ManagedAgentSourcesTable" source
+        JOIN "LiteLLM_ManagedAgentsTable" agent ON agent.id = source.agent_id
         LEFT JOIN "LiteLLM_AgentSourceConnectorsTable" connector
           ON connector.id = source.connector_id
         WHERE source.sync_state != 'detached'
+          AND agent.status != 'archived_pending_delete'
+          AND NOT (agent.config ? 'deleted_at')
           AND (source.connector_id IS NULL OR connector.status IS DISTINCT FROM 'disabled')
           AND COALESCE(source.next_sync_at, 0) <= $1
         ORDER BY COALESCE(source.next_sync_at, 0) ASC

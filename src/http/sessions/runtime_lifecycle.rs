@@ -120,6 +120,15 @@ pub(super) async fn persist_runtime_event(
     if event_requests_input(event) {
         persist_input_request(pool, session_id, event).await?;
     }
+    match event.payload() {
+        AgentEventPayload::AgentToolUse(tool) => {
+            persist_operation_request(pool, session_id, &tool).await?;
+        }
+        AgentEventPayload::AgentToolResult(result) => {
+            persist_operation_result(pool, session_id, &result).await?;
+        }
+        _ => {}
+    }
     if let AgentEventPayload::AgentMessage(message) = event.payload() {
         persist_turn_message(
             pool,
@@ -136,7 +145,152 @@ pub(super) async fn persist_runtime_event(
             }),
         )
         .await?;
+    } else if let Some(content) = assistant_response_content(event) {
+        // Some runtimes emit the terminal assistant turn as `assistant_response`
+        // (which maps to `Unknown`, not `AgentMessage`). Persist its text so the
+        // transcript survives a reload, mirroring the `AgentMessage` branch.
+        persist_turn_message(pool, session_id, serde_json::json!({ "content": content })).await?;
+        persist_turn_result(
+            pool,
+            session_id,
+            serde_json::json!({ "type": "message", "content": content }),
+        )
+        .await?;
     }
+    Ok(())
+}
+
+/// Extracts assistant message content from an `assistant_response` event —
+/// either an explicit `content` array or a bare `text` field — so the
+/// non-`AgentMessage`-typed terminal turn still lands in the transcript.
+fn assistant_response_content(event: &AgentEvent) -> Option<Value> {
+    if event.event_type != "assistant_response" {
+        return None;
+    }
+    if let Some(content) = event.data.get("content").filter(|value| !value.is_null()) {
+        return Some(content.clone());
+    }
+    event
+        .data
+        .get("text")
+        .and_then(Value::as_str)
+        .map(|text| serde_json::json!([{ "type": "text", "text": text }]))
+}
+
+async fn persist_operation_request(
+    pool: &PgPool,
+    session_id: &str,
+    tool: &crate::sdk::agents::AgentToolUseData,
+) -> Result<(), GatewayError> {
+    let Some(operation_key) = tool.id.as_deref() else {
+        return Ok(());
+    };
+    let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? else {
+        return Ok(());
+    };
+    let Some(invocation) = snapshot.invocations.first() else {
+        return Ok(());
+    };
+    let operation = session_control::repository::request_operation(
+        pool,
+        session_id,
+        &snapshot.turn.id,
+        &invocation.id,
+        operation_key,
+        tool.name.as_deref().unwrap_or("tool"),
+        serde_json::json!({
+            "name": tool.name,
+            "input": tool.input,
+        }),
+    )
+    .await?;
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(&snapshot.turn.id),
+            invocation_id: Some(&invocation.id),
+            request_id: Some(&snapshot.turn.request_id),
+            event_key: &format!("operation:{operation_key}:requested"),
+            event_type: "operation.requested",
+            event: serde_json::json!({"schema_version": 1, "operation": operation}),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn persist_operation_result(
+    pool: &PgPool,
+    session_id: &str,
+    result: &crate::sdk::agents::AgentToolResultData,
+) -> Result<(), GatewayError> {
+    let Some(operation_key) = result.tool_use_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(snapshot) = session_control::repository::active_turn(pool, session_id).await? else {
+        return Ok(());
+    };
+    let Some(invocation) = snapshot.invocations.first() else {
+        return Ok(());
+    };
+    if !session_control::repository::operations_for_turn(pool, &snapshot.turn.id)
+        .await?
+        .iter()
+        .any(|operation| {
+            operation.invocation_id == invocation.id && operation.operation_key == operation_key
+        })
+    {
+        session_control::repository::request_operation(
+            pool,
+            session_id,
+            &snapshot.turn.id,
+            &invocation.id,
+            operation_key,
+            "tool",
+            serde_json::json!({}),
+        )
+        .await?;
+    }
+    let failed = result.raw.get("error").is_some()
+        || result.raw.get("status").and_then(Value::as_str) == Some("error");
+    let status = if failed { "failed" } else { "completed" };
+    let error = failed.then(|| {
+        result
+            .raw
+            .get("error")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"message": "tool operation failed"}))
+    });
+    let Some(operation) = session_control::repository::resolve_operation(
+        pool,
+        &invocation.id,
+        operation_key,
+        status,
+        result.content.clone(),
+        error,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    session_control::repository::append_event(
+        pool,
+        session_control::repository::NewControlEvent {
+            session_id,
+            turn_id: Some(&snapshot.turn.id),
+            invocation_id: Some(&invocation.id),
+            request_id: Some(&snapshot.turn.request_id),
+            event_key: &format!("operation:{operation_key}:{status}"),
+            event_type: if failed {
+                "operation.failed"
+            } else {
+                "operation.completed"
+            },
+            event: serde_json::json!({"schema_version": 1, "operation": operation}),
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -370,7 +524,33 @@ mod tests {
 
     use crate::sdk::agents::AgentEvent;
 
-    use super::event_requests_input;
+    use super::{assistant_response_content, event_requests_input};
+
+    #[test]
+    fn assistant_response_content_reads_content_then_text() {
+        let with_content = serde_json::from_value::<Map<String, serde_json::Value>>(json!({
+            "content": [{ "type": "text", "text": "done" }]
+        }))
+        .unwrap();
+        assert_eq!(
+            assistant_response_content(&AgentEvent::new("assistant_response", with_content)),
+            Some(json!([{ "type": "text", "text": "done" }]))
+        );
+
+        let with_text =
+            serde_json::from_value::<Map<String, serde_json::Value>>(json!({ "text": "hi" }))
+                .unwrap();
+        assert_eq!(
+            assistant_response_content(&AgentEvent::new("assistant_response", with_text)),
+            Some(json!([{ "type": "text", "text": "hi" }]))
+        );
+
+        // Non-assistant_response events are left to the AgentMessage branch.
+        assert_eq!(
+            assistant_response_content(&AgentEvent::new("agent.message", Map::new())),
+            None
+        );
+    }
 
     #[test]
     fn recognizes_provider_neutral_input_request_events() {

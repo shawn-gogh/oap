@@ -1,0 +1,26 @@
+# Compose overlay that joins the real Dify stack to LAP's Docker network, so
+# the import dialog can reach it by service name. LAP's connector SSRF
+# validation rejects loopback addresses, so `http://127.0.0.1:8088/v1` is only
+# useful for host-side inspection — imports must use `http://dify-native/v1`.
+#
+# `default` is listed explicitly alongside `lap`: Compose *replaces* a
+# service's network list rather than merging it, so omitting `default` would
+# cut nginx off from Dify's own api/web containers.
+
+# Without this the project would be named after the fetched directory
+# ("upstream"), which is both meaningless in `docker ps` and liable to collide
+# with any other stack run out of a directory by that name.
+name: lap-dify-native
+
+services:
+  nginx:
+    networks:
+      default: {}
+      lap:
+        aliases:
+          - dify-native
+
+networks:
+  lap:
+    external: true
+    name: ${LAP_DOCKER_NETWORK:-litellm-agent-control-plane_default}

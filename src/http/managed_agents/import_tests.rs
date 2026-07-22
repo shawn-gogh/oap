@@ -49,6 +49,41 @@ fn opencode_agent_config_declares_session_workspace() {
     );
 
     assert_eq!(config["runtime_capabilities"]["session_workspace"], true);
+    assert_eq!(config["interaction_profile"]["schema_version"], 1);
+    assert_eq!(
+        config["interaction_profile"]["accepted_input_types"][0],
+        "application/json"
+    );
+}
+
+#[test]
+fn imported_agent_config_persists_provider_interaction_contract() {
+    let agent = ImportAgent {
+        external_id: "remote-a2a".to_owned(),
+        name: Some("Remote A2A".to_owned()),
+        description: None,
+        model: None,
+        raw: Some(json!({"name": "Remote A2A"})),
+    };
+
+    let config = agent_config(
+        &A2A_IMPORT_AGENTS,
+        "https://a2a.example.com",
+        &agent,
+        &CredentialMode::Shared,
+        None,
+        "a2a",
+    );
+
+    assert_eq!(
+        config["interaction_profile"]["execution_mode"],
+        "async_poll"
+    );
+    assert_eq!(config["interaction_profile"]["progress_mode"], "status");
+    assert_eq!(
+        config["interaction_profile"]["input_schema"]["required"][0],
+        "message"
+    );
 }
 
 #[test]

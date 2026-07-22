@@ -45,10 +45,23 @@ impl ArtifactAdapter for DatabaseArtifactAdapter {
                 .await
                 .map_err(storage_error)?
                 .ok_or_else(|| AdapterError::InvalidConfiguration("unknown turn".to_owned()))?;
-            let invocation_id = turn
-                .invocations
-                .first()
-                .map(|invocation| invocation.id.clone());
+            let invocation_id = match artifact.invocation_id.as_deref() {
+                Some(invocation_id) => Some(
+                    turn.invocations
+                        .iter()
+                        .find(|invocation| invocation.id == invocation_id)
+                        .map(|invocation| invocation.id.clone())
+                        .ok_or_else(|| {
+                            AdapterError::InvalidConfiguration(
+                                "artifact invocation does not belong to turn".to_owned(),
+                            )
+                        })?,
+                ),
+                None => turn
+                    .invocations
+                    .first()
+                    .map(|invocation| invocation.id.clone()),
+            };
             let owner_id = session
                 .owner_id
                 .clone()
@@ -180,6 +193,7 @@ impl ArtifactAdapter for DatabaseArtifactAdapter {
             .map_err(storage_error)?;
             Ok(ArtifactReference {
                 id: Some(row.id.clone()),
+                invocation_id: row.invocation_id.clone(),
                 name: artifact.name.clone(),
                 media_type: row.media_type,
                 digest: row.digest,
@@ -434,6 +448,7 @@ mod tests {
         let bytes = b"threat assessment";
         let artifact = ArtifactReference {
             id: Some("source-1".to_owned()),
+            invocation_id: None,
             name: Some("assessment.txt".to_owned()),
             media_type: "text/plain".to_owned(),
             digest: Some(digest(bytes)),

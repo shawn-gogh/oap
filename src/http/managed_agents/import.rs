@@ -630,11 +630,13 @@ fn agent_config(
     credential_name: Option<String>,
     runtime: &str,
 ) -> Value {
+    let raw = agent.raw.clone().unwrap_or_else(|| json!({}));
     let mut config = json!({
         "runtime": runtime,
         "runtime_capabilities": {
             "session_workspace": provider.requires_session_workspace()
         },
+        "interaction_profile": provider.interaction_contract(&raw),
         "source": source_config(provider, endpoint, agent, credential_mode, credential_name),
     });
     if provider.api_spec() == "elastic_agent_builder" {

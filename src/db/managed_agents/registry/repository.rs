@@ -154,7 +154,9 @@ pub async fn list(
         sqlx::query_as::<_, ManagedAgentRow>(
             r#"
             SELECT * FROM "LiteLLM_ManagedAgentsTable"
-            WHERE owner_id = $1 AND status != 'archived_pending_delete'
+            WHERE owner_id = $1
+              AND status != 'archived_pending_delete'
+              AND NOT (config ? 'deleted_at')
             ORDER BY created_at ASC
             "#,
         )
@@ -166,6 +168,7 @@ pub async fn list(
             r#"
             SELECT * FROM "LiteLLM_ManagedAgentsTable"
             WHERE status != 'archived_pending_delete'
+              AND NOT (config ? 'deleted_at')
             ORDER BY created_at ASC
             "#,
         )
@@ -188,7 +191,8 @@ pub async fn list_deleted(
         sqlx::query_as::<_, ManagedAgentRow>(
             r#"
             SELECT * FROM "LiteLLM_ManagedAgentsTable"
-            WHERE owner_id = $1 AND status = 'archived_pending_delete'
+            WHERE owner_id = $1
+              AND (status = 'archived_pending_delete' OR config ? 'deleted_at')
             ORDER BY (config->>'deleted_at')::BIGINT DESC NULLS LAST
             "#,
         )
@@ -199,7 +203,7 @@ pub async fn list_deleted(
         sqlx::query_as::<_, ManagedAgentRow>(
             r#"
             SELECT * FROM "LiteLLM_ManagedAgentsTable"
-            WHERE status = 'archived_pending_delete'
+            WHERE status = 'archived_pending_delete' OR config ? 'deleted_at'
             ORDER BY (config->>'deleted_at')::BIGINT DESC NULLS LAST
             "#,
         )
@@ -315,6 +319,7 @@ pub async fn set_status(
         UPDATE "LiteLLM_ManagedAgentsTable"
         SET status = $2
         WHERE id = $1
+          AND ($2 = 'archived_pending_delete' OR NOT (config ? 'deleted_at'))
         RETURNING *
         "#,
     )

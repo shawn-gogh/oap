@@ -31,7 +31,7 @@ use crate::{
     proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
     sdk::agents::{
         canonical::{normalize_agent, NormalizationSeverity},
-        conformance::{inspect_runtime_contract, ConformanceReport},
+        conformance::{inspect_runtime_contract_with_api_spec, ConformanceReport},
     },
 };
 
@@ -140,7 +140,9 @@ async fn check_source_contract(
             detail: blocking.join("；"),
         }
     });
-    let conformance = inspect_runtime_contract(agent);
+    let api_spec =
+        crate::db::managed_agents::governance::resolve_runtime_api_spec(pool, agent).await;
+    let conformance = inspect_runtime_contract_with_api_spec(agent, api_spec.as_deref());
     let federated = crate::db::managed_agents::governance::external_source_kind(agent)
         == Some("external_agent");
     checks.push(PreflightCheck {

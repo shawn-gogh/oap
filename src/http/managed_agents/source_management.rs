@@ -29,7 +29,7 @@ use crate::{
     sdk::{
         agents::{
             canonical::{normalize_agent, CanonicalAgentSpec},
-            conformance::inspect_runtime_contract,
+            conformance::inspect_runtime_contract_with_api_spec,
         },
         providers::import_agents::{ImportAgentsError, ImportAgentsProvider, ImportedAgent},
     },
@@ -342,6 +342,11 @@ pub struct RuntimeMappingRequest {
     /// `langgraph`/`crewai` only: JSON pointer (e.g. `/output`) to read the
     /// answer from in the response body.
     pub output_path: Option<String>,
+    /// Canonical JSON Schemas captured from source introspection. They travel
+    /// with the confirmed mapping so every Run snapshots the exact contract
+    /// that was reviewed by the operator.
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
 }
 
 /// Persists the operator-confirmed request/response mapping the execution
@@ -357,7 +362,7 @@ pub async fn set_runtime_mapping(
     Path(agent_id): Path<String>,
     Json(input): Json<RuntimeMappingRequest>,
 ) -> Result<Json<crate::db::managed_agents::registry::schema::ManagedAgentRow>, GatewayError> {
-    let (pool, auth, _agent) = editable_agent(&state, &headers, &agent_id).await?;
+    let (pool, auth, agent) = editable_agent(&state, &headers, &agent_id).await?;
     let governance = governance::get(&pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("governance not found".to_owned()))?;
@@ -383,6 +388,31 @@ pub async fn set_runtime_mapping(
     ] {
         if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
             mapping[key] = json!(value);
+        }
+    }
+    if let Some(schema) = input.input_schema.filter(|schema| !schema.is_null()) {
+        mapping["input_schema"] = schema;
+    }
+    if let Some(schema) = input.output_schema.filter(|schema| !schema.is_null()) {
+        mapping["output_schema"] = schema;
+    }
+    if governance.source_provider == "openapi" {
+        if let (Some(raw), Some(path)) = (
+            agent.config.pointer("/source/raw"),
+            mapping.get("path").and_then(Value::as_str),
+        ) {
+            let (input_schema, output_schema) =
+                crate::sdk::providers::openapi_import_agents::runtime_schemas(raw, path);
+            if mapping.get("input_schema").is_none() {
+                if let Some(schema) = input_schema {
+                    mapping["input_schema"] = schema;
+                }
+            }
+            if mapping.get("output_schema").is_none() {
+                if let Some(schema) = output_schema {
+                    mapping["output_schema"] = schema;
+                }
+            }
         }
     }
     let row = repository::set_source_runtime_mapping(&pool, &agent_id, &mapping)
@@ -412,6 +442,52 @@ pub struct RuntimeMappingSuggestion {
     /// endpoint unreachable — shown as a hint, not an error, since manual
     /// entry always remains available.
     pub note: Option<String>,
+    /// `openapi` only: the POST routes the stored spec declares, each with its
+    /// field guesses. Turns `path` from free text into a pick list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<RuntimePathSuggestion>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RuntimePathSuggestion {
+    pub path: String,
+    pub summary: Option<String>,
+    pub input_field: Option<String>,
+    pub output_field: Option<String>,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+}
+
+/// Builds per-route field guesses from the OpenAPI document captured at import.
+///
+/// Reads the stored spec rather than calling the source: unlike LangGraph's
+/// `/schemas` endpoint, nothing has to be reachable for this to work.
+fn openapi_path_suggestions(spec: &Value) -> Vec<RuntimePathSuggestion> {
+    crate::sdk::providers::openapi_import_agents::runtime_paths(spec)
+        .into_iter()
+        .map(|(path, summary)| {
+            let (input_schema, output_schema) =
+                crate::sdk::providers::openapi_import_agents::runtime_schemas(spec, &path);
+            RuntimePathSuggestion {
+                input_field: input_schema.as_ref().and_then(|schema| {
+                    crate::sdk::providers::langgraph_import_agents::guess_field_name(
+                        schema,
+                        &["input", "message", "messages", "text", "query", "topic"],
+                    )
+                }),
+                output_field: output_schema.as_ref().and_then(|schema| {
+                    crate::sdk::providers::langgraph_import_agents::guess_field_name(
+                        schema,
+                        &["output", "answer", "result", "response"],
+                    )
+                }),
+                path,
+                summary,
+                input_schema,
+                output_schema,
+            }
+        })
+        .collect()
 }
 
 /// Best-effort mapping suggestion, fetched from the source's own schema
@@ -424,10 +500,28 @@ pub async fn suggest_runtime_mapping(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<Json<RuntimeMappingSuggestion>, GatewayError> {
-    let (pool, _auth, _agent) = editable_agent(&state, &headers, &agent_id).await?;
+    let (pool, _auth, agent) = editable_agent(&state, &headers, &agent_id).await?;
     let governance = governance::get(&pool, &agent_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("governance not found".to_owned()))?;
+    if governance.source_provider == "openapi" {
+        let paths = agent
+            .config
+            .pointer("/source/raw")
+            .map(openapi_path_suggestions)
+            .unwrap_or_default();
+        let note = paths
+            .is_empty()
+            .then(|| "来源规范中没有可用的 POST 路由，请手动确认。".to_owned());
+        return Ok(Json(RuntimeMappingSuggestion {
+            input_field: None,
+            output_path: None,
+            input_schema: None,
+            output_schema: None,
+            note,
+            paths,
+        }));
+    }
     if governance.source_provider != "langgraph" {
         return Ok(Json(RuntimeMappingSuggestion {
             input_field: None,
@@ -435,6 +529,7 @@ pub async fn suggest_runtime_mapping(
             input_schema: None,
             output_schema: None,
             note: Some("该来源暂不支持自动获取输入/输出结构，请手动确认。".to_owned()),
+            paths: Vec::new(),
         }));
     }
     let endpoint = validate_connector_endpoint(&governance.source_endpoint).await?;
@@ -474,6 +569,7 @@ pub async fn suggest_runtime_mapping(
                 input_schema,
                 output_schema,
                 note: None,
+                paths: Vec::new(),
             }))
         }
         Err(error) => {
@@ -491,9 +587,240 @@ pub async fn suggest_runtime_mapping(
                 input_schema: None,
                 output_schema: None,
                 note: Some(format!("自动获取失败（{reason}），请手动确认。")),
+                paths: Vec::new(),
             }))
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuntimeMappingProbeRequest {
+    /// Candidate input field to probe. Defaults to the same `input` the
+    /// execution bridge falls back to, so a probe with no body still shows the
+    /// operator what the default would do.
+    pub input_field: Option<String>,
+    /// `openapi` only, and required there: the bridge has no default path to
+    /// fall back to, so there is nothing to probe until the operator names one.
+    pub path: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RuntimeMappingProbe {
+    pub input_field: String,
+    pub sentinel: String,
+    /// The complete upstream response. The confirmation UI renders this as a
+    /// clickable tree — it, not the hint lists below, is the authoritative
+    /// place to pick `output_path` from, because a valid mapping may address a
+    /// whole array (e.g. `/messages`) rather than a string leaf.
+    pub response: Value,
+    /// Pointers whose string leaf contains the sentinel. Non-empty proves the
+    /// probed `input_field` actually reached the source; empty is the signal
+    /// that a plausible-looking field name is silently being ignored.
+    pub sentinel_paths: Vec<String>,
+    /// String leaves, offered as ranked output candidates.
+    ///
+    /// Always RFC 6901 pointers. LangGraph's `output_path` takes them
+    /// verbatim; OpenAPI's `output_field` is a *top-level field name*, so only
+    /// depth-1 entries apply there and the leading `/` is dropped when filling
+    /// the field.
+    pub string_paths: Vec<String>,
+    /// True when the response had more string leaves than `string_paths` shows.
+    pub string_paths_truncated: bool,
+}
+
+/// Upper bound on hint entries: a probe against a graph that echoes a large
+/// document must not turn into a multi-megabyte response of pointer strings.
+const PROBE_PATH_LIMIT: usize = 200;
+
+/// Executes one real run against the source with a candidate input mapping and
+/// returns the whole response, so the operator confirms the output field from
+/// an observed payload rather than guessing at one.
+///
+/// This is the "observed signing" half of the mapping contract: the platform
+/// still cannot decide *which* field is safe to expose (see
+/// `set_runtime_mapping`) — only a human knows that a field named `output`
+/// holds internal reasoning while `answer` holds the reply — but it can at
+/// least stop making them guess the payload's shape.
+///
+/// Operator-triggered only, and never called from import or the background
+/// scheduler: each probe really executes the remote agent, with whatever side
+/// effects and model spend that entails.
+pub async fn probe_runtime_mapping(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(input): Json<RuntimeMappingProbeRequest>,
+) -> Result<Json<RuntimeMappingProbe>, GatewayError> {
+    let (pool, auth, agent) = editable_agent(&state, &headers, &agent_id).await?;
+    let governance = governance::get(&pool, &agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("governance not found".to_owned()))?;
+    let source = agent
+        .config
+        .get("source")
+        .ok_or_else(|| GatewayError::InvalidConfig("导入智能体缺少来源配置。".to_owned()))?;
+    let input_field = input
+        .input_field
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("input");
+    let credential = crate::http::agent_runtimes::RuntimeCredential {
+        api_key: probe_api_key(&state, &pool, &governance, &agent_id, &auth).await?,
+        api_base: governance.source_endpoint.clone(),
+    };
+    let sentinel = crate::db::managed_agents::id("lap-probe");
+    // CrewAI is deliberately absent: its bridge is an async kickoff plus a
+    // bounded polling loop tied to a session row, so a probe would have to
+    // reimplement that rather than reuse it.
+    let path = input
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let response = match governance.source_provider.as_str() {
+        "langgraph" => {
+            crate::http::sessions::external_bridge::probe_langgraph(
+                &state,
+                source,
+                &credential,
+                input_field,
+                &sentinel,
+            )
+            .await?
+        }
+        "openapi" => {
+            let path = path.ok_or_else(|| {
+                GatewayError::BadRequest("OpenAPI 来源试跑必须提供站内路径。".to_owned())
+            })?;
+            crate::http::sessions::external_bridge::probe_openapi(
+                &state,
+                source,
+                &credential,
+                path,
+                input_field,
+                &sentinel,
+            )
+            .await?
+        }
+        other => {
+            return Err(GatewayError::BadRequest(format!(
+                "映射试跑暂不支持 {other} 来源，目前仅支持 LangGraph 与 OpenAPI。"
+            )));
+        }
+    };
+
+    let mut sentinel_paths = Vec::new();
+    let mut string_paths = Vec::new();
+    collect_pointer_paths(
+        &response,
+        "",
+        &sentinel,
+        &mut sentinel_paths,
+        &mut string_paths,
+    );
+    let string_paths_truncated = string_paths.len() > PROBE_PATH_LIMIT;
+    string_paths.truncate(PROBE_PATH_LIMIT);
+    sentinel_paths.truncate(PROBE_PATH_LIMIT);
+
+    // The response itself is deliberately not audited: it can carry retrieved
+    // documents or user data. Record only that a probe happened and what it
+    // established.
+    audit::record(
+        &pool,
+        &auth.user_id,
+        "agent.source.runtime_mapping_probed",
+        "agent",
+        &agent_id,
+        json!({
+            "provider": governance.source_provider,
+            "path": path,
+            "input_field": input_field,
+            "input_field_reached_source": !sentinel_paths.is_empty(),
+        }),
+    )
+    .await?;
+
+    Ok(Json(RuntimeMappingProbe {
+        input_field: input_field.to_owned(),
+        sentinel,
+        response,
+        sentinel_paths,
+        string_paths,
+        string_paths_truncated,
+    }))
+}
+
+/// Resolves the key a probe should authenticate with, mirroring
+/// `runtime_resolution::imported_agent_credential` but without a session: a
+/// probe is an operator action, so a BYO source uses the *caller's* own key
+/// rather than a session owner's.
+async fn probe_api_key(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    governance: &governance::AgentGovernanceRow,
+    agent_id: &str,
+    auth: &AuthContext,
+) -> Result<String, GatewayError> {
+    if governance.credential_scope == "byo" {
+        let name = crate::http::runtime_resolution::byo_credential_name(agent_id);
+        return credential_api_key(state, pool, Some(&name), &auth.user_id).await;
+    }
+    credential_api_key(
+        state,
+        pool,
+        governance.credential_name.as_deref(),
+        &governance.owner_id,
+    )
+    .await
+}
+
+/// Walks a JSON document collecting RFC 6901 pointers to every string leaf,
+/// and separately those whose text contains `sentinel`.
+fn collect_pointer_paths(
+    value: &Value,
+    prefix: &str,
+    sentinel: &str,
+    sentinel_paths: &mut Vec<String>,
+    string_paths: &mut Vec<String>,
+) {
+    match value {
+        Value::String(text) => {
+            string_paths.push(prefix.to_owned());
+            if text.contains(sentinel) {
+                sentinel_paths.push(prefix.to_owned());
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_pointer_paths(
+                    item,
+                    &format!("{prefix}/{index}"),
+                    sentinel,
+                    sentinel_paths,
+                    string_paths,
+                );
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                collect_pointer_paths(
+                    item,
+                    &format!("{prefix}/{}", escape_pointer_token(key)),
+                    sentinel,
+                    sentinel_paths,
+                    string_paths,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// RFC 6901 token escaping. `~` must be escaped before `/`, otherwise the `~1`
+/// produced for a slash would itself be re-escaped into `~01`.
+fn escape_pointer_token(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
 }
 
 pub async fn accept_drift(
@@ -515,9 +842,18 @@ pub async fn accept_drift(
     let canonical: CanonicalAgentSpec = serde_json::from_value(snapshot.canonical_spec.clone())
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
     let mut config = agent.config.clone();
-    if let Some(source_config) = config.get_mut("source").and_then(Value::as_object_mut) {
-        source_config.insert("raw".to_owned(), snapshot.raw_spec.clone());
+    let confirmed_mapping = config.pointer("/source/raw/x-lap-runtime").cloned();
+    let mut next_raw = snapshot.raw_spec.clone();
+    if let (Some(mapping), Some(raw)) = (confirmed_mapping, next_raw.as_object_mut()) {
+        raw.insert("x-lap-runtime".to_owned(), mapping);
     }
+    if let Some(source_config) = config.get_mut("source").and_then(Value::as_object_mut) {
+        source_config.insert("raw".to_owned(), next_raw);
+    }
+    let provider = provider_for_id(&governance.source_provider)?;
+    config["interaction_profile"] =
+        serde_json::to_value(provider.interaction_contract(&snapshot.raw_spec))
+            .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
     let updated = repository::update(
         &pool,
         &agent_id,
@@ -612,7 +948,9 @@ pub async fn check_conformance(
     Path(agent_id): Path<String>,
 ) -> Result<Json<RuntimeConformanceRow>, GatewayError> {
     let (pool, auth, agent) = editable_agent(&state, &headers, &agent_id).await?;
-    let report = inspect_runtime_contract(&agent);
+    let api_spec =
+        crate::db::managed_agents::governance::resolve_runtime_api_spec(&pool, &agent).await;
+    let report = inspect_runtime_contract_with_api_spec(&agent, api_spec.as_deref());
     let revision = revisions::latest_version(&pool, &agent_id).await?;
     let checks = serde_json::to_value(&report.checks)
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
@@ -1485,5 +1823,67 @@ mod tests {
 
         assert!(verify_webhook_signature(secret, timestamp, body, &signature).is_ok());
         assert!(verify_webhook_signature(secret, timestamp, b"tampered", &signature).is_err());
+    }
+
+    fn probe_paths(response: &Value, sentinel: &str) -> (Vec<String>, Vec<String>) {
+        let mut sentinel_paths = Vec::new();
+        let mut string_paths = Vec::new();
+        collect_pointer_paths(
+            response,
+            "",
+            sentinel,
+            &mut sentinel_paths,
+            &mut string_paths,
+        );
+        (sentinel_paths, string_paths)
+    }
+
+    #[test]
+    fn probe_paths_locate_the_sentinel_and_offer_string_candidates() {
+        // The MessagesState shape the LangGraph fixture actually returns.
+        let response = json!({
+            "messages": [
+                { "type": "human", "content": "lap-probe-1" },
+                { "type": "ai", "content": "Evidence assistant received the request." }
+            ]
+        });
+
+        let (sentinel_paths, string_paths) = probe_paths(&response, "lap-probe-1");
+
+        assert_eq!(sentinel_paths, vec!["/messages/0/content".to_owned()]);
+        assert!(string_paths.contains(&"/messages/1/content".to_owned()));
+    }
+
+    #[test]
+    fn probe_reports_no_sentinel_when_the_input_field_is_ignored() {
+        // A graph that never saw the probed field echoes nothing back — the
+        // signal that a plausible field name is being silently dropped.
+        let response = json!({ "answer": "I received an empty question." });
+
+        let (sentinel_paths, string_paths) = probe_paths(&response, "lap-probe-1");
+
+        assert!(sentinel_paths.is_empty());
+        assert_eq!(string_paths, vec!["/answer".to_owned()]);
+    }
+
+    #[test]
+    fn probe_paths_are_valid_pointers_into_the_response() {
+        let response = json!({
+            "a/b": { "c~d": "lap-probe-1" },
+            "nested": [[{ "deep": "lap-probe-1" }]],
+            "ignored": [1, true, null]
+        });
+
+        let (sentinel_paths, string_paths) = probe_paths(&response, "lap-probe-1");
+
+        // Every emitted pointer must round-trip through serde_json::pointer,
+        // otherwise the UI would hand the operator a mapping that cannot read.
+        for path in string_paths.iter().chain(sentinel_paths.iter()) {
+            assert!(response.pointer(path).is_some(), "dangling pointer {path}");
+        }
+        assert!(sentinel_paths.contains(&"/a~1b/c~0d".to_owned()));
+        assert!(sentinel_paths.contains(&"/nested/0/0/deep".to_owned()));
+        // Non-string leaves are not output_path candidates.
+        assert!(!string_paths.iter().any(|path| path.starts_with("/ignored")));
     }
 }

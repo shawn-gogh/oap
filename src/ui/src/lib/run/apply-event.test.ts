@@ -10,6 +10,7 @@ function emptyRunFromSnapshot(snapshot: RunSnapshotV1): RunSnapshotV1 {
     status: "queued",
     progress: null,
     invocations: [],
+    operations: [],
     pendingInputRequest: null,
     pendingApproval: null,
     result: null,

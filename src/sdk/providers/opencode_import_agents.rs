@@ -1,10 +1,9 @@
 //! One-click import of agents from a running opencode runtime.
 //!
-//! opencode (the LAP runtime template under `templates/opencode`) persists its
-//! agents and exposes them over `GET /v1/agents`, returning
-//! `{ "data": [ { id, name, description, model: { id }, system, ... } ] }`.
-//! This provider discovers those agents so they can be re-created as LAP
-//! managed agents that run on the opencode harness.
+//! LAP's opencode wrapper exposes agents over `GET /v1/agents`, while a stock
+//! opencode server exposes `GET /agent` behind HTTP Basic authentication. This
+//! provider negotiates both surfaces and normalizes them into the same import
+//! contract rather than requiring an adapter-shaped upstream deployment.
 //!
 //! It is a standalone file (not a `providers/<name>/` directory) so `build.rs`
 //! — which only auto-wires provider directories — leaves it alone; it is opt-in
@@ -65,14 +64,27 @@ impl ImportAgentsProvider for OpencodeImportAgents {
         api_key: &'a str,
     ) -> ImportAgentsFuture<'a, Vec<ImportedAgent>> {
         Box::pin(async move {
-            let mut request = http
-                .get(format!("{endpoint}/v1/agents"))
-                .header("accept", "application/json");
-            if !api_key.is_empty() {
-                // opencode honors Anthropic-style auth headers when present.
-                request = request.header("x-api-key", api_key);
-            }
-            let response = request.send().await?;
+            let endpoint = endpoint.trim_end_matches('/');
+            let (username, password) = native_credentials(api_key);
+            let native = http
+                .get(format!("{endpoint}/agent"))
+                .header("accept", "application/json")
+                .basic_auth(username, Some(password))
+                .send()
+                .await?;
+            let response = if native.status().is_success() {
+                native
+            } else {
+                // Preserve compatibility with the LAP wrapper and earlier
+                // opencode-compatible services after probing the native API.
+                let mut legacy = http
+                    .get(format!("{endpoint}/v1/agents"))
+                    .header("accept", "application/json");
+                if !api_key.is_empty() {
+                    legacy = legacy.header("x-api-key", api_key);
+                }
+                legacy.send().await?
+            };
             let status = response.status();
             let body = response.text().await?;
             if !status.is_success() {
@@ -91,6 +103,7 @@ impl ImportAgentsProvider for OpencodeImportAgents {
                 .unwrap_or_default();
             Ok(values
                 .into_iter()
+                .filter(|raw| raw.get("hidden").and_then(Value::as_bool) != Some(true))
                 .filter_map(|raw| external_agent(self.id(), raw))
                 .collect())
         })
@@ -113,6 +126,7 @@ impl ImportAgentsProvider for OpencodeImportAgents {
 
     fn system_prompt_from_raw(&self, external_agent_id: &str, raw: &Value) -> String {
         raw.get("system")
+            .or_else(|| raw.get("prompt"))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -121,8 +135,20 @@ impl ImportAgentsProvider for OpencodeImportAgents {
     }
 }
 
+fn native_credentials(api_key: &str) -> (&str, &str) {
+    api_key
+        .split_once(':')
+        .filter(|(username, _)| !username.trim().is_empty())
+        .unwrap_or(("opencode", api_key))
+}
+
 fn external_agent(provider: &str, raw: Value) -> Option<ImportedAgent> {
-    let id = raw.get("id").and_then(Value::as_str)?.trim().to_owned();
+    let id = raw
+        .get("id")
+        .or_else(|| raw.get("name"))
+        .and_then(Value::as_str)?
+        .trim()
+        .to_owned();
     if id.is_empty() {
         return None;
     }
@@ -190,8 +216,36 @@ mod tests {
     }
 
     #[test]
-    fn skips_entries_without_id() {
-        assert!(external_agent("opencode", json!({ "name": "no id" })).is_none());
+    fn accepts_native_agent_name_as_identity() {
+        let agent = external_agent(
+            "opencode",
+            json!({
+                "name": "security-auditor",
+                "description": "Audits changes",
+                "prompt": "Review security-sensitive changes."
+            }),
+        )
+        .unwrap();
+        assert_eq!(agent.id, "security-auditor");
+        assert_eq!(agent.name, "security-auditor");
+        assert_eq!(
+            OPENCODE_IMPORT_AGENTS.system_prompt_from_raw(&agent.id, &agent.raw),
+            "Review security-sensitive changes."
+        );
+    }
+
+    #[test]
+    fn supports_explicit_native_basic_username() {
+        assert_eq!(
+            native_credentials("reviewer:secret"),
+            ("reviewer", "secret")
+        );
+        assert_eq!(native_credentials("secret"), ("opencode", "secret"));
+    }
+
+    #[test]
+    fn skips_entries_without_identity() {
+        assert!(external_agent("opencode", json!({ "description": "no identity" })).is_none());
     }
 
     #[test]
@@ -218,6 +272,11 @@ mod tests {
         assert_eq!(
             OPENCODE_IMPORT_AGENTS.system_prompt_from_raw("a1", &json!({})),
             "Imported opencode agent (external id: a1)."
+        );
+        assert_eq!(
+            OPENCODE_IMPORT_AGENTS
+                .system_prompt_from_raw("a1", &json!({"prompt": "Native prompt"})),
+            "Native prompt"
         );
     }
 

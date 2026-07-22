@@ -33,6 +33,7 @@ pub struct NewTurn<'a> {
     pub trigger_type: &'a str,
     pub retry_of_turn_id: Option<&'a str>,
     pub attempt_number: i32,
+    pub deadline_at: i64,
     pub agent_id: Option<&'a str>,
     pub runtime: Option<&'a str>,
     pub protocol: &'a str,
@@ -102,8 +103,8 @@ pub async fn create_or_get(pool: &PgPool, input: NewTurn<'_>) -> Result<CreatedT
         INSERT INTO "LiteLLM_SessionTurnsTable"
           (id, session_id, request_id, status, model, input_json, input_schema_json,
            output_schema_json, interaction_profile_json, trigger_type,
-           retry_of_turn_id, attempt_number, created_at, updated_at)
-        VALUES ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+           retry_of_turn_id, attempt_number, deadline_at, created_at, updated_at)
+        VALUES ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
         RETURNING *
         "#,
     )
@@ -118,6 +119,7 @@ pub async fn create_or_get(pool: &PgPool, input: NewTurn<'_>) -> Result<CreatedT
     .bind(input.trigger_type)
     .bind(input.retry_of_turn_id)
     .bind(input.attempt_number)
+    .bind(input.deadline_at)
     .bind(now)
     .fetch_one(tx.as_mut())
     .await
@@ -268,6 +270,35 @@ pub async fn transition(
     .execute(tx.as_mut())
     .await
     .map_err(GatewayError::Database)?;
+
+    if terminal {
+        let operation_status = match status {
+            "rejected" => "rejected",
+            "cancelled" | "timed_out" => "cancelled",
+            _ => "failed",
+        };
+        sqlx::query(
+            r#"
+            UPDATE "LiteLLM_SessionOperationsTable"
+            SET status = $2,
+                error_json = COALESCE(error_json, $3),
+                updated_at = $4,
+                completed_at = COALESCE(completed_at, $4)
+            WHERE turn_id = $1
+              AND status NOT IN ('completed', 'rejected', 'failed', 'cancelled')
+            "#,
+        )
+        .bind(turn_id)
+        .bind(operation_status)
+        .bind(json!({
+            "code": "turn_terminalized",
+            "message": format!("turn reached {status} before operation completed")
+        }))
+        .bind(now)
+        .execute(tx.as_mut())
+        .await
+        .map_err(GatewayError::Database)?;
+    }
 
     append_event_tx(
         &mut tx,
@@ -556,6 +587,7 @@ pub async fn recovery_candidates(
                session.status AS session_status,
                session.runtime,
                turn.updated_at AS turn_updated_at,
+               turn.deadline_at,
                session.updated_at AS session_updated_at
         FROM "LiteLLM_SessionTurnsTable" turn
         JOIN "LiteLLM_ManagedAgentSessionsTable" session ON session.id = turn.session_id
@@ -588,6 +620,23 @@ pub async fn list_events(
     .map_err(GatewayError::Database)
 }
 
+pub async fn events_for_turn(
+    pool: &PgPool,
+    turn_id: &str,
+) -> Result<Vec<SessionControlEventRow>, GatewayError> {
+    sqlx::query_as::<_, SessionControlEventRow>(
+        r#"
+        SELECT * FROM "LiteLLM_SessionControlEventsTable"
+        WHERE turn_id = $1
+        ORDER BY seq
+        "#,
+    )
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn operations_for_turn(
     pool: &PgPool,
     turn_id: &str,
@@ -600,6 +649,80 @@ pub async fn operations_for_turn(
     )
     .bind(turn_id)
     .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn request_operation(
+    pool: &PgPool,
+    session_id: &str,
+    turn_id: &str,
+    invocation_id: &str,
+    operation_key: &str,
+    operation_type: &str,
+    request: Value,
+) -> Result<SessionOperationRow, GatewayError> {
+    let now = now_ms();
+    sqlx::query_as::<_, SessionOperationRow>(
+        r#"
+        INSERT INTO "LiteLLM_SessionOperationsTable" (
+          id, session_id, turn_id, invocation_id, operation_key,
+          operation_type, status, request_json, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'requested', $7, $8, $8)
+        ON CONFLICT (invocation_id, operation_key) DO UPDATE SET
+          operation_type = EXCLUDED.operation_type,
+          request_json = EXCLUDED.request_json,
+          updated_at = EXCLUDED.updated_at
+        RETURNING *
+        "#,
+    )
+    .bind(id("operation"))
+    .bind(session_id)
+    .bind(turn_id)
+    .bind(invocation_id)
+    .bind(operation_key)
+    .bind(operation_type)
+    .bind(request)
+    .bind(now)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn resolve_operation(
+    pool: &PgPool,
+    invocation_id: &str,
+    operation_key: &str,
+    status: &str,
+    result: Option<Value>,
+    error: Option<Value>,
+) -> Result<Option<SessionOperationRow>, GatewayError> {
+    if !matches!(status, "completed" | "rejected" | "failed" | "cancelled") {
+        return Err(GatewayError::BadRequest(format!(
+            "invalid terminal operation status {status}"
+        )));
+    }
+    let now = now_ms();
+    sqlx::query_as::<_, SessionOperationRow>(
+        r#"
+        UPDATE "LiteLLM_SessionOperationsTable"
+        SET status = $3,
+            result_json = COALESCE($4, result_json),
+            error_json = COALESCE($5, error_json),
+            updated_at = $6,
+            completed_at = COALESCE(completed_at, $6)
+        WHERE invocation_id = $1 AND operation_key = $2
+          AND status NOT IN ('completed', 'rejected', 'failed', 'cancelled')
+        RETURNING *
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(operation_key)
+    .bind(status)
+    .bind(result)
+    .bind(error)
+    .bind(now)
+    .fetch_optional(pool)
     .await
     .map_err(GatewayError::Database)
 }

@@ -18,11 +18,14 @@ use crate::{
 mod artifacts_api;
 mod cloudevents_api;
 mod control_events_api;
+mod dify_bridge;
 mod execution;
 pub(crate) mod external_bridge;
 mod generic_chat;
+mod langgraph_bridge;
 mod quotas;
 pub mod recovery;
+mod run_profile;
 mod run_projection;
 mod run_types;
 mod runtime;
@@ -229,26 +232,41 @@ pub(crate) async fn agent_model_for_session(
     session_id: &str,
 ) -> Option<String> {
     let session = sessions::repository::get(pool, session_id).await.ok()??;
-    if session.agent_id.is_none() {
+    let environment_model = session
+        .environment_json
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    let legacy_agent_id = session
+        .harness
+        .starts_with("agent_")
+        .then_some(session.harness.as_str());
+    if session.agent_id.is_none() && legacy_agent_id.is_none() {
         return session
             .environment_json
             .get("temporary_model")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|model| !model.is_empty())
+            .or(environment_model)
             .map(str::to_owned);
     }
-    let agent_id = session.agent_id.as_deref().or(
-        // Legacy rows store the agent reference in `harness`.
-        session
-            .harness
-            .starts_with("agent_")
-            .then_some(session.harness.as_str()),
-    )?;
+    let agent_id = session.agent_id.as_deref().or(legacy_agent_id)?;
     let agent = crate::db::managed_agents::registry::repository::get(pool, agent_id)
         .await
         .ok()??;
-    (!agent.model.trim().is_empty()).then_some(agent.model)
+    environment_model
+        .or_else(|| {
+            agent
+                .config
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+        })
+        .map(str::to_owned)
+        .or_else(|| (!agent.model.trim().is_empty()).then_some(agent.model))
 }
 
 #[derive(serde::Deserialize)]
@@ -396,10 +414,12 @@ pub async fn create_turn(
     let run_input = input.run_input()?;
     let prompt = input.execution_prompt()?;
     let structured = input.has_structured_input();
-    let model = input
-        .model_id()
-        .ok_or(GatewayError::MissingModel)?
-        .to_owned();
+    let model = match input.model_id() {
+        Some(model) => model.to_owned(),
+        None => agent_model_for_session(&pool, &session_id)
+            .await
+            .ok_or(GatewayError::MissingModel)?,
+    };
     let request_id = request_id(&headers, input.request_id());
     let (traceparent, tracestate) = trace_headers(&headers);
     enqueue_prompt_text_with_runtime_model(
@@ -469,7 +489,7 @@ pub async fn cancel_turn(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((session_id, turn_id)): Path<(String, String)>,
-) -> Result<Json<session_control::schema::TurnSnapshot>, GatewayError> {
+) -> Result<Json<run_types::RunSnapshotV1>, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     let row = owned_session(pool, &auth, &session_id).await?;
     let snapshot = session_control::repository::get_turn(pool, &session_id, &turn_id)
@@ -479,13 +499,14 @@ pub async fn cancel_turn(
         snapshot.turn.status.as_str(),
         "completed" | "failed" | "rejected" | "cancelled" | "timed_out"
     ) {
-        return Ok(Json(snapshot));
+        return Ok(Json(
+            run_projection::load(pool, &session_id, &turn_id).await?,
+        ));
     }
     abort_session_internal(&state, pool, &row, "cancelled by user").await?;
-    let snapshot = session_control::repository::get_turn(pool, &session_id, &turn_id)
-        .await?
-        .ok_or_else(|| GatewayError::NotFound(format!("turn {turn_id} not found")))?;
-    Ok(Json(snapshot))
+    Ok(Json(
+        run_projection::load(pool, &session_id, &turn_id).await?,
+    ))
 }
 
 pub async fn resume_turn(
@@ -504,6 +525,22 @@ pub async fn resume_turn(
         return Err(GatewayError::BadRequest(format!(
             "turn {turn_id} can only resume from waiting_input, current status is {}",
             snapshot.turn.status
+        )));
+    }
+    let interaction_profile = serde_json::from_value::<
+        crate::managed_agents::adapters::types::InteractionProfileV1,
+    >(snapshot.turn.interaction_profile_json.clone())
+    .unwrap_or_default();
+    let dify_continuation = external_bridge::is_dify_continuation(&row, &snapshot);
+    let langgraph_continuation = external_bridge::is_langgraph_continuation(&row, &snapshot);
+    let continuation_mode = input.mode();
+    if !interaction_profile.continuation_modes.is_empty()
+        && !interaction_profile
+            .continuation_modes
+            .contains(&continuation_mode)
+    {
+        return Err(GatewayError::BadRequest(format!(
+            "turn {turn_id} does not support the requested continuation mode"
         )));
     }
     let request_id = input.request_id.trim();
@@ -536,6 +573,7 @@ pub async fn resume_turn(
             event: json!({
                 "schema_version": 1,
                 "request_id": request_id,
+                "mode": continuation_mode,
                 "input": Value::Object(patch.clone())
             }),
         },
@@ -545,6 +583,48 @@ pub async fn resume_turn(
     persist_message(&pool, &session_id, "user", &prompt, None).await?;
     session_control::repository::transition(&pool, &turn_id, "running", None).await?;
     sessions::repository::set_status(&pool, &session_id, "running").await?;
+    if dify_continuation {
+        let continuation_input = input.input.clone();
+        let continuation_state = state.clone();
+        let continuation_pool = pool.clone();
+        let continuation_row = row.clone();
+        tokio::spawn(async move {
+            if let Err(error) = external_bridge::resume_dify_turn(
+                continuation_state,
+                &continuation_pool,
+                &continuation_row,
+                &continuation_input,
+            )
+            .await
+            {
+                tracing::warn!(session_id = %continuation_row.id, %error, "Dify continuation failed");
+            }
+        });
+        return Ok(Json(
+            run_projection::load(&pool, &session_id, &turn_id).await?,
+        ));
+    }
+    if langgraph_continuation {
+        let continuation_input = input.input.clone();
+        let continuation_state = state.clone();
+        let continuation_pool = pool.clone();
+        let continuation_row = row.clone();
+        tokio::spawn(async move {
+            if let Err(error) = external_bridge::resume_langgraph_turn(
+                continuation_state,
+                &continuation_pool,
+                &continuation_row,
+                &continuation_input,
+            )
+            .await
+            {
+                tracing::warn!(session_id = %continuation_row.id, %error, "LangGraph continuation failed");
+            }
+        });
+        return Ok(Json(
+            run_projection::load(&pool, &session_id, &turn_id).await?,
+        ));
+    }
     spawn_existing_turn_execution(state, pool.clone(), row, turn, prompt);
     Ok(Json(
         run_projection::load(&pool, &session_id, &turn_id).await?,
@@ -571,6 +651,7 @@ pub async fn retry_turn(
             "turn {turn_id} must be terminal before retry"
         )));
     }
+    let retry_request_id = input.request_id().map(str::to_owned);
     let run_input = input
         .input
         .unwrap_or_else(|| previous.turn.input_json.clone());
@@ -585,7 +666,7 @@ pub async fn retry_turn(
         .model
         .clone()
         .ok_or(GatewayError::MissingModel)?;
-    let request_id = request_id(&headers, None);
+    let request_id = request_id(&headers, retry_request_id.as_deref());
     enqueue_prompt_text_with_runtime_model(
         state,
         pool.clone(),
@@ -674,7 +755,7 @@ pub async fn control_events(
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Query(query): Query<ControlEventsQuery>,
-) -> Result<Json<Vec<session_control::schema::SessionControlEventRow>>, GatewayError> {
+) -> Result<Json<Vec<run_types::ControlEventV1>>, GatewayError> {
     let (pool, auth) = auth_db(&state, &headers).await?;
     owned_session(pool, &auth, &session_id).await?;
     Ok(Json(
@@ -683,7 +764,10 @@ pub async fn control_events(
             &session_id,
             query.after_sequence.unwrap_or_default().max(0),
         )
-        .await?,
+        .await?
+        .into_iter()
+        .map(run_types::ControlEventV1::from)
+        .collect(),
     ))
 }
 
@@ -733,18 +817,8 @@ async fn enqueue_prompt_text_with_runtime_model(
     let session_id = session_id.to_owned();
     let row = session(&pool, &session_id).await?;
     let descriptor = crate::http::runtime_resolution::describe_session_runtime(&pool, &row).await?;
-    let input_schema = json!({"type": "object"});
-    let output_schema = json!({});
-    let interaction_profile = serde_json::to_value(
-        crate::managed_agents::adapters::types::InteractionProfileV1 {
-            primary_surface: if structured_input {
-                crate::managed_agents::adapters::types::PrimarySurface::Run
-            } else {
-                crate::managed_agents::adapters::types::PrimarySurface::Conversation
-            },
-            ..Default::default()
-        },
-    )?;
+    let contract = run_profile::resolve(&pool, &row, structured_input).await?;
+    let deadline_at = turn_deadline_at(&pool, &row).await?;
     let created_turn = {
         let _quota = quotas::prompt(&state, &pool, &row).await?;
         session_control::repository::create_or_get(
@@ -754,12 +828,13 @@ async fn enqueue_prompt_text_with_runtime_model(
                 request_id: &request_id,
                 model: Some(&model),
                 input: &input_json,
-                input_schema: &input_schema,
-                output_schema: &output_schema,
-                interaction_profile: &interaction_profile,
+                input_schema: &contract.input_schema,
+                output_schema: &contract.output_schema,
+                interaction_profile: &contract.interaction_profile,
                 trigger_type,
                 retry_of_turn_id: retry_of_turn_id.as_deref(),
                 attempt_number,
+                deadline_at,
                 agent_id: row.agent_id.as_deref(),
                 runtime: row.runtime.as_deref(),
                 protocol: &descriptor.protocol,
@@ -874,6 +949,22 @@ async fn enqueue_prompt_text_with_runtime_model(
     Ok(())
 }
 
+async fn turn_deadline_at(
+    pool: &sqlx::PgPool,
+    session: &sessions::schema::SessionRow,
+) -> Result<i64, GatewayError> {
+    let max_runtime_minutes = if let Some(agent_id) = session.agent_id.as_deref() {
+        crate::db::managed_agents::registry::repository::get(pool, agent_id)
+            .await?
+            .map(|agent| agent.max_runtime_minutes)
+            .unwrap_or(30)
+    } else {
+        30
+    };
+    Ok(crate::db::managed_agents::now_ms()
+        .saturating_add(i64::from(max_runtime_minutes.max(1)).saturating_mul(60_000)))
+}
+
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -921,7 +1012,35 @@ pub(crate) async fn abort_session_internal(
         session_control::repository::transition(pool, &snapshot.turn.id, "cancelling", None)
             .await?;
     }
-    let _ = interrupt_runtime_session(state, pool, row).await;
+    const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+    let cancelled = tokio::time::timeout(CANCEL_GRACE, interrupt_runtime_session(state, pool, row))
+        .await
+        .unwrap_or(false);
+    if !cancelled {
+        if let Some(snapshot) = active_turn.as_ref() {
+            session_control::repository::append_event(
+                pool,
+                session_control::repository::NewControlEvent {
+                    session_id,
+                    turn_id: Some(&snapshot.turn.id),
+                    invocation_id: snapshot
+                        .invocations
+                        .first()
+                        .map(|invocation| invocation.id.as_str()),
+                    request_id: Some(&snapshot.turn.request_id),
+                    event_key: &format!("turn:{}:cancel:escalated", snapshot.turn.id),
+                    event_type: "control.warning",
+                    event: json!({
+                        "code": "cancel_escalated_to_abort",
+                        "message": "runtime did not acknowledge cancellation within the grace period"
+                    }),
+                },
+            )
+            .await?;
+        }
+        let _ =
+            tokio::time::timeout(CANCEL_GRACE, force_abort_runtime_session(state, pool, row)).await;
+    }
     if let Some(snapshot) = active_turn {
         session_control::repository::transition(
             pool,
@@ -944,6 +1063,20 @@ pub(crate) async fn abort_session_internal(
     let _ =
         crate::db::managed_agents::tasks::repository::cancel_for_session(pool, session_id).await;
     Ok(())
+}
+
+async fn force_abort_runtime_session(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    row: &sessions::schema::SessionRow,
+) -> bool {
+    let Some(runtime) = row.runtime.as_deref() else {
+        return false;
+    };
+    if external_bridge::supports(runtime) {
+        return external_bridge::abort(state, pool, row).await.is_ok();
+    }
+    interrupt_runtime_session(state, pool, row).await
 }
 
 fn request_id(headers: &HeaderMap, body_request_id: Option<&str>) -> String {

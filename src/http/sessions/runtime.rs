@@ -97,7 +97,13 @@ pub(super) async fn create_runtime_session(
                 trigger_type: "conversation",
                 retry_of_turn_id: None,
                 attempt_number: 1,
-                agent_id: Some(&created.agent.id),
+                deadline_at: crate::db::managed_agents::now_ms().saturating_add(
+                    i64::from(created.agent.max_runtime_minutes).saturating_mul(60_000),
+                ),
+                // Synthetic agents exist only while provisioning a temporary
+                // session. Persisting their placeholder id makes Turn grant
+                // initialization look them up in the managed-agent registry.
+                agent_id: persisted_turn_agent_id(&created.row),
                 runtime: created.row.runtime.as_deref(),
                 protocol: &created.resolved.protocol,
                 protocol_version: &created.resolved.protocol_version,
@@ -135,6 +141,19 @@ pub(super) async fn create_runtime_session(
                     &error.to_string(),
                 )
                 .await;
+            } else if initial_turn.is_some() {
+                // A turn (and its message/control-event history) was already
+                // persisted for this session above, before provisioning was
+                // attempted. Deleting the session row here would either violate
+                // the turn/control-event tables' foreign key (silently, since
+                // the delete's error was previously discarded via `let _ =`) or
+                // orphan that history — either way the row was observed to
+                // linger indefinitely at its pre-failure status, later
+                // surfacing as a confusing "session is missing
+                // provider_session_id" error whenever it was reopened or picked
+                // up by the runtime-session recovery sweep. Mark it as a clear
+                // terminal error instead of attempting to delete it.
+                let _ = mark_session_error(&state, pool, &created.row.id, error.to_string()).await;
             } else {
                 let _ = sessions::repository::delete(pool, &created.row.id).await;
             }
@@ -282,6 +301,8 @@ async fn create_generic_chat_session(
                 trigger_type: "conversation",
                 retry_of_turn_id: None,
                 attempt_number: 1,
+                deadline_at: crate::db::managed_agents::now_ms()
+                    .saturating_add(i64::from(agent.max_runtime_minutes).saturating_mul(60_000)),
                 agent_id,
                 runtime: Some(&alias),
                 protocol: &descriptor.protocol,
@@ -634,7 +655,13 @@ pub(super) async fn execute_runtime_prompt(
                 return Err(error);
             }
         };
-        super::runtime_events_api::replace_provider_consumer(&state, pool, &row.id, stream);
+        super::runtime_events_api::replace_provider_consumer(
+            &state,
+            pool,
+            &row.id,
+            &resolved.alias,
+            stream,
+        );
     } else {
         mark_session_status(&state, pool, &row.id, status, None).await?;
     }
@@ -691,4 +718,49 @@ fn runtime_prompt(prompt: Option<String>, agent: &ManagedAgentRow) -> String {
     prompt
         .filter(|prompt| !prompt.trim().is_empty())
         .unwrap_or_else(|| format!("Start a session for {}.", agent.name))
+}
+
+fn persisted_turn_agent_id(row: &SessionRow) -> Option<&str> {
+    row.agent_id.as_deref()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::db::managed_agents::sessions::schema::SessionRow;
+
+    use super::persisted_turn_agent_id;
+
+    fn session_row(agent_id: Option<&str>) -> SessionRow {
+        SessionRow {
+            id: "session_1".to_owned(),
+            harness: "local-opencode".to_owned(),
+            agent_id: agent_id.map(str::to_owned),
+            title: "Temporary session".to_owned(),
+            created_at: 1,
+            updated_at: None,
+            sdk_session_id: None,
+            tz: None,
+            runtime: Some("local-opencode".to_owned()),
+            runtime_agent_ref_id: None,
+            environment_json: json!({}),
+            provider_session_id: None,
+            provider_run_id: None,
+            status: "starting".to_owned(),
+            workspace_bucket: None,
+            owner_id: Some("owner_1".to_owned()),
+            task_id: None,
+            attempt_number: 1,
+        }
+    }
+
+    #[test]
+    fn temporary_turn_does_not_persist_synthetic_agent_identity() {
+        assert_eq!(persisted_turn_agent_id(&session_row(None)), None);
+        assert_eq!(
+            persisted_turn_agent_id(&session_row(Some("agent_registered"))),
+            Some("agent_registered")
+        );
+    }
 }

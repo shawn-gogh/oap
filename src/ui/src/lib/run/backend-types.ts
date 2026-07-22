@@ -39,6 +39,7 @@ export interface BackendSessionTurnRow {
   trigger_type?: string;
   retry_of_turn_id?: string | null;
   attempt_number?: number;
+  deadline_at?: number | null;
   error_json?: { code?: string; message?: string; retryable?: boolean } | null;
   started_at?: number | null;
   completed_at?: number | null;
@@ -50,7 +51,12 @@ export interface BackendSessionInvocationRow {
   id: string;
   session_id: string;
   turn_id: string;
+  parent_invocation_id?: string | null;
+  agent_id?: string | null;
+  agent_revision?: number | null;
+  runtime?: string | null;
   protocol: string;
+  protocol_version?: string;
   adapter_id: string;
   role: string;
   status: BackendTurnStatus;
@@ -61,11 +67,14 @@ export interface BackendSessionInvocationRow {
   metadata?: unknown;
   error_json?: unknown;
   started_at?: number | null;
-  completed_at?: number | null;
+  finished_at?: number | null;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export interface BackendSessionOperationRow {
   id: string;
+  invocation_id: string;
   turn_id: string;
   operation_key: string;
   operation_type: string;
@@ -126,16 +135,43 @@ export interface BackendRunSnapshotV1 {
   result: unknown;
   invocations: BackendSessionInvocationRow[];
   operations: BackendSessionOperationRow[];
+  progress?: BackendRunProgressV1 | null;
+  steps?: BackendRunStepV1[];
+  pending_input_request?: BackendPendingInputRequestV1 | null;
   pending_requests: BackendInboxItemRow[];
   artifacts: BackendManagedArtifactRow[];
   latest_sequence: number;
 }
 
-// The smaller shape cancel_turn returns — {turn, invocations} only, per the
-// asymmetric-response finding in the Stage 7 plan.
-export interface BackendTurnSnapshot {
-  turn: BackendSessionTurnRow;
-  invocations: BackendSessionInvocationRow[];
+export interface BackendRunProgressV1 {
+  schema_version: number;
+  mode: "status" | "percent" | "steps" | "graph" | string;
+  label: string;
+  current: number;
+  total: number | null;
+  percent: number | null;
+}
+
+export interface BackendRunStepV1 {
+  schema_version: number;
+  id: string;
+  invocation_id: string | null;
+  label: string;
+  status: string;
+  index: number | null;
+  total: number | null;
+  metadata: unknown;
+  started_at: number | null;
+  completed_at: number | null;
+}
+
+export interface BackendPendingInputRequestV1 {
+  request_id: string;
+  invocation_id: string | null;
+  prompt: string;
+  schema: unknown | null;
+  fields: unknown | null;
+  requested_at: number;
 }
 
 export interface BackendControlEventV1 {

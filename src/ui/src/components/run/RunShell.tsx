@@ -38,6 +38,7 @@ export function RunShell({
   runId: string;
   transport?: RunTransport;
 }) {
+  const [activeRunId, setActiveRunId] = useState(runId);
   const [snapshot, setSnapshot] = useState<RunSnapshotV1 | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"cancel" | "retry" | "input" | "approval" | null>(null);
@@ -45,12 +46,16 @@ export function RunShell({
   const [rejectFeedback, setRejectFeedback] = useState("");
 
   useEffect(() => {
+    setActiveRunId(runId);
+  }, [runId]);
+
+  useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
     setSnapshot(null);
     setError(null);
     transport
-      .getRunSnapshot(runId)
+      .getRunSnapshot(activeRunId)
       .then((next) => {
         if (cancelled) return;
         setSnapshot(next);
@@ -60,7 +65,7 @@ export function RunShell({
         // only, since `runId` hasn't changed) run, silently never
         // subscribing. Chaining it onto the same async load ties the
         // subscription's lifetime to this effect's cleanup instead.
-        unsubscribe = transport.subscribeRunEvents(runId, next.lastEventSeq, (event) => {
+        unsubscribe = transport.subscribeRunEvents(activeRunId, next.lastEventSeq, (event) => {
           setSnapshot((current) => (current ? applyRunEvent(current, event) : current));
         });
       })
@@ -72,7 +77,7 @@ export function RunShell({
       unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- transport identity isn't expected to change independently of runId
-  }, [runId]);
+  }, [activeRunId]);
 
   if (error) {
     return (
@@ -95,7 +100,9 @@ export function RunShell({
   const runAction = async (kind: "cancel" | "retry", command: () => Promise<RunSnapshotV1>) => {
     setBusy(kind);
     try {
-      setSnapshot(await command());
+      const next = await command();
+      setSnapshot(next);
+      if (next.runId !== activeRunId) setActiveRunId(next.runId);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -109,7 +116,7 @@ export function RunShell({
     try {
       setSnapshot(
         await transport.decideRunApproval({
-          runId,
+          runId: snapshot.runId,
           approvalId: snapshot.pendingApproval.id,
           decision,
           feedback: decision === "rejected" ? rejectFeedback || undefined : undefined,
@@ -129,7 +136,7 @@ export function RunShell({
     try {
       setSnapshot(
         await transport.submitRunInput({
-          runId,
+          runId: snapshot.runId,
           requestId: snapshot.pendingInputRequest.id,
           values: inputValues,
         }),
@@ -166,7 +173,11 @@ export function RunShell({
                 size="sm"
                 variant="outline"
                 disabled={busy !== null}
-                onClick={() => void runAction("cancel", () => transport.cancelRun({ runId }))}
+                onClick={() =>
+                  void runAction("cancel", () =>
+                    transport.cancelRun({ runId: snapshot.runId }),
+                  )
+                }
               >
                 {busy === "cancel" ? "取消中…" : "取消"}
               </Button>
@@ -176,7 +187,14 @@ export function RunShell({
                 size="sm"
                 variant="outline"
                 disabled={busy !== null}
-                onClick={() => void runAction("retry", () => transport.retryRun({ runId }))}
+                onClick={() =>
+                  void runAction("retry", () =>
+                    transport.retryRun({
+                      runId: snapshot.runId,
+                      requestId: crypto.randomUUID(),
+                    }),
+                  )
+                }
               >
                 <RotateCcw className="size-3.5" />
                 {busy === "retry" ? "重试中…" : "重试"}
@@ -226,6 +244,36 @@ export function RunShell({
             执行时间线
           </h3>
           <InvocationTimeline invocations={view.invocations} />
+        </Card>
+      )}
+
+      {view.operations.length > 0 && (
+        <Card className="grid gap-2 p-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            操作
+          </h3>
+          <div className="grid gap-2">
+            {view.operations.map((operation) => (
+              <div
+                key={operation.id}
+                className="flex items-start justify-between gap-3 rounded-md border px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{operation.type}</p>
+                  {operation.error != null && (
+                    <p className="mt-1 text-xs text-destructive">
+                      {typeof operation.error === "string"
+                        ? operation.error
+                        : JSON.stringify(operation.error)}
+                    </p>
+                  )}
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {operation.status}
+                </span>
+              </div>
+            ))}
+          </div>
         </Card>
       )}
 

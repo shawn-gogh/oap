@@ -56,7 +56,10 @@ pub async fn enforce_separation_of_duties(pool: &PgPool) -> Result<bool, Gateway
                 "false" | "0" | "off"
             )
         })
-        .unwrap_or(false))
+        // Governance must fail closed when a fresh installation has not yet
+        // persisted an operator preference. Single-actor deployments can
+        // still opt out explicitly through the settings API.
+        .unwrap_or(true))
 }
 
 pub async fn set_separation_of_duties(

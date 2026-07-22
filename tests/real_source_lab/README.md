@@ -22,6 +22,13 @@ Run all native and LAP-side probes after the services are ready:
 bash tests/real_source_lab/probe.sh
 ```
 
+Run the full import → mapping confirmation → governance → activation →
+structured Run round trip for the executable native sources:
+
+```bash
+bash tests/real_source_lab/run-e2e.sh
+```
+
 See [`RESULTS.md`](./RESULTS.md) for the observed compatibility results.
 
 Use Docker service names in the import dialog. Loopback addresses are only for
@@ -29,10 +36,11 @@ host-side inspection and are rejected by LAP's connector SSRF validation.
 
 | Native source | Import dialog endpoint | API key field | Expected first result |
 | --- | --- | --- | --- |
-| OpenCode  | `http://opencode-native:4096` | `native-opencode` | Discovery should expose any mismatch between native `/agent` + Basic Auth and LAP's assumed `/v1/agents` + `x-api-key`. |
-| LangGraph Agent Server | `http://langgraph-native:8123` | empty | Native assistant discovery should work; preview may require mapping because the graph uses the standard `messages` state. |
-| Generic OpenAPI agent | `http://openapi-native:8080` | empty | OpenAPI discovery should work; preview should request an execution mapping because the spec contains no LAP-only extension. |
-| Self-hosted CrewAI OSS | `http://crewai-native:8080` | empty | AMP-specific discovery is expected to fail because a normal CrewAI service has no universal `/inputs` endpoint. |
+| OpenCode  | `http://opencode-native:4096` | `native-opencode` (or `username:password`) | Native Basic Auth + `/agent` discovery works; hidden internal agents are omitted. The legacy wrapper `/v1/agents` contract remains a fallback. |
+| LangGraph Agent Server | `http://langgraph-native:8123` | empty | Discovery works. Confirm `input_field=messages` and `output_path=/messages` before execution. |
+| Generic OpenAPI agent | `http://openapi-native:8080` | empty | Discovery works. Confirm `/api/v1/runs`, `input_field=messages`, and `output_field=messages` before execution. |
+| Self-hosted CrewAI OSS | `http://crewai-native:8080` | empty | LAP returns an actionable 400 directing the operator to OpenAPI / REST. CrewAI AMP remains on its native `/inputs` + async kickoff contract. |
+| Dify Community Edition | `http://dify-native/v1` | app key from `dify/bootstrap.sh` | Discovery works once an app is published. Started separately — see [`dify/README.md`](./dify/README.md). |
 
 Host inspection:
 
@@ -43,6 +51,24 @@ curl http://127.0.0.1:18080/openapi.json
 curl http://127.0.0.1:18081/openapi.json
 ```
 
+## Dify
+
+Dify is real but is not part of `compose.yaml`: it is a multi-container product
+(api, worker, web, Postgres, Redis, vector store, sandbox, nginx) rather than a
+single native service, and its `/v1` API only exists once an app is published
+inside a workspace. It therefore has its own fetch/bootstrap flow:
+
+```bash
+bash tests/real_source_lab/dify/fetch.sh
+cd tests/real_source_lab/dify/upstream
+EXPOSE_NGINX_PORT=8088 EXPOSE_NGINX_SSL_PORT=8443 \
+  docker compose -f docker-compose.yaml -f ../lap-network.yaml up -d
+cd - && bash tests/real_source_lab/dify/bootstrap.sh
+```
+
+Details, including why no fake `/info` fixture is provided and what execution
+additionally requires, are in [`dify/README.md`](./dify/README.md).
+
 ## Sources that cannot honestly be represented by a small local HTTP fixture
 
 - **ACP**: the stable protocol transport is a subprocess over stdio. Remote
@@ -51,9 +77,6 @@ curl http://127.0.0.1:18081/openapi.json
 - **OpenAI Assistants**: this is an OpenAI-hosted API. Test it against
   `https://api.openai.com` with a real project key; a local clone is not an
   authenticity test.
-- **Dify**: use the official Dify Community Edition compose stack, create and
-  publish an app in its UI, then use that app's `/v1` endpoint and generated
-  API key. A single fake `/info` service is not representative.
 - **Elastic Agent Builder**: use Elasticsearch and Kibana 9.2+ with an
   Enterprise trial/license, create an Agent Builder agent and API key, then
   point LAP at the Kibana base URL. Agent Builder is not provided by a small

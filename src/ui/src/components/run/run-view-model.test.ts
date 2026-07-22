@@ -24,6 +24,7 @@ describe("buildRunView", () => {
         "canRetry",
         "progress",
         "invocations",
+        "operations",
         "pendingInputRequest",
         "pendingApproval",
         "result",

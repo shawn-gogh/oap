@@ -69,12 +69,42 @@ export function createRealRunTransport(sessionId: string): RunTransport {
       // `event:` field, so a plain EventSource silently receives nothing
       // from this endpoint (confirmed against the live backend). See that
       // function's doc comment for the full explanation.
+      let lastSequence = fromSeq;
+      let refetching = false;
+
+      const refetch = (sequence: number) => {
+        if (refetching) return;
+        refetching = true;
+        void getRunSnapshot(runId)
+          .then((snapshot) => {
+            lastSequence = Math.max(lastSequence, snapshot.lastEventSeq);
+            onEvent({
+              seq: Math.max(sequence, snapshot.lastEventSeq),
+              ts: Date.now(),
+              type: "snapshot.replaced",
+              snapshot,
+            });
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            refetching = false;
+          });
+      };
+
       return subscribeControlEvents({
         sessionId,
         afterSequence: fromSeq,
         onFrame: (lastEventId, data) => {
           const event = data as BackendControlEventV1;
           const sequence = event.sequence ?? (lastEventId ? Number(lastEventId) : NaN);
+          if (!Number.isFinite(sequence) || sequence <= lastSequence) return;
+          const hasGap = sequence > lastSequence + 1;
+          lastSequence = sequence;
+          if (hasGap) {
+            refetch(sequence);
+            return;
+          }
+          if (event.session_id !== sessionId || event.turn_id !== runId) return;
           const adapted = adaptControlEvent(event);
 
           if (adapted === null) return; // not worth patching or reloading over
@@ -87,19 +117,7 @@ export function createRealRunTransport(sessionId: string): RunTransport {
           // The one genuinely-unpatchable case (a brand-new invocation, or
           // an unrecognized event_type) — fall back to one authoritative
           // refetch, delivered as a wholesale snapshot replacement.
-          void getRunSnapshot(runId)
-            .then((snapshot) => {
-              onEvent({
-                seq: Number.isFinite(sequence) ? sequence : snapshot.lastEventSeq,
-                ts: Date.now(),
-                type: "snapshot.replaced",
-                snapshot,
-              });
-            })
-            .catch(() => {
-              // A transient refetch failure just means this frame is
-              // skipped — the next frame (or a manual reload) will catch up.
-            });
+          refetch(sequence);
         },
       });
     },
@@ -107,9 +125,7 @@ export function createRealRunTransport(sessionId: string): RunTransport {
     async submitRunInput(cmd: RunResumeCommand): Promise<RunSnapshotV1> {
       const raw = (await resumeRunTurn(sessionId, cmd.runId, {
         request_id: cmd.requestId,
-        // The known-gap generic text field (adapt-backend.ts) is always
-        // keyed "input" — see RunInputForm's submission path.
-        input: { input: cmd.values.input ?? Object.values(cmd.values)[0] ?? "" },
+        input: cmd.values,
       })) as BackendRunSnapshotV1;
       return enrichArtifactUrls(sessionId, adaptSnapshot(raw));
     },
@@ -127,17 +143,16 @@ export function createRealRunTransport(sessionId: string): RunTransport {
     },
 
     async cancelRun(cmd: RunCancelCommand): Promise<RunSnapshotV1> {
-      // cancel_turn returns the smaller {turn, invocations} shape, not a
-      // full RunSnapshotV1 (the asymmetric-response finding) — discard it
-      // and re-fetch so every RunTransport method returns the same shape.
-      await cancelTurn(sessionId, cmd.runId);
-      return getRunSnapshot(cmd.runId);
+      const raw = (await cancelTurn(sessionId, cmd.runId)) as unknown as BackendRunSnapshotV1;
+      return enrichArtifactUrls(sessionId, adaptSnapshot(raw));
     },
 
     async retryRun(cmd: RunRetryCommand): Promise<RunSnapshotV1> {
       // Retrying creates a NEW turn (turn.retry_of_turn_id points back at
       // this one) — the returned snapshot's runId differs from cmd.runId.
-      const raw = (await retryRunTurn(sessionId, cmd.runId)) as BackendRunSnapshotV1;
+      const raw = (await retryRunTurn(sessionId, cmd.runId, {
+        request_id: cmd.requestId,
+      })) as BackendRunSnapshotV1;
       return enrichArtifactUrls(sessionId, adaptSnapshot(raw));
     },
 

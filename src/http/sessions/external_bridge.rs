@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use sqlx::PgPool;
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{
     db::managed_agents::{registry, runtime_events, session_control, sessions},
@@ -17,11 +17,73 @@ const LANGGRAPH_SPEC: &str = "langgraph_assistant";
 const CREWAI_SPEC: &str = "crewai_crew";
 const ACP_SPEC: &str = "acp_legacy";
 
+type BridgeFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, GatewayError>> + Send + 'a>>;
+
+#[derive(Clone, Copy)]
+struct ExternalInvocation<'a> {
+    state: &'a AppState,
+    pool: &'a PgPool,
+    row: &'a sessions::schema::SessionRow,
+    source: &'a Value,
+    credential: &'a crate::http::agent_runtimes::RuntimeCredential,
+    input: &'a Value,
+    prompt: &'a str,
+    agent_name: &'a str,
+    trace: &'a TraceHeaders,
+}
+
+#[derive(Clone, Copy)]
+struct ExternalCancellation<'a> {
+    state: &'a AppState,
+    row: &'a sessions::schema::SessionRow,
+    source: &'a Value,
+    credential: &'a crate::http::agent_runtimes::RuntimeCredential,
+    binding: &'a session_control::schema::SessionInvocationRow,
+    trace: &'a TraceHeaders,
+}
+
+trait ExternalRuntimeAdapter: Send + Sync {
+    fn spec(&self) -> &'static str;
+
+    fn invoke<'a>(&'a self, context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>>;
+
+    fn cancel<'a>(&'a self, _context: ExternalCancellation<'a>) -> BridgeFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn abort<'a>(&'a self, context: ExternalCancellation<'a>) -> BridgeFuture<'a, ()> {
+        self.cancel(context)
+    }
+}
+
+struct A2aRuntimeAdapter;
+struct DifyRuntimeAdapter;
+struct OpenApiRuntimeAdapter;
+struct LangGraphRuntimeAdapter;
+struct CrewAiRuntimeAdapter;
+struct AcpRuntimeAdapter;
+
+static A2A_ADAPTER: A2aRuntimeAdapter = A2aRuntimeAdapter;
+static DIFY_ADAPTER: DifyRuntimeAdapter = DifyRuntimeAdapter;
+static OPENAPI_ADAPTER: OpenApiRuntimeAdapter = OpenApiRuntimeAdapter;
+static LANGGRAPH_ADAPTER: LangGraphRuntimeAdapter = LangGraphRuntimeAdapter;
+static CREWAI_ADAPTER: CrewAiRuntimeAdapter = CrewAiRuntimeAdapter;
+static ACP_ADAPTER: AcpRuntimeAdapter = AcpRuntimeAdapter;
+
+fn adapter_for(spec: &str) -> Option<&'static dyn ExternalRuntimeAdapter> {
+    let adapters: [&dyn ExternalRuntimeAdapter; 6] = [
+        &A2A_ADAPTER,
+        &DIFY_ADAPTER,
+        &OPENAPI_ADAPTER,
+        &LANGGRAPH_ADAPTER,
+        &CREWAI_ADAPTER,
+        &ACP_ADAPTER,
+    ];
+    adapters.into_iter().find(|adapter| adapter.spec() == spec)
+}
+
 pub(crate) fn supports(runtime: &str) -> bool {
-    matches!(
-        runtime,
-        A2A_SPEC | DIFY_SPEC | OPENAPI_SPEC | LANGGRAPH_SPEC | CREWAI_SPEC | ACP_SPEC
-    )
+    adapter_for(runtime).is_some()
 }
 
 pub(super) async fn execute_prompt(
@@ -81,56 +143,22 @@ pub(super) async fn execute_prompt(
     )
     .await?;
 
-    let response = match spec {
-        A2A_SPEC => invoke_a2a(
-            &state,
+    let adapter = adapter_for(spec).ok_or_else(|| {
+        GatewayError::InvalidConfig(format!("unsupported external bridge: {spec}"))
+    })?;
+    let response = adapter
+        .invoke(ExternalInvocation {
+            state: &state,
             pool,
             row,
             source,
-            &credential,
+            credential: &credential,
+            input: &run_input,
             prompt,
-            &agent.name,
-            &trace,
-        )
-        .await
-        .map(|result| result.map(Value::String)),
-        DIFY_SPEC => invoke_dify(
-            &state,
-            pool,
-            row,
-            source,
-            &credential,
-            &run_input,
-            prompt,
-            &trace,
-        )
-        .await
-        .map(Some),
-        OPENAPI_SPEC => invoke_openapi(&state, source, &credential, &run_input, prompt, &trace)
-            .await
-            .map(Some),
-        LANGGRAPH_SPEC => invoke_langgraph(&state, source, &credential, &run_input, prompt, &trace)
-            .await
-            .map(Some),
-        CREWAI_SPEC => invoke_crewai(
-            &state,
-            pool,
-            row,
-            source,
-            &credential,
-            &run_input,
-            prompt,
-            &trace,
-        )
-        .await
-        .map(Some),
-        ACP_SPEC => Err(GatewayError::InvalidConfig(
-            "ACP 接入必须选择并验证具体兼容配置后才能执行。".to_owned(),
-        )),
-        other => Err(GatewayError::InvalidConfig(format!(
-            "unsupported external bridge: {other}"
-        ))),
-    };
+            agent_name: &agent.name,
+            trace: &trace,
+        })
+        .await;
 
     match response {
         // A2A task paused on `input-required`/`auth-required`: an
@@ -139,30 +167,7 @@ pub(super) async fn execute_prompt(
         // left to do here — `resolve_continuation` picks it back up once the
         // approval is decided.
         Ok(None) => Ok(()),
-        Ok(Some(result)) => {
-            let reply = result_display_text(&result);
-            persist_message(pool, &row.id, "assistant", &reply, Some("stop")).await?;
-            runtime_lifecycle::persist_text_message(pool, &row.id, &reply).await?;
-            runtime_lifecycle::persist_turn_result(pool, &row.id, result).await?;
-            append_event(
-                &state,
-                pool,
-                &row.id,
-                json!({
-                    "type": "agent.message",
-                    "content": [{"type": "text", "text": reply}]
-                }),
-            )
-            .await?;
-            append_event(
-                &state,
-                pool,
-                &row.id,
-                json!({"type": "session.status_idle", "stop_reason": {"type": "end_turn"}}),
-            )
-            .await?;
-            runtime_lifecycle::mark_session_status(&state, pool, &row.id, "idle", None).await
-        }
+        Ok(Some(result)) => finish_external_result(&state, pool, row, result).await,
         Err(error) => {
             if let Some(snapshot) = session_control::repository::active_turn(pool, &row.id).await? {
                 if snapshot.turn.status == "cancelling" {
@@ -192,10 +197,160 @@ pub(super) async fn execute_prompt(
     }
 }
 
+async fn finish_external_result(
+    state: &AppState,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+    result: Value,
+) -> Result<(), GatewayError> {
+    let reply = result_display_text(&result);
+    persist_message(pool, &row.id, "assistant", &reply, Some("stop")).await?;
+    runtime_lifecycle::persist_text_message(pool, &row.id, &reply).await?;
+    runtime_lifecycle::persist_turn_result(pool, &row.id, result).await?;
+    append_event(
+        state,
+        pool,
+        &row.id,
+        json!({
+            "type": "agent.message",
+            "content": [{"type": "text", "text": reply}]
+        }),
+    )
+    .await?;
+    append_event(
+        state,
+        pool,
+        &row.id,
+        json!({"type": "session.status_idle", "stop_reason": {"type": "end_turn"}}),
+    )
+    .await?;
+    runtime_lifecycle::mark_session_status(state, pool, &row.id, "idle", None).await
+}
+
 pub(super) async fn cancel(
     state: &AppState,
     pool: &PgPool,
     row: &sessions::schema::SessionRow,
+) -> Result<(), GatewayError> {
+    control(state, pool, row, false).await
+}
+
+pub(super) async fn abort(
+    state: &AppState,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+) -> Result<(), GatewayError> {
+    control(state, pool, row, true).await
+}
+
+pub(super) fn is_dify_continuation(
+    row: &sessions::schema::SessionRow,
+    snapshot: &session_control::schema::TurnSnapshot,
+) -> bool {
+    row.runtime.as_deref() == Some(DIFY_SPEC)
+        && snapshot
+            .invocations
+            .first()
+            .is_some_and(|invocation| invocation.resume_cursor.is_some())
+}
+
+pub(super) async fn resume_dify_turn(
+    state: Arc<AppState>,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+    input: &Value,
+) -> Result<(), GatewayError> {
+    let agent = load_agent(pool, row).await?;
+    let credential =
+        crate::http::runtime_resolution::imported_agent_credential(pool, &state, &agent, row)
+            .await?;
+    let snapshot = session_control::repository::active_turn(pool, &row.id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("active Dify turn not found".to_owned()))?;
+    let binding = snapshot
+        .invocations
+        .first()
+        .ok_or_else(|| GatewayError::NotFound("active Dify invocation not found".to_owned()))?;
+    let trace = TraceHeaders::from_metadata(&binding.metadata);
+    match super::dify_bridge::resume(&state, pool, row, &credential, binding, input, &trace).await {
+        Ok(Some(result)) => finish_external_result(&state, pool, row, result).await,
+        Ok(None) => Ok(()),
+        Err(error) => {
+            append_event(
+                &state,
+                pool,
+                &row.id,
+                json!({"type": "session.error", "error": {"message": error.to_string()}}),
+            )
+            .await?;
+            runtime_lifecycle::mark_session_error(&state, pool, &row.id, error.to_string()).await?;
+            Err(error)
+        }
+    }
+}
+
+pub(super) fn is_langgraph_continuation(
+    row: &sessions::schema::SessionRow,
+    snapshot: &session_control::schema::TurnSnapshot,
+) -> bool {
+    row.runtime.as_deref() == Some(LANGGRAPH_SPEC)
+        && snapshot.turn.status == "waiting_input"
+        && snapshot.invocations.first().is_some_and(|invocation| {
+            invocation.remote_session_id.is_some() && invocation.remote_task_id.is_some()
+        })
+}
+
+pub(super) async fn resume_langgraph_turn(
+    state: Arc<AppState>,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+    input: &Value,
+) -> Result<(), GatewayError> {
+    let agent = load_agent(pool, row).await?;
+    let source = agent_source(&agent)?;
+    let credential =
+        crate::http::runtime_resolution::imported_agent_credential(pool, &state, &agent, row)
+            .await?;
+    let snapshot = session_control::repository::active_turn(pool, &row.id)
+        .await?
+        .ok_or_else(|| GatewayError::NotFound("active LangGraph turn not found".to_owned()))?;
+    let binding = snapshot.invocations.first().ok_or_else(|| {
+        GatewayError::NotFound("active LangGraph invocation not found".to_owned())
+    })?;
+    let trace = TraceHeaders::from_metadata(&binding.metadata);
+    match super::langgraph_bridge::resume(
+        &state,
+        pool,
+        row,
+        source,
+        &credential,
+        binding,
+        input,
+        &trace,
+    )
+    .await
+    {
+        Ok(Some(result)) => finish_external_result(&state, pool, row, result).await,
+        Ok(None) => Ok(()),
+        Err(error) => {
+            append_event(
+                &state,
+                pool,
+                &row.id,
+                json!({"type": "session.error", "error": {"message": error.to_string()}}),
+            )
+            .await?;
+            runtime_lifecycle::mark_session_error(&state, pool, &row.id, error.to_string()).await?;
+            Err(error)
+        }
+    }
+}
+
+async fn control(
+    state: &AppState,
+    pool: &PgPool,
+    row: &sessions::schema::SessionRow,
+    abort: bool,
 ) -> Result<(), GatewayError> {
     // Signal the detached poller first, unconditionally: it has no
     // `JoinHandle` to abort, so this flag is the only way to stop it before
@@ -220,53 +375,194 @@ pub(super) async fn cancel(
         return Ok(());
     };
     let trace = TraceHeaders::from_metadata(&binding.metadata);
-    match spec {
-        A2A_SPEC => {
-            let Some(task_id) = binding.remote_task_id.as_deref() else {
-                return Ok(());
-            };
-            let rpc_url = validated_endpoint(&a2a_rpc_url(source, &credential.api_base)).await?;
-            let response = trace
-                .apply(
-                    state
-                        .http
-                        .post(rpc_url)
-                        .bearer_auth(&credential.api_key)
-                        .json(&json!({
-                            "jsonrpc": "2.0",
-                            "id": crate::db::managed_agents::id("rpc"),
-                            "method": "tasks/cancel",
-                            "params": {"id": task_id}
-                        })),
-                )
-                .send()
-                .await
-                .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
-            ensure_success(response).await.map(|_| ())
-        }
-        DIFY_SPEC => {
-            let Some(task_id) = binding.remote_task_id.as_deref() else {
-                return Ok(());
-            };
-            let response = trace
-                .apply(
-                    state
-                        .http
-                        .post(format!(
-                            "{}/chat-messages/{}/stop",
-                            credential.api_base.trim_end_matches('/'),
-                            task_id
-                        ))
-                        .bearer_auth(&credential.api_key)
-                        .json(&json!({"user": row.owner_id.as_deref().unwrap_or("lap-user")})),
-                )
-                .send()
-                .await
-                .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
-            ensure_success(response).await.map(|_| ())
-        }
-        _ => Ok(()),
+    let adapter = adapter_for(spec).ok_or_else(|| {
+        GatewayError::InvalidConfig(format!("unsupported external bridge: {spec}"))
+    })?;
+    let context = ExternalCancellation {
+        state,
+        row,
+        source,
+        credential: &credential,
+        binding: &binding,
+        trace: &trace,
+    };
+    if abort {
+        adapter.abort(context).await
+    } else {
+        adapter.cancel(context).await
     }
+}
+
+impl ExternalRuntimeAdapter for A2aRuntimeAdapter {
+    fn spec(&self) -> &'static str {
+        A2A_SPEC
+    }
+
+    fn invoke<'a>(&'a self, context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            invoke_a2a(
+                context.state,
+                context.pool,
+                context.row,
+                context.source,
+                context.credential,
+                context.prompt,
+                context.agent_name,
+                context.trace,
+            )
+            .await
+            .map(|result| result.map(Value::String))
+        })
+    }
+
+    fn cancel<'a>(&'a self, context: ExternalCancellation<'a>) -> BridgeFuture<'a, ()> {
+        Box::pin(cancel_a2a(context))
+    }
+}
+
+impl ExternalRuntimeAdapter for DifyRuntimeAdapter {
+    fn spec(&self) -> &'static str {
+        DIFY_SPEC
+    }
+
+    fn invoke<'a>(&'a self, context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>> {
+        Box::pin(super::dify_bridge::invoke(
+            context.state,
+            context.pool,
+            context.row,
+            context.source,
+            context.credential,
+            context.input,
+            context.prompt,
+            context.trace,
+        ))
+    }
+
+    fn cancel<'a>(&'a self, context: ExternalCancellation<'a>) -> BridgeFuture<'a, ()> {
+        Box::pin(super::dify_bridge::cancel(
+            context.state,
+            context.row,
+            context.source,
+            context.credential,
+            context.binding,
+            context.trace,
+        ))
+    }
+}
+
+impl ExternalRuntimeAdapter for OpenApiRuntimeAdapter {
+    fn spec(&self) -> &'static str {
+        OPENAPI_SPEC
+    }
+
+    fn invoke<'a>(&'a self, context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            invoke_openapi(
+                context.state,
+                context.source,
+                context.credential,
+                context.input,
+                context.prompt,
+                context.trace,
+            )
+            .await
+            .map(Some)
+        })
+    }
+}
+
+impl ExternalRuntimeAdapter for LangGraphRuntimeAdapter {
+    fn spec(&self) -> &'static str {
+        LANGGRAPH_SPEC
+    }
+
+    fn invoke<'a>(&'a self, context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>> {
+        Box::pin(super::langgraph_bridge::invoke(
+            context.state,
+            context.pool,
+            context.row,
+            context.source,
+            context.credential,
+            context.input,
+            context.prompt,
+            context.trace,
+        ))
+    }
+
+    fn cancel<'a>(&'a self, context: ExternalCancellation<'a>) -> BridgeFuture<'a, ()> {
+        Box::pin(super::langgraph_bridge::cancel(
+            context.state,
+            context.row,
+            context.source,
+            context.credential,
+            context.binding,
+            context.trace,
+        ))
+    }
+}
+
+impl ExternalRuntimeAdapter for CrewAiRuntimeAdapter {
+    fn spec(&self) -> &'static str {
+        CREWAI_SPEC
+    }
+
+    fn invoke<'a>(&'a self, context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            invoke_crewai(
+                context.state,
+                context.pool,
+                context.row,
+                context.source,
+                context.credential,
+                context.input,
+                context.prompt,
+                context.trace,
+            )
+            .await
+            .map(Some)
+        })
+    }
+}
+
+impl ExternalRuntimeAdapter for AcpRuntimeAdapter {
+    fn spec(&self) -> &'static str {
+        ACP_SPEC
+    }
+
+    fn invoke<'a>(&'a self, _context: ExternalInvocation<'a>) -> BridgeFuture<'a, Option<Value>> {
+        Box::pin(async {
+            Err(GatewayError::InvalidConfig(
+                "ACP 接入必须选择并验证具体兼容配置后才能执行。".to_owned(),
+            ))
+        })
+    }
+}
+
+async fn cancel_a2a(context: ExternalCancellation<'_>) -> Result<(), GatewayError> {
+    let Some(task_id) = context.binding.remote_task_id.as_deref() else {
+        return Ok(());
+    };
+    let rpc_url =
+        validated_endpoint(&a2a_rpc_url(context.source, &context.credential.api_base)).await?;
+    let response = context
+        .trace
+        .apply(
+            context
+                .state
+                .http
+                .post(rpc_url)
+                .bearer_auth(&context.credential.api_key)
+                .json(&json!({
+                    "jsonrpc": "2.0",
+                    "id": crate::db::managed_agents::id("rpc"),
+                    "method": "tasks/cancel",
+                    "params": {"id": task_id}
+                })),
+        )
+        .send()
+        .await
+        .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
+    ensure_success(response).await.map(|_| ())
 }
 
 /// Outcome of an A2A invocation or continuation. `AwaitingApproval` means the
@@ -706,71 +1002,6 @@ pub(crate) async fn resolve_continuation(
     Ok(())
 }
 
-async fn invoke_dify(
-    state: &AppState,
-    pool: &PgPool,
-    row: &sessions::schema::SessionRow,
-    source: &Value,
-    credential: &crate::http::agent_runtimes::RuntimeCredential,
-    input: &Value,
-    prompt: &str,
-    trace: &TraceHeaders,
-) -> Result<Value, GatewayError> {
-    let mode = source
-        .pointer("/raw/mode")
-        .and_then(Value::as_str)
-        .unwrap_or("chat");
-    if mode.contains("workflow") {
-        return Err(GatewayError::InvalidConfig(
-            "Dify 工作流需要先配置并验证输入映射，不能作为普通聊天自动执行。".to_owned(),
-        ));
-    }
-    let response = trace
-        .apply(
-            state
-                .http
-                .post(format!(
-                    "{}/chat-messages",
-                    credential.api_base.trim_end_matches('/')
-                ))
-                .bearer_auth(&credential.api_key)
-                .json(&json!({
-                    "inputs": input,
-                    "query": prompt,
-                    "response_mode": "blocking",
-                    "conversation_id": row.provider_session_id,
-                    "user": row.owner_id.as_deref().unwrap_or("lap-user")
-                })),
-        )
-        .send()
-        .await
-        .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
-    let payload = ensure_success(response).await?;
-    let conversation_id = payload.get("conversation_id").and_then(Value::as_str);
-    let task_id = payload.get("task_id").and_then(Value::as_str);
-    session_control::repository::bind_active_invocation(
-        pool,
-        &row.id,
-        conversation_id,
-        None,
-        task_id,
-        None,
-    )
-    .await?;
-    if let Some(conversation_id) = conversation_id {
-        sessions::repository::set_provider_run(
-            pool,
-            &row.id,
-            task_id.unwrap_or(conversation_id),
-            "running",
-        )
-        .await?;
-    }
-    payload.get("answer").cloned().ok_or_else(|| {
-        GatewayError::SandboxError("Dify response did not contain answer".to_owned())
-    })
-}
-
 async fn invoke_openapi(
     state: &AppState,
     source: &Value,
@@ -784,6 +1015,33 @@ async fn invoke_openapi(
             "OpenAPI 来源必须提供经过确认的 x-lap-runtime 映射后才能执行。".to_owned(),
         )
     })?;
+    let output_field = mapping
+        .get("output_field")
+        .and_then(Value::as_str)
+        .unwrap_or("output");
+    let payload = openapi_request(state, source, credential, input, prompt, trace, mapping).await?;
+    payload.get(output_field).cloned().ok_or_else(|| {
+        GatewayError::SandboxError(format!(
+            "OpenAPI response did not contain mapped field {output_field}"
+        ))
+    })
+}
+
+/// Issues the mapped OpenAPI call and returns the whole response body, leaving
+/// field extraction to the caller. Split out so `probe_openapi` observes the
+/// exact request execution sends rather than a parallel implementation of it.
+///
+/// `base_url` still comes from `source` (not `mapping`), so a probe driven by a
+/// candidate mapping keeps hitting whatever host the confirmed mapping pinned.
+async fn openapi_request(
+    state: &AppState,
+    source: &Value,
+    credential: &crate::http::agent_runtimes::RuntimeCredential,
+    input: &Value,
+    prompt: &str,
+    trace: &TraceHeaders,
+    mapping: &Value,
+) -> Result<Value, GatewayError> {
     let path = mapping
         .get("path")
         .and_then(Value::as_str)
@@ -792,10 +1050,6 @@ async fn invoke_openapi(
         .get("input_field")
         .and_then(Value::as_str)
         .unwrap_or("input");
-    let output_field = mapping
-        .get("output_field")
-        .and_then(Value::as_str)
-        .unwrap_or("output");
     if !path.starts_with('/') || path.starts_with("//") {
         return Err(GatewayError::InvalidConfig(
             "x-lap-runtime path 必须是站内绝对路径。".to_owned(),
@@ -813,22 +1067,41 @@ async fn invoke_openapi(
         .send()
         .await
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
-    let payload = ensure_success(response).await?;
-    payload.get(output_field).cloned().ok_or_else(|| {
-        GatewayError::SandboxError(format!(
-            "OpenAPI response did not contain mapped field {output_field}"
-        ))
-    })
+    ensure_success(response).await
 }
 
-/// Synchronous LangGraph run: POST {base}/runs/wait with the confirmed
-/// assistant id and an operator-mapped input, returning the graph's final
-/// state. The prompt is wrapped under the mapped input field, and the answer
-/// is read from the mapped output pointer — the same operator-confirms-the-
-/// mapping contract as the OpenAPI bridge, because a LangGraph graph's I/O
-/// schema is graph-specific. `runs/wait` blocks until the run terminates, so
-/// this always resolves to a single completed/failed turn.
-async fn invoke_langgraph(
+/// OpenAPI counterpart to `probe_langgraph`: posts a sentinel to a candidate
+/// `path`/`input_field` and returns the whole response body.
+///
+/// Note the mapping languages differ — `invoke_openapi` reads its answer with
+/// `payload.get(output_field)`, a *top-level field name*, not the JSON Pointer
+/// LangGraph's `output_path` uses. Only depth-1 keys of this response are
+/// therefore addressable for OpenAPI sources.
+///
+/// Executes the remote service for real; operator-triggered only.
+pub(crate) async fn probe_openapi(
+    state: &AppState,
+    source: &Value,
+    credential: &crate::http::agent_runtimes::RuntimeCredential,
+    path: &str,
+    input_field: &str,
+    sentinel: &str,
+) -> Result<Value, GatewayError> {
+    openapi_request(
+        state,
+        source,
+        credential,
+        &json!({}),
+        sentinel,
+        &TraceHeaders::default(),
+        &json!({ "path": path, "input_field": input_field }),
+    )
+    .await
+}
+
+/// The explicit mapping probe intentionally uses the blocking endpoint so it
+/// can return the complete native state to the operator for output selection.
+async fn invoke_langgraph_wait(
     state: &AppState,
     source: &Value,
     credential: &crate::http::agent_runtimes::RuntimeCredential,
@@ -879,6 +1152,59 @@ async fn invoke_langgraph(
             "LangGraph response did not contain mapped field {output_path}"
         ))
     })
+}
+
+/// Runs one real LangGraph request with a candidate `input_field` and returns
+/// the *whole* response, so an operator confirms `output_path` against an
+/// observed payload instead of guessing a JSON Pointer and discovering it was
+/// wrong only when a session fails.
+///
+/// The synthetic mapping sets `output_path` to the empty RFC 6901 pointer so
+/// the complete state is observable without loosening the mapping gate.
+///
+/// This *executes the remote agent for real* (side effects, model spend), so
+/// it is only ever reachable from an explicit operator action, never from
+/// import or the background sync scheduler.
+pub(crate) async fn probe_langgraph(
+    state: &AppState,
+    source: &Value,
+    credential: &crate::http::agent_runtimes::RuntimeCredential,
+    input_field: &str,
+    sentinel: &str,
+) -> Result<Value, GatewayError> {
+    let mut probe_source = source.clone();
+    let mut mapping = source
+        .pointer("/raw/x-lap-runtime")
+        .filter(|mapping| mapping.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    // Keep any confirmed `base_url` from the stored mapping: the probe must hit
+    // the same host execution would.
+    mapping["input_field"] = json!(input_field);
+    mapping["output_path"] = json!("");
+    // Built through the map API rather than `Value` indexing, which panics on a
+    // non-object it cannot auto-vivify.
+    let root = probe_source
+        .as_object_mut()
+        .ok_or_else(|| GatewayError::InvalidConfig("外部智能体来源必须是对象。".to_owned()))?;
+    let raw = root.entry("raw").or_insert_with(|| json!({}));
+    if !raw.is_object() {
+        *raw = json!({});
+    }
+    if let Some(raw) = raw.as_object_mut() {
+        raw.insert("x-lap-runtime".to_owned(), mapping);
+    }
+    invoke_langgraph_wait(
+        state,
+        &probe_source,
+        credential,
+        // An empty input makes `mapped_input` fall back to the sentinel, which
+        // is exactly what a chat-triggered turn sends.
+        &json!({}),
+        sentinel,
+        &TraceHeaders::default(),
+    )
+    .await
 }
 
 /// CrewAI is asynchronous: POST {base}/kickoff starts the crew and returns a
@@ -999,7 +1325,7 @@ async fn poll_crewai_status(
 }
 
 #[derive(Default)]
-struct TraceHeaders {
+pub(super) struct TraceHeaders {
     traceparent: Option<String>,
     tracestate: Option<String>,
 }
@@ -1017,7 +1343,7 @@ impl TraceHeaders {
         }
     }
 
-    fn apply(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    pub(super) fn apply(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(traceparent) = self.traceparent.as_deref() {
             request = request.header("traceparent", traceparent);
         }
@@ -1164,7 +1490,23 @@ fn extract_text(value: &Value) -> Option<String> {
 mod tests {
     use serde_json::json;
 
-    use super::{extract_text, TraceHeaders};
+    use super::{adapter_for, extract_text, supports, TraceHeaders};
+
+    #[test]
+    fn resolves_supported_sources_through_runtime_adapters() {
+        for spec in [
+            "a2a_v1",
+            "dify_app",
+            "openapi_rest",
+            "langgraph_assistant",
+            "crewai_crew",
+            "acp_legacy",
+        ] {
+            assert!(supports(spec));
+            assert_eq!(adapter_for(spec).map(|adapter| adapter.spec()), Some(spec));
+        }
+        assert!(!supports("unknown"));
+    }
 
     #[test]
     fn extracts_text_from_a2a_task_artifact() {

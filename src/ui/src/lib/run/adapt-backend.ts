@@ -57,15 +57,19 @@ function adaptTrigger(triggerType: string | undefined): RunTrigger {
 }
 
 function adaptInvocation(row: BackendSessionInvocationRow): RunInvocation {
+  const role = row.role === "primary" ? "agent" : row.role;
   return {
     id: row.id,
     turnId: row.turn_id,
-    parentInvocationId: null, // backend rows don't carry a parent pointer yet
-    role: row.role === "tool" ? "tool" : "agent",
+    parentInvocationId: row.parent_invocation_id ?? null,
+    role:
+      role === "tool" || role === "delegate" || role === "workflow"
+        ? role
+        : "agent",
     label: row.adapter_id || row.protocol,
     status: adaptStatus(row.status),
     startedAt: row.started_at ?? null,
-    endedAt: row.completed_at ?? null,
+    endedAt: row.finished_at ?? null,
     summary: null,
     raw: row,
   };
@@ -126,6 +130,20 @@ function adaptPendingInputRequest(item: BackendInboxItemRow): RunInputRequest {
   };
 }
 
+function adaptPersistedInputRequest(
+  request: NonNullable<BackendRunSnapshotV1["pending_input_request"]>,
+): RunInputRequest {
+  const structuredFields = asStructuredFields(request.fields);
+  return {
+    id: request.request_id,
+    requestedAt: request.requested_at,
+    prompt: request.prompt,
+    fields: structuredFields ?? [
+      { id: "input", label: request.prompt, kind: "text", required: true },
+    ],
+  };
+}
+
 function adaptPendingApproval(item: BackendInboxItemRow): RunApproval {
   return {
     id: item.id,
@@ -179,13 +197,28 @@ export function adaptSnapshot(backend: BackendRunSnapshotV1): RunSnapshotV1 {
       resultKinds: backend.result ? ["text", "json", "artifact"] : ["none"],
     },
     inputSnapshot: backend.input,
-    // The backend's control-event taxonomy (adaptControlEvent below) has no
-    // progress/step event at all — confirmed by an exhaustive grep of every
-    // `event_type` literal it emits (Stage 6 notes). Progress simply isn't
-    // produced yet on the backend side; this isn't a frontend gap to close.
-    progress: null,
+    progress: backend.progress
+      ? {
+          label: backend.progress.label,
+          current: backend.progress.current,
+          total: backend.progress.total,
+        }
+      : null,
     invocations: backend.invocations.map(adaptInvocation),
-    pendingInputRequest: inputRequestItem ? adaptPendingInputRequest(inputRequestItem) : null,
+    operations: backend.operations.map((operation) => ({
+      id: operation.id,
+      invocationId: operation.invocation_id,
+      type: operation.operation_type,
+      status: operation.status,
+      request: operation.request_json,
+      result: operation.result_json ?? null,
+      error: operation.error_json ?? null,
+    })),
+    pendingInputRequest: backend.pending_input_request
+      ? adaptPersistedInputRequest(backend.pending_input_request)
+      : inputRequestItem
+        ? adaptPendingInputRequest(inputRequestItem)
+        : null,
     pendingApproval: approvalItem ? adaptPendingApproval(approvalItem) : null,
     result: adaptResult(backend.result),
     artifacts: backend.artifacts.map(adaptArtifact),
@@ -258,6 +291,19 @@ export type AdaptedControlEvent = DistributiveOmit<ControlEventV1, "seq" | "ts">
 export function adaptControlEvent(event: BackendControlEventV1): AdaptedControlEvent {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
 
+  if (event.type === "turn.progress" || event.type === "invocation.progress") {
+    const current = typeof payload.current === "number" ? payload.current : payload.percent;
+    if (typeof current !== "number") return "refetch";
+    return {
+      type: "turn.progress",
+      progress: {
+        label: typeof payload.label === "string" ? payload.label : "运行中",
+        current,
+        total: typeof payload.total === "number" ? payload.total : null,
+      },
+    };
+  }
+
   if (event.type.startsWith("turn.")) {
     const status = payload.status;
     if (typeof status !== "string") return "refetch";
@@ -276,7 +322,8 @@ export function adaptControlEvent(event: BackendControlEventV1): AdaptedControlE
   }
 
   switch (event.type) {
-    case "artifact.added": {
+    case "artifact.added":
+    case "artifact.available": {
       const artifact = payload.artifact;
       if (!artifact || typeof artifact !== "object") return "refetch";
       return { type: "artifact.added", artifact: adaptArtifact(artifact as BackendManagedArtifactRow) };

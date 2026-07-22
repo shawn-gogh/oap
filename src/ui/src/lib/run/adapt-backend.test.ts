@@ -38,9 +38,10 @@ describe("adaptSnapshot", () => {
     expect(adapted.result).toBeNull();
     expect(adapted.pendingApproval).toBeNull();
     expect(adapted.pendingInputRequest).toBeNull();
+    expect(adapted.progress).toEqual({ label: "Planning", current: 1, total: 4 });
   });
 
-  it("adapts a waiting_input turn's pending request into the known-gap generic text field", () => {
+  it("restores a waiting_input turn's persisted structured request", () => {
     const backend = loadFixture<BackendRunSnapshotV1>("run-snapshot-waiting-input-v1.json");
     const adapted = adaptSnapshot(backend);
     expect(adapted.status).toBe("waiting_input");
@@ -49,7 +50,84 @@ describe("adaptSnapshot", () => {
     expect(adapted.pendingInputRequest?.id).toBe("input_request_example");
     expect(adapted.pendingInputRequest?.prompt).toBe("Select a region");
     expect(adapted.pendingInputRequest?.fields).toEqual([
-      { id: "input", label: "Select a region", kind: "text", required: true },
+      {
+        id: "region",
+        label: "Region",
+        kind: "choice",
+        required: true,
+        choices: ["us", "eu"],
+      },
+    ]);
+  });
+
+  it("maps real invocation hierarchy and finish timestamps", () => {
+    const backend = loadFixture<BackendRunSnapshotV1>("run-snapshot-running-v1.json");
+    backend.invocations = [
+      {
+        id: "inv_parent",
+        session_id: "session_example",
+        turn_id: "turn_example",
+        parent_invocation_id: null,
+        protocol: "a2a_v1",
+        adapter_id: "a2a",
+        role: "primary",
+        status: "completed",
+        started_at: 100,
+        finished_at: 300,
+      },
+      {
+        id: "inv_child",
+        session_id: "session_example",
+        turn_id: "turn_example",
+        parent_invocation_id: "inv_parent",
+        protocol: "a2a_v1",
+        adapter_id: "delegate",
+        role: "delegate",
+        status: "completed",
+        started_at: 150,
+        finished_at: 250,
+      },
+    ];
+
+    const adapted = adaptSnapshot(backend);
+    expect(adapted.invocations[0]).toMatchObject({
+      parentInvocationId: null,
+      role: "agent",
+      endedAt: 300,
+    });
+    expect(adapted.invocations[1]).toMatchObject({
+      parentInvocationId: "inv_parent",
+      role: "delegate",
+      endedAt: 250,
+    });
+  });
+
+  it("projects canonical operations without provider-specific fields", () => {
+    const backend = loadFixture<BackendRunSnapshotV1>("run-snapshot-running-v1.json");
+    backend.operations = [
+      {
+        id: "operation_1",
+        turn_id: "turn_example",
+        invocation_id: "invocation_1",
+        operation_key: "call_1",
+        operation_type: "search",
+        status: "completed",
+        request_json: { query: "agents" },
+        result_json: { count: 3 },
+        error_json: null,
+      },
+    ];
+
+    expect(adaptSnapshot(backend).operations).toEqual([
+      {
+        id: "operation_1",
+        invocationId: "invocation_1",
+        type: "search",
+        status: "completed",
+        request: { query: "agents" },
+        result: { count: 3 },
+        error: null,
+      },
     ]);
   });
 
@@ -136,6 +214,18 @@ function baseEvent(overrides: Partial<BackendControlEventV1>): BackendControlEve
 }
 
 describe("adaptControlEvent", () => {
+  it("adapts canonical progress without treating it as a status transition", () => {
+    const event = baseEvent({
+      type: "invocation.progress",
+      invocation_id: "inv_1",
+      payload: { mode: "steps", label: "Writing", current: 3, total: 4 },
+    });
+    expect(adaptControlEvent(event)).toEqual({
+      type: "turn.progress",
+      progress: { label: "Writing", current: 3, total: 4 },
+    });
+  });
+
   it("adapts any turn.* event via its payload's own status/error, not the event_type suffix", () => {
     const event = baseEvent({ type: "turn.failed", payload: { status: "failed", error: { code: "x", message: "boom", retryable: false } } });
     expect(adaptControlEvent(event)).toEqual({

@@ -10,11 +10,7 @@ export interface InvocationNode {
 }
 
 /** Nests invocations by `parentInvocationId`. Anything whose parent isn't
- * present in the list — including every real-backend row today, which
- * always sets `parentInvocationId: null` (see adapt-backend.ts) — is
- * treated as a root, so real data renders as a flat list with no behavior
- * change while fixtures with genuine parent/child pairs render nested.
- * Order is preserved as given (snapshots already arrive chronologically). */
+ * present in the list is treated as a root. Order is preserved as given. */
 export function buildInvocationTree(invocations: RunInvocation[]): InvocationNode[] {
   const byId = new Map(invocations.map((invocation) => [invocation.id, invocation]));
   const childrenOf = new Map<string, RunInvocation[]>();

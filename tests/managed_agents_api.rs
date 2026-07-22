@@ -48,6 +48,7 @@ async fn invocation_telemetry_persists_and_continues_w3c_context_against_postgre
             trigger_type: "conversation",
             retry_of_turn_id: None,
             attempt_number: 1,
+            deadline_at: i64::MAX,
             agent_id: None,
             runtime: None,
             protocol: "a2a",
@@ -129,6 +130,7 @@ async fn canonical_external_artifacts_are_unverified_idempotent_and_owner_scoped
             trigger_type: "conversation",
             retry_of_turn_id: None,
             attempt_number: 1,
+            deadline_at: i64::MAX,
             agent_id: None,
             runtime: None,
             protocol: "platform",
@@ -250,6 +252,7 @@ async fn mcp_grants_are_invocation_scoped_and_revoked_against_postgres() {
             trigger_type: "conversation",
             retry_of_turn_id: None,
             attempt_number: 1,
+            deadline_at: i64::MAX,
             agent_id: Some(agent_id),
             runtime: None,
             protocol: "platform",
@@ -598,6 +601,7 @@ async fn session_turn_idempotency_approval_and_cancel_against_postgres() {
         trigger_type: "conversation",
         retry_of_turn_id: None,
         attempt_number: 1,
+        deadline_at: i64::MAX,
         agent_id: None,
         runtime: None,
         protocol: "platform",
@@ -758,6 +762,7 @@ async fn session_turn_idempotency_approval_and_cancel_against_postgres() {
             trigger_type: "conversation",
             retry_of_turn_id: None,
             attempt_number: 1,
+            deadline_at: i64::MAX,
             agent_id: None,
             runtime: None,
             protocol: "platform",
@@ -1690,11 +1695,13 @@ async fn managed_agent_endpoints_round_trip_against_postgres() {
     let agent_id = flows::create_agent(&fixture).await;
     flows::exercise_agent_lifecycle(&fixture, &agent_id).await;
     flows::exercise_routines(&fixture, &agent_id).await;
-    flows::exercise_agent_runtime_update(&fixture, &agent_id).await;
+    flows::exercise_runs(&fixture, &agent_id).await;
     flows::exercise_memory(&fixture, &agent_id).await;
     flows::exercise_platform_mcps(&fixture, &agent_id).await;
     flows::exercise_rules(&fixture, &agent_id).await;
-    flows::exercise_runs(&fixture, &agent_id).await;
+    // Runtime changes intentionally return an active agent to draft. Exercise
+    // Run first, then verify the mutable configuration path independently.
+    flows::exercise_agent_runtime_update(&fixture, &agent_id).await;
     flows::exercise_sessions(&fixture).await;
     flows::exercise_skills(&fixture).await;
     flows::exercise_inbox(&fixture).await;
@@ -2834,6 +2841,21 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
     assert_eq!(db_agent.status, "archived_pending_delete");
     assert!(db_agent.config.get("deleted_at").is_some());
 
+    let overwritten = litellm_rust::db::managed_agents::registry::repository::set_status(
+        &fixture.pool,
+        agent_id,
+        "paused",
+    )
+    .await
+    .unwrap();
+    assert!(overwritten.is_none());
+
+    let deleted_agents =
+        litellm_rust::db::managed_agents::registry::repository::list_deleted(&fixture.pool, None)
+            .await
+            .unwrap();
+    assert!(deleted_agents.iter().any(|agent| agent.id == agent_id));
+
     let restore_response = request_json(
         fixture.app.clone(),
         "POST",
@@ -2869,6 +2891,24 @@ async fn agent_soft_delete_restore_and_cleanup_flow_against_postgres() {
     .execute(&fixture.pool)
     .await
     .unwrap();
+
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentsTable"
+        SET status = 'paused'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+
+    let visible_agents =
+        litellm_rust::db::managed_agents::registry::repository::list(&fixture.pool, None)
+            .await
+            .unwrap();
+    assert!(!visible_agents.iter().any(|agent| agent.id == agent_id));
 
     litellm_rust::http::managed_agents::registry::cleanup::run_cleanup_once(&fixture.state)
         .await

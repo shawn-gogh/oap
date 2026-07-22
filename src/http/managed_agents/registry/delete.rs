@@ -26,6 +26,7 @@ pub async fn delete(
     if !registry::repository::soft_delete(pool, &agent_id, now).await? {
         return Err(GatewayError::NotFound("not found".to_owned()));
     }
+    crate::db::managed_agents::sources::repository::detach_source(pool, &agent_id).await?;
 
     Ok(Json(DeleteResponse { ok: true }))
 }

@@ -53,7 +53,7 @@ function InvocationRow({ node, depth }: { node: InvocationNode; depth: number })
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">{invocation.label}</span>
             <Badge variant="outline" className="text-[10px]">
-              {invocation.role === "agent" ? "智能体" : "工具"}
+              {{ agent: "智能体", tool: "工具", delegate: "委派", workflow: "工作流" }[invocation.role]}
             </Badge>
             {duration && <span className="text-xs text-muted-foreground">{duration}</span>}
             <button

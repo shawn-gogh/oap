@@ -51,7 +51,7 @@ export interface RunInvocation {
   id: string;
   turnId: string;
   parentInvocationId: string | null;
-  role: "agent" | "tool";
+  role: "agent" | "tool" | "delegate" | "workflow";
   label: string;
   status: RunStatus;
   startedAt: number | null;
@@ -116,6 +116,16 @@ export interface RunProgress {
   total: number | null;
 }
 
+export interface RunOperation {
+  id: string;
+  invocationId: string;
+  type: string;
+  status: string;
+  request: unknown;
+  result: unknown | null;
+  error: unknown | null;
+}
+
 export type RunTrigger = "user" | "schedule" | "webhook" | "resume" | "retry";
 
 export interface RunSnapshotV1 {
@@ -139,6 +149,7 @@ export interface RunSnapshotV1 {
   inputSnapshot: unknown;
   progress: RunProgress | null;
   invocations: RunInvocation[];
+  operations: RunOperation[];
   pendingInputRequest: RunInputRequest | null;
   pendingApproval: RunApproval | null;
   result: RunResult | null;
@@ -218,4 +229,5 @@ export interface RunCancelCommand {
 
 export interface RunRetryCommand {
   runId: string;
+  requestId: string;
 }

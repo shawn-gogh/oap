@@ -22,6 +22,7 @@
     "trigger_type": "manual",
     "retry_of_turn_id": null,
     "attempt_number": 1,
+    "deadline_at": 1720001800000,
     "error_json": null,
     "started_at": 1720000000000,
     "completed_at": null,
@@ -52,6 +53,16 @@
   "result": null,
   "invocations": [],
   "operations": [],
+  "progress": {
+    "schema_version": 1,
+    "mode": "steps",
+    "label": "Planning",
+    "current": 1,
+    "total": 4,
+    "percent": 25
+  },
+  "steps": [],
+  "pending_input_request": null,
   "pending_requests": [],
   "artifacts": [],
   "latest_sequence": 4

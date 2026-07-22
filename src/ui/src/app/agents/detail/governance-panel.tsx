@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   Activity,
@@ -45,6 +45,7 @@ import {
   getAgentGovernance,
   getAgentSource,
   preflightAgent,
+  probeAgentSourceRuntimeMapping,
   requestAgentPublish,
   resolveAgentDrift,
   retireAgent,
@@ -58,7 +59,18 @@ import {
   type AgentPreflightReport,
   type AgentSourceOverview,
   type RuntimeMapping,
+  type RuntimeMappingProbe,
+  type RuntimePathSuggestion,
 } from "@/lib/api";
+import { flattenJsonPointers } from "@/lib/json-pointer-tree";
+import {
+  isFieldUndeclared,
+  mappingFieldCandidates,
+  unobservedFields,
+  MAPPING_ORIGIN_LABELS,
+  type MappingFieldCandidate,
+  type MappingFieldOrigin,
+} from "@/lib/mapping-fields";
 import { useCurrentTime } from "@/lib/use-current-time";
 import type { Agent } from "@/lib/types";
 
@@ -79,6 +91,72 @@ const MANAGEMENT_MODE_LABELS: Record<string, string> = {
 // can't infer on their own — sessions::external_bridge won't run a session
 // until an operator has confirmed the mapping (config.source.raw["x-lap-runtime"]).
 const RUNTIME_MAPPING_PROVIDERS = new Set(["openapi", "langgraph", "crewai"]);
+
+// Providers whose mapping can be confirmed against an observed payload. CrewAI
+// is absent because its bridge is an async kickoff plus a session-bound polling
+// loop, which a probe would have to reimplement rather than reuse.
+const PROBE_PROVIDERS = new Set(["langgraph", "openapi"]);
+
+/** Mapping fields whose provenance is worth surfacing, with their labels. */
+const ORIGIN_TRACKED_FIELDS = ["input_field", "output_field", "output_path"] as const;
+type OriginTrackedField = (typeof ORIGIN_TRACKED_FIELDS)[number];
+const FIELD_LABELS: Record<OriginTrackedField, string> = {
+  input_field: "请求字段",
+  output_field: "响应字段",
+  output_path: "响应字段路径",
+};
+
+/** Where a filled-in value came from — claimed by the spec, or observed. */
+function OriginBadge({ origin }: { origin?: MappingFieldOrigin }) {
+  if (!origin) return null;
+  return (
+    <span
+      className={`rounded px-1 text-[10px] font-normal ${
+        origin === "probe"
+          ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+          : "bg-muted text-muted-foreground"
+      }`}
+    >
+      {MAPPING_ORIGIN_LABELS[origin]}
+    </span>
+  );
+}
+
+/** Field names the source's own schema declares, offered instead of free text. */
+function SchemaFieldPicker({
+  candidates,
+  selected,
+  onSelect,
+}: {
+  candidates: MappingFieldCandidate[];
+  selected: string;
+  onSelect: (name: string) => void;
+}) {
+  if (candidates.length === 0) return null;
+  return (
+    <div className="max-h-28 overflow-auto rounded border border-border bg-muted/40 p-1">
+      {candidates.map((candidate) => (
+        <button
+          key={candidate.name}
+          type="button"
+          onClick={() => onSelect(candidate.name)}
+          className={`flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left hover:bg-muted ${
+            selected === candidate.name ? "bg-primary/10" : ""
+          }`}
+        >
+          <span className="shrink-0 font-mono text-[11px]">{candidate.name}</span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">{candidate.typeLabel}</span>
+          {candidate.required && (
+            <span className="shrink-0 text-[11px] text-muted-foreground">必填</span>
+          )}
+          {candidate.title && (
+            <span className="truncate text-[11px] text-muted-foreground">{candidate.title}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const SYNC_STATE_LABELS: Record<string, string> = {
   unknown: "未知",
@@ -359,6 +437,27 @@ export function ManagedGovernancePanel({
   const [mappingSaving, setMappingSaving] = useState(false);
   const [mappingSuggestLoading, setMappingSuggestLoading] = useState(false);
   const [mappingSuggestNote, setMappingSuggestNote] = useState<string | null>(null);
+  const [probeRunning, setProbeRunning] = useState(false);
+  const [probe, setProbe] = useState<RuntimeMappingProbe | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
+  const [mappingPaths, setMappingPaths] = useState<RuntimePathSuggestion[]>([]);
+  const [mappingOrigins, setMappingOrigins] = useState<
+    Partial<Record<OriginTrackedField, MappingFieldOrigin>>
+  >({});
+  // Schemas were already captured with the mapping; these turn them from
+  // write-only payload into the pick lists that replace free-text entry.
+  const inputCandidates = useMemo(
+    () => mappingFieldCandidates(mappingDraft.input_schema),
+    [mappingDraft.input_schema],
+  );
+  const outputCandidates = useMemo(
+    () => mappingFieldCandidates(mappingDraft.output_schema),
+    [mappingDraft.output_schema],
+  );
+  const unconfirmedFields = useMemo(
+    () => unobservedFields(mappingOrigins, ORIGIN_TRACKED_FIELDS),
+    [mappingOrigins],
+  );
   const governance = response.governance;
   const testedCurrentRevision =
     governance.runtime_health === "healthy" &&
@@ -404,20 +503,90 @@ export function ManagedGovernancePanel({
   const openMappingDialog = async () => {
     setMappingDraft({});
     setMappingSuggestNote(null);
+    setProbe(null);
+    setProbeError(null);
+    setMappingPaths([]);
+    setMappingOrigins({});
     setMappingDialogOpen(true);
     setMappingSuggestLoading(true);
     try {
       const suggestion = await suggestAgentSourceRuntimeMapping(governance.agent_id);
+      const paths = suggestion.paths ?? [];
+      setMappingPaths(paths);
+      // A spec declaring exactly one callable route leaves nothing to choose,
+      // so apply it rather than making the operator click the only option.
+      const sole = paths.length === 1 ? paths[0] : null;
+      const input_field = sole?.input_field || suggestion.input_field || undefined;
+      const output_field = sole?.output_field || undefined;
+      const output_path = suggestion.output_path || undefined;
       setMappingDraft((draft) => ({
         ...draft,
-        input_field: draft.input_field || suggestion.input_field || undefined,
-        output_path: draft.output_path || suggestion.output_path || undefined,
+        path: draft.path || sole?.path || undefined,
+        input_field: draft.input_field || input_field,
+        output_field: draft.output_field || output_field,
+        output_path: draft.output_path || output_path,
+        input_schema: sole?.input_schema ?? suggestion.input_schema ?? draft.input_schema,
+        output_schema: sole?.output_schema ?? suggestion.output_schema ?? draft.output_schema,
       }));
+      setMappingOrigins({
+        ...(input_field ? { input_field: "spec" as const } : {}),
+        ...(output_field ? { output_field: "spec" as const } : {}),
+        ...(output_path ? { output_path: "spec" as const } : {}),
+      });
       setMappingSuggestNote(suggestion.note);
     } catch (e) {
       setMappingSuggestNote(apiErrorMessage(e, "自动获取失败，请手动确认。"));
     } finally {
       setMappingSuggestLoading(false);
+    }
+  };
+
+  const applyPathSuggestion = (candidate: RuntimePathSuggestion) => {
+    setMappingDraft((draft) => ({
+      ...draft,
+      path: candidate.path,
+      input_field: candidate.input_field ?? draft.input_field,
+      output_field: candidate.output_field ?? draft.output_field,
+      input_schema: candidate.input_schema ?? draft.input_schema,
+      output_schema: candidate.output_schema ?? draft.output_schema,
+    }));
+    setMappingOrigins((origins) => ({
+      ...origins,
+      ...(candidate.input_field ? { input_field: "spec" as const } : {}),
+      ...(candidate.output_field ? { output_field: "spec" as const } : {}),
+    }));
+    // A probe result belongs to the route it was run against.
+    setProbe(null);
+    setProbeError(null);
+  };
+
+  const setMappingField = (
+    field: OriginTrackedField,
+    value: string,
+    origin: MappingFieldOrigin,
+  ) => {
+    setMappingDraft((draft) => ({ ...draft, [field]: value }));
+    setMappingOrigins((origins) => ({ ...origins, [field]: origin }));
+  };
+
+  // Runs the source once for real so output_path is picked from an observed
+  // payload. The platform still cannot judge which field is *safe* to expose
+  // (an `output` holding internal reasoning looks identical to an `answer`
+  // holding the reply) — this only removes the guesswork about the shape.
+  const runProbe = async () => {
+    setProbeRunning(true);
+    setProbeError(null);
+    try {
+      const result = await probeAgentSourceRuntimeMapping(governance.agent_id, {
+        inputField: mappingDraft.input_field?.trim() || undefined,
+        path: mappingDraft.path?.trim() || undefined,
+      });
+      setProbe(result);
+    } catch (e) {
+      setProbe(null);
+      setProbeError(apiErrorMessage(e, "试跑失败"));
+    } finally {
+      setProbeRunning(false);
     }
   };
 
@@ -1048,7 +1217,15 @@ export function ManagedGovernancePanel({
       </Dialog>
 
       <Dialog open={mappingDialogOpen} onOpenChange={setMappingDialogOpen}>
-        <DialogContent className="max-w-sm">
+        {/* Width follows content, not just the probe: route lists and field
+            pickers are already cramped at max-w-sm. */}
+        <DialogContent
+          className={
+            probe || mappingPaths.length > 1 || inputCandidates.length > 0
+              ? "max-w-2xl"
+              : "max-w-sm"
+          }
+        >
           <DialogHeader>
             <DialogTitle>配置执行映射</DialogTitle>
             <DialogDescription>
@@ -1074,6 +1251,30 @@ export function ManagedGovernancePanel({
                 <Label htmlFor="mapping-path" className="text-xs">
                   站内路径（必填，如 /agents/run）
                 </Label>
+                {mappingPaths.length > 1 && (
+                  <div className="max-h-32 overflow-auto rounded border border-border bg-muted/40 p-1">
+                    {mappingPaths.map((candidate) => {
+                      const selected = (mappingDraft.path ?? "") === candidate.path;
+                      return (
+                        <button
+                          key={candidate.path}
+                          type="button"
+                          onClick={() => applyPathSuggestion(candidate)}
+                          className={`flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left hover:bg-muted ${
+                            selected ? "bg-primary/10" : ""
+                          }`}
+                        >
+                          <span className="shrink-0 font-mono text-[11px]">{candidate.path}</span>
+                          {candidate.summary && (
+                            <span className="truncate text-[11px] text-muted-foreground">
+                              {candidate.summary}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <Input
                   id="mapping-path"
                   value={mappingDraft.path ?? ""}
@@ -1082,51 +1283,205 @@ export function ManagedGovernancePanel({
                   }
                   placeholder="/agents/run"
                 />
+                {mappingPaths.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {mappingPaths.length === 1
+                      ? "已自动填入来源规范中唯一的 POST 路由。"
+                      : `来源规范声明了 ${mappingPaths.length} 个 POST 路由，点选可一并填入字段建议。`}
+                  </p>
+                )}
               </div>
             )}
             <div className="grid gap-1.5">
-              <Label htmlFor="mapping-input-field" className="text-xs">
+              <Label htmlFor="mapping-input-field" className="flex items-center gap-1.5 text-xs">
                 请求字段（默认 {governance.source_provider === "crewai" ? "topic" : "input"}）
+                <OriginBadge origin={mappingOrigins.input_field} />
               </Label>
+              <SchemaFieldPicker
+                candidates={inputCandidates}
+                selected={mappingDraft.input_field?.trim() ?? ""}
+                // Picking from the schema is still the source's *claim*, not an
+                // observation — same provenance as the auto-fill.
+                onSelect={(name) => setMappingField("input_field", name, "spec")}
+              />
               <Input
                 id="mapping-input-field"
                 value={mappingDraft.input_field ?? ""}
                 onChange={(event) =>
-                  setMappingDraft((draft) => ({ ...draft, input_field: event.target.value }))
+                  setMappingField("input_field", event.target.value, "manual")
                 }
                 placeholder={governance.source_provider === "crewai" ? "topic" : "input"}
               />
+              {/* Say *why* nothing was filled in. A blank field otherwise looks
+                  identical whether the platform looked and could not decide or
+                  never looked at all. */}
+              {!mappingDraft.input_field?.trim() && inputCandidates.length > 1 && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                  来源声明了 {inputCandidates.length} 个字段，无法判断哪个承载用户输入，请选择。
+                </p>
+              )}
+              {isFieldUndeclared(mappingDraft.input_schema, mappingDraft.input_field) && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                  该字段不在来源声明的请求字段中。仍可保存——规范可能不完整，试跑结果才是依据。
+                </p>
+              )}
             </div>
             {governance.source_provider === "openapi" ? (
               <div className="grid gap-1.5">
-                <Label htmlFor="mapping-output-field" className="text-xs">
+                <Label htmlFor="mapping-output-field" className="flex items-center gap-1.5 text-xs">
                   响应字段（默认 output）
+                  <OriginBadge origin={mappingOrigins.output_field} />
                 </Label>
+                <SchemaFieldPicker
+                  candidates={outputCandidates}
+                  selected={mappingDraft.output_field?.trim() ?? ""}
+                  onSelect={(name) => setMappingField("output_field", name, "spec")}
+                />
                 <Input
                   id="mapping-output-field"
                   value={mappingDraft.output_field ?? ""}
                   onChange={(event) =>
-                    setMappingDraft((draft) => ({ ...draft, output_field: event.target.value }))
+                    setMappingField("output_field", event.target.value, "manual")
                   }
                   placeholder="output"
                 />
+                {!mappingDraft.output_field?.trim() && outputCandidates.length > 1 && (
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                    来源声明了 {outputCandidates.length} 个响应字段，无法判断哪个是答案，请选择。
+                  </p>
+                )}
+                {/* Catches the mistake that otherwise only surfaces as a failed
+                    session: "response did not contain mapped field X". */}
+                {isFieldUndeclared(mappingDraft.output_schema, mappingDraft.output_field) && (
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                    该字段不在来源声明的响应字段中（可选：
+                    {outputCandidates.map((candidate) => candidate.name).join("、")}）。
+                    仍可保存——规范可能不完整，试跑结果才是依据。
+                  </p>
+                )}
               </div>
             ) : (
               <div className="grid gap-1.5">
-                <Label htmlFor="mapping-output-path" className="text-xs">
+                <Label htmlFor="mapping-output-path" className="flex items-center gap-1.5 text-xs">
                   响应字段路径（默认 {governance.source_provider === "crewai" ? "/result" : "/output"}）
+                  <OriginBadge origin={mappingOrigins.output_path} />
                 </Label>
                 <Input
                   id="mapping-output-path"
                   value={mappingDraft.output_path ?? ""}
                   onChange={(event) =>
-                    setMappingDraft((draft) => ({ ...draft, output_path: event.target.value }))
+                    setMappingField("output_path", event.target.value, "manual")
                   }
                   placeholder={governance.source_provider === "crewai" ? "/result" : "/output"}
                 />
               </div>
             )}
+            {PROBE_PROVIDERS.has(governance.source_provider) && (
+              <div className="grid gap-2 rounded-md border border-border p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    不确定答案在哪个字段？试跑一次，按真实响应点选。
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    // OpenAPI has no default route to probe, so the path must
+                    // be filled in before there is anything to call.
+                    disabled={
+                      probeRunning ||
+                      (governance.source_provider === "openapi" && !mappingDraft.path?.trim())
+                    }
+                    onClick={() => void runProbe()}
+                  >
+                    <RefreshCw className="size-3.5" />
+                    {probeRunning ? "试跑中…" : "试跑"}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  试跑会真实调用一次该来源，可能产生副作用与模型开销。
+                  {governance.source_provider === "openapi" && " 需先填写站内路径。"}
+                </p>
+                {probeError && (
+                  <p className="text-xs text-destructive">{probeError}</p>
+                )}
+                {probe && (
+                  <>
+                    {probe.sentinel_paths.length > 0 ? (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                        请求字段 <code>{probe.input_field}</code> 已被读取，
+                        输入回显于 <code>{probe.sentinel_paths[0]}</code>。
+                      </p>
+                    ) : (
+                      <p className="text-xs text-amber-700 dark:text-amber-400">
+                        响应中未找到本次输入，说明请求字段 <code>{probe.input_field}</code>{" "}
+                        可能未被该来源读取——请先确认请求字段，否则它会静默收到空输入。
+                      </p>
+                    )}
+                    <div className="max-h-64 overflow-auto rounded border border-border bg-muted/40 p-1 font-mono text-[11px]">
+                      {flattenJsonPointers(probe.response).rows.map((row) => {
+                        // OpenAPI reads its answer with a top-level field name,
+                        // not a pointer, so only depth-1 rows are addressable
+                        // there and the leading "/" is dropped.
+                        const openapi = governance.source_provider === "openapi";
+                        const selectable = !openapi || row.depth === 1;
+                        const selected = openapi
+                          ? (mappingDraft.output_field ?? "") === row.label
+                          : (mappingDraft.output_path ?? "") === row.pointer;
+                        const echoed = probe.sentinel_paths.includes(row.pointer);
+                        return (
+                          <button
+                            key={row.pointer || "(root)"}
+                            type="button"
+                            disabled={!selectable}
+                            onClick={() =>
+                              openapi
+                                ? setMappingField("output_field", row.label, "probe")
+                                : setMappingField("output_path", row.pointer, "probe")
+                            }
+                            title={
+                              selectable
+                                ? row.pointer || "（整个响应）"
+                                : "OpenAPI 只能映射顶层字段"
+                            }
+                            className={`flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left ${
+                              selectable ? "hover:bg-muted" : "cursor-default opacity-50"
+                            } ${selected ? "bg-primary/10 text-foreground" : ""}`}
+                            style={{ paddingLeft: `${row.depth * 12 + 4}px` }}
+                          >
+                            <span className="shrink-0 text-muted-foreground">
+                              {row.label || "根"}
+                            </span>
+                            <span className="truncate text-foreground/70">{row.preview}</span>
+                            {echoed && (
+                              <span className="ml-auto shrink-0 text-amber-700 dark:text-amber-400">
+                                输入回显
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      {governance.source_provider === "openapi"
+                        ? "点选顶层字段填入响应字段名。"
+                        : "点选任意节点填入响应字段路径。选中数组本身也是合法映射（如 /messages）。"}
+                      平台无法判断哪个字段可以对外展示，请确认所选字段不含内部推理或检索原文。
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
+          {/* States plainly what is about to be signed. Confirming a mapping
+              assembled from the source's claims is a different act from
+              confirming one that was watched working, and only the operator
+              can decide whether that is good enough here. */}
+          {unconfirmedFields.length > 0 && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              {unconfirmedFields.map((field) => FIELD_LABELS[field]).join("、")}
+              尚未经过试跑验证，保存即表示你确认其取值正确。
+            </p>
+          )}
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setMappingDialogOpen(false)}>
               取消

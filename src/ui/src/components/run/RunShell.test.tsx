@@ -21,6 +21,12 @@ describe("RunShell", () => {
     expect(RUN_SHELL_SOURCE).not.toMatch(/provider\s*===\s*["']/);
   });
 
+  it("switches commands and subscriptions to the turn returned by retry", () => {
+    expect(RUN_SHELL_SOURCE).toContain("setActiveRunId(next.runId)");
+    expect(RUN_SHELL_SOURCE).toContain("runId: snapshot.runId");
+    expect(RUN_SHELL_SOURCE).toContain("subscribeRunEvents(activeRunId");
+  });
+
   it.each(FIXTURE_IDS)("resolves a snapshot for fixture %s via the same transport RunShell uses", async (id) => {
     const snapshot = await getRunSnapshot(ALL_FIXTURES[id].snapshot.runId);
     expect(snapshot.runId).toBe(ALL_FIXTURES[id].snapshot.runId);

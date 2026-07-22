@@ -49,6 +49,28 @@ pub async fn run_once(state: Arc<AppState>, now: i64) -> Result<usize, GatewayEr
             reconciled += 1;
             continue;
         }
+        if deadline_expired(candidate.deadline_at, now) {
+            if let Some(row) = sessions::repository::get(pool, &candidate.session_id).await? {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    super::interrupt_runtime_session(&state, pool, &row),
+                )
+                .await;
+            }
+            session_control::repository::transition(
+                pool,
+                &candidate.turn_id,
+                "timed_out",
+                Some(json!({
+                    "code": "deadline_exceeded",
+                    "message": "run exceeded its execution deadline"
+                })),
+            )
+            .await?;
+            sessions::repository::set_status(pool, &candidate.session_id, "idle").await?;
+            reconciled += 1;
+            continue;
+        }
         if !matches!(
             candidate.session_status.as_str(),
             "starting" | "running" | "busy"
@@ -91,6 +113,10 @@ pub async fn run_once(state: Arc<AppState>, now: i64) -> Result<usize, GatewayEr
     Ok(reconciled)
 }
 
+fn deadline_expired(deadline_at: Option<i64>, now: i64) -> bool {
+    deadline_at.is_some_and(|deadline| deadline <= now)
+}
+
 async fn reconcile_unknown_state(
     state: &AppState,
     candidate: &session_control::schema::TurnRecoveryCandidate,
@@ -126,7 +152,7 @@ fn terminal_turn_status(session_status: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::terminal_turn_status;
+    use super::{deadline_expired, terminal_turn_status};
 
     #[test]
     fn maps_legacy_session_terminal_states_to_turn_states() {
@@ -134,5 +160,12 @@ mod tests {
         assert_eq!(terminal_turn_status("error"), Some("failed"));
         assert_eq!(terminal_turn_status("cancelled"), Some("cancelled"));
         assert_eq!(terminal_turn_status("running"), None);
+    }
+
+    #[test]
+    fn enforces_only_explicit_elapsed_deadlines() {
+        assert!(!deadline_expired(None, 100));
+        assert!(!deadline_expired(Some(101), 100));
+        assert!(deadline_expired(Some(100), 100));
     }
 }

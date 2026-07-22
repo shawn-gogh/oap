@@ -17,6 +17,7 @@ pub struct SessionTurnRow {
     pub trigger_type: String,
     pub retry_of_turn_id: Option<String>,
     pub attempt_number: i32,
+    pub deadline_at: Option<i64>,
     pub error_json: Option<Value>,
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
@@ -96,5 +97,6 @@ pub struct TurnRecoveryCandidate {
     pub session_status: String,
     pub runtime: Option<String>,
     pub turn_updated_at: i64,
+    pub deadline_at: Option<i64>,
     pub session_updated_at: Option<i64>,
 }
