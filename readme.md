@@ -1,45 +1,38 @@
 # OAP · 开放智能体平台 (Open Agent Platform)
 
-1 place to call all your open-source agent runtimes - OpenCode, Hermes,
-OpenClaw, Deep Agents.
+一处即可调度你所有的开源智能体运行时 —— OpenCode、Hermes、OpenClaw、Deep Agents。
 
 [![Discord](https://img.shields.io/badge/Discord-Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/Nkxw3rm3EE)
 
-![OAP dashboard](https://github.com/user-attachments/assets/04333758-829c-4b19-bde3-23ade37bb9f1)
+![OAP 控制台](https://github.com/user-attachments/assets/04333758-829c-4b19-bde3-23ade37bb9f1)
 
-OAP sits on top of any open, self-hostable runtime. Pick a runtime, create an
-agent, give your team one UI.
+OAP 构建在任意开放、可自托管的运行时之上。选一个运行时、创建一个智能体，给你的团队一套统一的界面。
 
-It manages:
+它负责管理：
 
-- **Unified API across runtimes** - one API to create and run agents,
-  regardless of the runtime underneath
-- **Access** - developers create and run agents here, no Bedrock or Anthropic
-  console access required
-- **Session management** - persistent agent sessions across runs
-- **CRON schedules** - run agents on a schedule
-- **Memory** - agents remember context across sessions
+- **跨运行时的统一 API** —— 一套 API 即可创建和运行智能体，无论底层是哪种运行时
+- **访问** —— 开发者在这里创建和运行智能体，无需 Bedrock 或 Anthropic 控制台的访问权限
+- **会话管理** —— 跨多次运行的持久化智能体会话
+- **CRON 定时** —— 按计划定时运行智能体
+- **记忆** —— 智能体跨会话记住上下文
 
-## Quick Start
+## 快速开始
 
-Prerequisite: Docker Desktop.
+前置条件：Docker Desktop。
 
 ```bash
 docker compose --profile opencode up
 ```
 
-Open [http://localhost:4000](http://localhost:4000) and sign in with the
-master key (`sk-local` by default). Compose starts the OAP web/API service, a
-Postgres database, the OpenCode template runtime, and registers
-`local-opencode` in the UI automatically.
+打开 [http://localhost:4000](http://localhost:4000)，用主密钥登录（默认为 `sk-local`）。Compose 会启动 OAP 的 Web/API 服务、一个 Postgres 数据库、OpenCode 模板运行时，并自动在界面中注册 `local-opencode`。
 
-To start only the base LAP stack:
+只启动基础 LAP 栈：
 
 ```bash
 docker compose up
 ```
 
-To start other template runtime profiles and add them to the UI automatically:
+启动其他模板运行时 profile，并自动加入界面：
 
 ```bash
 docker compose --profile deepagents up
@@ -48,39 +41,35 @@ docker compose --profile openclaw up
 docker compose --profile opencode --profile deepagents up
 ```
 
-Profiles register `local-opencode`, `local-deepagents`, `local-hermes`, and
-`local-openclaw`
-through the LAP API after the services are healthy. Add provider credentials in
-Settings before running agents against a hosted model provider.
+各 profile 会在服务健康后，通过 LAP API 注册 `local-opencode`、`local-deepagents`、`local-hermes` 和 `local-openclaw`。若要让智能体对接托管的模型提供方，请先在「设置」中添加提供方凭据。
 
-## Usage: Create an Agent
+## 用法：创建一个智能体
 
-### 1. Make an agent in the UI
+### 1. 在界面中创建智能体
 
-![Create agent screen](https://github.com/user-attachments/assets/d2083454-b7c1-4337-b2c2-4c4ba99991b6)
+![创建智能体界面](https://github.com/user-attachments/assets/d2083454-b7c1-4337-b2c2-4c4ba99991b6)
 
-### 2. Select tools and skills to connect to your agent
+### 2. 选择要接入智能体的工具与技能
 
-![Select tools and skills](https://github.com/user-attachments/assets/efd59a4e-dcc7-487a-923b-005ac44b44b0)
+![选择工具与技能](https://github.com/user-attachments/assets/efd59a4e-dcc7-487a-923b-005ac44b44b0)
 
-### 3. Use your agent
+### 3. 使用你的智能体
 
-Select your agent and the runtime you want to run it on.
+选择你的智能体，以及要运行它的运行时。
 
-![Run agent on a runtime](https://github.com/user-attachments/assets/be9cfd8c-4475-4309-bed0-4edcd7dd1de1)
+![在运行时上运行智能体](https://github.com/user-attachments/assets/be9cfd8c-4475-4309-bed0-4edcd7dd1de1)
 
-## Supported Agent Runtimes
+## 支持的智能体运行时
 
-Open, self-hostable runtimes only — no closed-source vendor lock-in:
+仅限开放、可自托管的运行时 —— 不绑定任何闭源厂商：
 
 - OpenCode Agents
 - OpenClaw Agents
 - Deep Agents
 - Hermes Agent
 
-Each runtime routes model calls through OAP's own LiteLLM-compatible gateway,
-so you can point it at any open-weight model you host yourself.
+每个运行时的模型调用都经由 OAP 自带的、兼容 LiteLLM 的网关，因此你可以把它指向任何自行托管的开放权重模型。
 
-## Contributing
+## 参与贡献
 
-PRs welcome. See [docs/engineering/contributing.mdx](docs/engineering/contributing.mdx).
+欢迎提交 PR。详见 [docs/engineering/contributing.mdx](docs/engineering/contributing.mdx)。

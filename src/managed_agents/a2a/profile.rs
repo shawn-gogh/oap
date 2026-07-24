@@ -37,7 +37,7 @@ impl FromStr for A2aProtocolVersion {
         match value.trim() {
             "0.3" | "0.3.0" => Ok(Self::V0_3),
             "1.0" | "1.0.0" => Ok(Self::V1_0),
-            value => Err(format!("unsupported A2A protocol version `{value}`")),
+            value => Err(format!("不受支持的 A2A 协议版本 `{value}`")),
         }
     }
 }

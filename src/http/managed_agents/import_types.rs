@@ -104,10 +104,10 @@ pub(crate) fn provider_error(error: SourceAdapterError) -> GatewayError {
         SourceAdapterError::Request(error) => GatewayError::Upstream(error),
         SourceAdapterError::Upstream { status, body } => GatewayError::UpstreamHttp(status, body),
         SourceAdapterError::Decode(error) => {
-            GatewayError::InvalidConfig(format!("invalid provider response: {error}"))
+            GatewayError::InvalidConfig(format!("无效的提供方响应：{error}"))
         }
         SourceAdapterError::InvalidDocument(error) => {
-            GatewayError::BadRequest(format!("invalid provider document: {error}"))
+            GatewayError::BadRequest(format!("无效的提供方文档：{error}"))
         }
     }
 }

@@ -90,7 +90,7 @@ fn parse_v1(
     policy: &A2aSelectionPolicy,
 ) -> Result<ParsedAgentCard, String> {
     let card: V1AgentCard = serde_json::from_value(raw.clone())
-        .map_err(|error| format!("invalid A2A 1.0 card: {error}"))?;
+        .map_err(|error| format!("无效的 A2A 1.0 卡片：{error}"))?;
     validate_common(
         &card.name,
         &card.description,
@@ -101,7 +101,7 @@ fn parse_v1(
         &card.skills,
     )?;
     if card.supported_interfaces.is_empty() {
-        return Err("A2A 1.0 Agent Card must declare supportedInterfaces".to_owned());
+        return Err("A2A 1.0 智能体卡片必须声明 supportedInterfaces".to_owned());
     }
     let interfaces = card
         .supported_interfaces
@@ -153,7 +153,7 @@ fn parse_v0_3(
     policy: &A2aSelectionPolicy,
 ) -> Result<ParsedAgentCard, String> {
     let card: V03AgentCard = serde_json::from_value(raw.clone())
-        .map_err(|error| format!("invalid A2A 0.3 card: {error}"))?;
+        .map_err(|error| format!("无效的 A2A 0.3 卡片：{error}"))?;
     validate_common(
         &card.name,
         &card.description,
@@ -233,9 +233,9 @@ fn extensions(capabilities: &Value) -> Result<Vec<(String, bool)>, String> {
                 .filter(|uri| !uri.is_empty())
                 .ok_or_else(|| "A2A extension must declare a URI".to_owned())?;
             let parsed = reqwest::Url::parse(uri)
-                .map_err(|error| format!("invalid A2A extension URI `{uri}`: {error}"))?;
+                .map_err(|error| format!("无效的 A2A 扩展 URI `{uri}`：{error}"))?;
             if parsed.scheme().is_empty() {
-                return Err(format!("A2A extension URI `{uri}` must be absolute"));
+                return Err(format!("A2A 扩展 URI `{uri}` 必须是绝对地址"));
             }
             Ok((
                 uri.to_owned(),
@@ -258,7 +258,7 @@ fn reject_required_extensions(extensions: &[(String, bool)]) -> Result<(), Strin
         Ok(())
     } else {
         Err(format!(
-            "A2A Agent Card requires unsupported extensions: {}",
+            "A2A 智能体卡片要求了不受支持的扩展：{}",
             required.join(", ")
         ))
     }
@@ -296,17 +296,17 @@ fn validate_common(
         ("version", version),
     ] {
         if value.trim().is_empty() {
-            return Err(format!("A2A Agent Card field `{field}` must not be empty"));
+            return Err(format!("A2A 智能体卡片字段 `{field}` 不能为空"));
         }
     }
     if !capabilities.is_object() {
-        return Err("A2A Agent Card capabilities must be an object".to_owned());
+        return Err("A2A 智能体卡片的 capabilities 必须是一个对象".to_owned());
     }
     if input_modes.is_empty() || output_modes.is_empty() {
-        return Err("A2A Agent Card must declare default input and output modes".to_owned());
+        return Err("A2A 智能体卡片必须声明默认的输入与输出模式".to_owned());
     }
     if skills.is_empty() {
-        return Err("A2A Agent Card must declare at least one skill".to_owned());
+        return Err("A2A 智能体卡片必须至少声明一个技能".to_owned());
     }
     Ok(())
 }
@@ -314,7 +314,7 @@ fn validate_common(
 fn validate_url(value: &str) -> Result<String, String> {
     let value = value.trim();
     let parsed = reqwest::Url::parse(value)
-        .map_err(|error| format!("invalid A2A interface URL `{value}`: {error}"))?;
+        .map_err(|error| format!("无效的 A2A 接口 URL `{value}`：{error}"))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err(format!(
             "A2A interface URL `{value}` must be an absolute HTTP(S) URL"
@@ -394,7 +394,7 @@ mod tests {
 
         let error =
             parse_agent_card("https://agent.example", &card, &Default::default()).unwrap_err();
-        assert!(error.contains("requires unsupported extensions"));
+        assert!(error.contains("不受支持的扩展"));
     }
 
     #[test]
@@ -438,6 +438,6 @@ mod tests {
         let error =
             parse_agent_card("https://agent.example", &card, &Default::default()).unwrap_err();
 
-        assert!(error.contains("unsupported A2A protocol version"));
+        assert!(error.contains("不受支持的 A2A 协议版本"));
     }
 }
