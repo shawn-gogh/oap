@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::{
     agents::events,
-    db::managed_agents::{messages, session_control, sessions},
+    db::managed_agents::{messages, runtime_events, session_control, sessions},
     errors::GatewayError,
     proxy::state::AppState,
 };
@@ -106,6 +106,25 @@ pub async fn create(
             .await?
             .ok_or_else(|| GatewayError::UnknownAgent(agent_id.to_owned()))?;
         crate::http::managed_agents::assert_agent_use(&auth, &agent, &pool).await?;
+        // Managed agents record their dispatch runtime in config.runtime — the
+        // platform wrote it at import/creation (e.g. "a2a_v1", "local-opencode").
+        // When the caller creates a session by agent id without naming a runtime,
+        // read it back so has_runtime() routes to the runtime path (external
+        // bridge / sandbox). Without this the session falls through to the local
+        // claude-code executor and fails with exit 127 for every runtime-backed
+        // agent. Mirrors runtime_from_config in the task/retry path. An explicit
+        // request runtime still wins.
+        if input.runtime.is_none() {
+            if let Some(runtime) = agent
+                .config
+                .get("runtime")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                input.runtime = Some(runtime.to_owned());
+            }
+        }
         task_id = Some(resolve_session_task(&pool, &agent, &input, &auth.user_id).await?);
         input.task_id.clone_from(&task_id);
     }
@@ -1020,10 +1039,20 @@ pub(crate) async fn abort_session_internal(
 ) -> Result<(), GatewayError> {
     let session_id = &row.id;
     let active_turn = session_control::repository::active_turn(pool, session_id).await?;
-    if let Some(snapshot) = active_turn.as_ref() {
-        session_control::repository::transition(pool, &snapshot.turn.id, "cancelling", None)
-            .await?;
-    }
+    let Some(snapshot) = active_turn.as_ref() else {
+        // The canonical Turn is already terminal, but a delayed legacy
+        // session-status write can still leave the compatibility projection
+        // at `running`. There is no remote execution left to acknowledge a
+        // cancellation, so reconcile the projection instead of escalating an
+        // impossible interrupt into a user-visible 400.
+        runtime_lifecycle::mark_session_status(state, pool, session_id, "idle", None).await?;
+        publish_runtime_idle(state, pool, session_id, "already_terminal").await?;
+        state
+            .agent_runs
+            .push_event(session_id, events::SESSION_IDLE, json!({}));
+        return Ok(());
+    };
+    session_control::repository::transition(pool, &snapshot.turn.id, "cancelling", None).await?;
     const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
     let cancelled = tokio::time::timeout(CANCEL_GRACE, interrupt_runtime_session(state, pool, row))
         .await
@@ -1108,6 +1137,7 @@ pub(crate) async fn abort_session_internal(
         .await?;
     }
     sessions::repository::set_status(pool, session_id, "idle").await?;
+    publish_runtime_idle(state, pool, session_id, "cancelled").await?;
     state.agent_runs.set_error(session_id, reason.to_owned());
     state.agent_runs.push_event(
         session_id,
@@ -1119,6 +1149,21 @@ pub(crate) async fn abort_session_internal(
         .push_event(session_id, events::SESSION_IDLE, json!({}));
     let _ =
         crate::db::managed_agents::tasks::repository::cancel_for_session(pool, session_id).await;
+    Ok(())
+}
+
+async fn publish_runtime_idle(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    stop_reason: &str,
+) -> Result<(), GatewayError> {
+    let event = json!({
+        "type": "session.status_idle",
+        "stop_reason": {"type": stop_reason},
+    });
+    runtime_events::repository::append(pool, session_id, event.clone()).await?;
+    state.local_session_events.publish(session_id, event);
     Ok(())
 }
 
@@ -1168,7 +1213,18 @@ pub(crate) async fn interrupt_runtime_session(
         return false;
     };
     if external_bridge::supports(state, runtime) {
-        return external_bridge::cancel(state, pool, row).await.is_ok();
+        return match external_bridge::cancel(state, pool, row).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %row.id,
+                    runtime,
+                    %error,
+                    "external runtime cancellation failed before acknowledgement"
+                );
+                false
+            }
+        };
     }
     let Ok(resolved) =
         crate::http::runtime_resolution::resolve_runtime_for_session(pool, state, runtime, row)
