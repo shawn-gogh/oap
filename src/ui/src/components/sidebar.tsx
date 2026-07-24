@@ -7,7 +7,9 @@ import {
   Activity,
   Bot,
   ChevronDown,
+  ChevronRight,
   FileText,
+  History,
   Inbox,
   KeyRound,
   Library,
@@ -87,6 +89,14 @@ function sessionTone(session: OpencodeSession): SessionTone {
   return "idle";
 }
 
+/** The rail only holds the most recent conversations — the full list lives on
+ *  /sessions/history, which has search, filters and date grouping. */
+const SIDEBAR_SESSION_LIMIT = 10;
+
+/** Nav groups that start folded so the session list gets the vertical space.
+ *  A group is force-expanded whenever it contains the active route. */
+const DEFAULT_FOLDED_GROUPS = new Set(["构建", "基础设施", "观测"]);
+
 function timeAgo(ts?: number): string {
   if (!ts) return "";
   const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -108,6 +118,7 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [foldedGroups, setFoldedGroups] = useState<Set<string>>(() => new Set(DEFAULT_FOLDED_GROUPS));
   const load = async () => {
     try {
       const list = await listSessions();
@@ -147,12 +158,22 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
   const pendingDeleteTimers = useRef(new Map<string, number>());
 
   const query = sessionQuery.trim().toLowerCase();
-  const visibleSessions = query
+  const matched = query
     ? sessions?.filter(
         (s) =>
           (s.title ?? "").toLowerCase().includes(query) || s.id.toLowerCase().includes(query),
       )
     : sessions;
+  // Running sessions pin to the top — they are the ones worth jumping back to;
+  // the rest keep the API's most-recent-first order.
+  const ordered = matched
+    ? [
+        ...matched.filter((s) => sessionTone(s) === "busy"),
+        ...matched.filter((s) => sessionTone(s) !== "busy"),
+      ]
+    : matched;
+  const visibleSessions = ordered?.slice(0, SIDEBAR_SESSION_LIMIT);
+  const hiddenSessions = (ordered?.length ?? 0) - (visibleSessions?.length ?? 0);
 
   if (embedded) return null;
 
@@ -415,17 +436,42 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
             const previousGroup = currentSection.items[index - 1]?.group;
             const showGroupHeader = Boolean(item.group) && item.group !== previousGroup;
             const active = item.active(currentPath);
+            // A folded group still shows the item that matches the current
+            // route, so you never lose your place in the nav.
+            const groupHasActive =
+              Boolean(item.group) &&
+              currentSection.items.some((other) => other.group === item.group && other.active(currentPath));
+            const folded = Boolean(item.group) && foldedGroups.has(item.group!) && !groupHasActive;
+            // Only fold where the group header is actually visible (expanded
+            // rail at ≥sm); the icon-only rail has no header to unfold with, so
+            // it keeps showing every item.
+            const foldCls = folded && !collapsed ? "sm:hidden" : "";
             return (
               <div key={item.href}>
               {showGroupHeader && (
-                <div className={`px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground ${blockCls}`}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFoldedGroups((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(item.group!)) next.delete(item.group!);
+                      else next.add(item.group!);
+                      return next;
+                    })
+                  }
+                  aria-expanded={!folded}
+                  className={`flex w-full items-center gap-1 rounded-md px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground ${blockCls}`}
+                >
+                  <ChevronRight
+                    className={`size-3 transition-transform ${folded ? "" : "rotate-90"}`}
+                  />
                   {item.group}
-                </div>
+                </button>
               )}
               <Button
                 onClick={() => router.push(item.href)}
                 variant="ghost"
-                className={`relative w-full ${railJustify} ${
+                className={`relative w-full ${railJustify} ${foldCls} ${
                   active ? "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary" : ""
                 }`}
                 size="sm"
@@ -450,12 +496,12 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
         {isAgentPlatform && (
           <>
             <div className="flex items-center justify-between px-3 pb-1.5 pt-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">会话历史</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">最近会话</span>
               {sessions && (
                 <span className="text-[10px] font-mono text-muted-foreground">{sessions.length} 条</span>
               )}
             </div>
-            
+
             {sessions && (
               <div className="px-2 pb-2">
                 <div className="relative">
@@ -490,35 +536,32 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 <div
                   key={s.id}
                   onClick={() => router.push(`/chat/?id=${encodeURIComponent(s.id)}`)}
-                  className={`group mx-2 px-2.5 py-2 rounded-xl text-xs cursor-pointer flex items-center justify-between gap-2 transition-all ${
+                  title={`${title}\n${short} · ${timeAgo(s.time?.updated ?? s.time?.created)}`}
+                  className={`group mx-2 flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-all ${
                     active
                       ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold border border-blue-500/20 shadow-2xs"
                       : "hover:bg-muted/40 text-foreground"
                   }`}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      {tone === "busy" && (
-                        <span
-                          title="智能体思考执行中"
-                          className="size-1.5 shrink-0 rounded-full bg-emerald-500 animate-ping"
-                        />
-                      )}
-                      {tone === "failed" && (
-                        <span
-                          title="上次执行异常"
-                          className="size-1.5 shrink-0 rounded-full bg-destructive"
-                        />
-                      )}
-                      <span className="truncate font-medium text-xs">{title}</span>
-                    </div>
-                    <div className="font-mono text-[10px] text-muted-foreground truncate mt-0.5">
-                      {short} · {timeAgo(s.time?.created)}
-                    </div>
-                  </div>
+                  {tone === "busy" && (
+                    <span
+                      title="智能体思考执行中"
+                      className="size-1.5 shrink-0 rounded-full bg-emerald-500 animate-ping"
+                    />
+                  )}
+                  {tone === "failed" && (
+                    <span
+                      title="上次执行异常"
+                      className="size-1.5 shrink-0 rounded-full bg-destructive"
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground group-hover:hidden">
+                    {timeAgo(s.time?.updated ?? s.time?.created)}
+                  </span>
                   <button
                     onClick={(e) => onDelete(e, s.id)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-destructive/10 hover:text-destructive rounded-md focus-visible:opacity-100 focus-visible:outline-none"
+                    className="hidden shrink-0 rounded-md p-0.5 hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none group-hover:block"
                     aria-label="删除会话"
                     title="删除会话"
                   >
@@ -527,6 +570,19 @@ export function Sidebar({ activeId }: { activeId?: string | null }) {
                 </div>
               );
             })}
+            {sessions && sessions.length > 0 && (
+              <button
+                type="button"
+                onClick={() => router.push("/sessions/history/")}
+                className="mx-2 mt-1 flex w-[calc(100%-1rem)] items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+              >
+                <History className="size-3.5 shrink-0" />
+                <span className="truncate">查看全部会话</span>
+                {hiddenSessions > 0 && (
+                  <span className="ml-auto shrink-0 font-mono text-[10px]">+{hiddenSessions}</span>
+                )}
+              </button>
+            )}
           </>
         )}
       </div>
