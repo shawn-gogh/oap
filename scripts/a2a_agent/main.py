@@ -277,8 +277,24 @@ async def _handle_rpc(
                 "error": {"code": -32004, "message": "streaming is not enabled"},
             }
 
+        message = params.get("message", {})
+        prompt = "".join(
+            part.get("text", "")
+            for part in message.get("parts", [])
+            if part.get("kind") in (None, "text")
+        )
+
         async def events():
             task_id = f"task_{uuid.uuid4().hex[:12]}"
+            cancellable_async = scenario == "v1-complete" and "async" in prompt.lower()
+            if cancellable_async:
+                tasks_db[task_id] = {
+                    "id": task_id,
+                    "status": {"state": "working"},
+                    "prompt": prompt,
+                    "final_state": "completed",
+                    "protocol_version": expected_version,
+                }
             updates = [
                 {
                     "taskId": task_id,
@@ -302,11 +318,34 @@ async def _handle_rpc(
                     },
                 },
             ]
-            for update in updates:
+            for index, update in enumerate(updates):
                 result = update if not is_v1 else {"statusUpdate": update}
                 envelope = {"jsonrpc": "2.0", "id": payload.id, "result": result}
                 yield f"data: {json.dumps(envelope)}\n\n"
+                if cancellable_async and index == 0:
+                    # Keep a generous manual-testing window so a user can
+                    # observe the running state in the UI and press Stop.
+                    for _ in range(300):
+                        await asyncio.sleep(0.1)
+                        task = tasks_db.get(task_id)
+                        if task and task["status"]["state"] == "canceled":
+                            canceled = {
+                                "taskId": task_id,
+                                "status": {
+                                    "state": _task_state("canceled", is_v1)
+                                },
+                            }
+                            result = {"statusUpdate": canceled}
+                            envelope = {
+                                "jsonrpc": "2.0",
+                                "id": payload.id,
+                                "result": result,
+                            }
+                            yield f"data: {json.dumps(envelope)}\n\n"
+                            return
                 await asyncio.sleep(0.01)
+            if cancellable_async:
+                tasks_db[task_id]["status"]["state"] = "completed"
 
         return StreamingResponse(events(), media_type="text/event-stream")
 

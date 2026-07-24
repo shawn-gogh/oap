@@ -7,3 +7,4 @@ src/ui/.next/
 src/ui/mcp-admin-flow.mjs
 src/ui/composio-nav.mjs
 /agents/opencode_agents_1*
+outputs/

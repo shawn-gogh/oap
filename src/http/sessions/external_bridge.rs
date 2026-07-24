@@ -2078,6 +2078,17 @@ async fn handle_a2a_stream_frame(
     let value = decode_json_rpc_response(payload, request_id, operation, profile.protocol_version)
         .map_err(|error| GatewayError::SandboxError(error.to_string()))?;
     merge_a2a_stream_value(aggregate, &value);
+    let task_id = aggregate.get("id").and_then(Value::as_str);
+    let context_id = aggregate.get("contextId").and_then(Value::as_str);
+    if task_id.is_some() || context_id.is_some() {
+        // Bind the remote identity as soon as the first task/status frame
+        // arrives. Waiting for the SSE stream to close leaves cancellation
+        // without a task ID while a long-running stream is still active.
+        session_control::repository::bind_active_invocation(
+            pool, &row.id, None, context_id, task_id, None,
+        )
+        .await?;
+    }
     let state_name = value
         .pointer("/status/state")
         .and_then(Value::as_str)
