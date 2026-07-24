@@ -252,6 +252,28 @@ services:
     ports:
       - "127.0.0.1:${A2A_AGENT_PORT:-8090}:8080"
 
+  # Spec-compliant A2A 1.0 reference agent (real, not a fixture). Serves a valid
+  # v1.0 Agent Card and a working JSON-RPC server (SendMessage/SendStreamingMessage/
+  # GetTask/CancelTask, both proto and classic bindings) that does real text
+  # analysis. Use it to exercise the full A2A adoption path end to end. Reach it
+  # by service name — paste `http://a2a-reference:8080` as the import 服务地址
+  # (loopback endpoints are rejected by validate_connector_endpoint()).
+  a2a-reference:
+    profiles: ["a2a-ref"]
+    build: ./scripts/a2a_reference_agent
+    ports:
+      - "127.0.0.1:${A2A_REFERENCE_PORT:-8098}:8080"
+    environment:
+      # Set A2A_MODEL to make the agent a real, model-backed A2A agent: it
+      # forwards each user message to the lap gateway's Anthropic /v1/messages
+      # endpoint and returns the model's answer. Leave it empty to run the
+      # deterministic text-analysis mode (pure protocol testing, no model).
+      A2A_MODEL: ${A2A_REFERENCE_MODEL:-deepseek-chat}
+      A2A_LLM_BASE_URL: http://lap:4000
+      A2A_LLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
+    depends_on:
+      - lap
+
   a2a-opencode-test:
     profiles: ["a2a-opencode"]
     build: ./a2a-opencode-agent
