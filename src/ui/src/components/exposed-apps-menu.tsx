@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -23,11 +26,18 @@ function appUrl(appId: string): string {
 }
 
 /**
- * Header entry listing the services this session's agent exposed via
- * expose_port, with open / share / revoke / take-offline actions. Renders
- * nothing until the session has at least one active app.
+ * Lists the services this session's agent exposed via expose_port, with
+ * open / share / revoke / take-offline actions. Renders nothing until the
+ * session has at least one active app.
+ *
+ * `asSubmenu` nests it inside another menu — the chat header keeps only a few
+ * controls in the top bar and folds the rest into an overflow menu.
  */
-export function ExposedAppsMenu(_props: { sessionId?: string; agentId?: string }) {
+export function ExposedAppsMenu(props: {
+  sessionId?: string;
+  agentId?: string;
+  asSubmenu?: boolean;
+}) {
   const [apps, setApps] = useState<ExposedApp[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -85,6 +95,83 @@ export function ExposedAppsMenu(_props: { sessionId?: string; agentId?: string }
 
   if (apps.length === 0) return null;
 
+  const body = (
+    <>
+      {apps.map((app) => (
+        <div key={app.id} className="rounded-md px-2 py-2 hover:bg-muted/50">
+          <div className="flex items-center gap-2">
+            <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {app.name || app.id}
+            </span>
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+              :{app.port}
+            </span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => window.open(appUrl(app.id), "_blank", "noopener")}
+            >
+              <ExternalLink className="size-3" />
+              打开
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              disabled={busyId === app.id}
+              onClick={() => void onCopyShare(app)}
+            >
+              <Copy className="size-3" />
+              复制分享链接
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              disabled={busyId === app.id}
+              onClick={() => void onRevoke(app)}
+              title="使已发出的分享链接全部失效"
+            >
+              <Link2Off className="size-3" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+              disabled={busyId === app.id}
+              onClick={() => void onOffline(app)}
+              title="下线：停止对外暴露该端口"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          </div>
+        </div>
+      ))}
+      <div className="border-t border-border px-2 pb-1 pt-2 text-[11px] text-muted-foreground">
+        由智能体通过 expose_port 发布；分享链接无需登录即可访问。
+      </div>
+    </>
+  );
+
+  if (props.asSubmenu) {
+    return (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="px-2 py-1.5">
+          <AppWindow className="size-3.5" />
+          已发布应用
+          <span className="rounded-full bg-primary/15 px-1.5 text-[11px] font-medium text-primary">
+            {apps.length}
+          </span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="w-80 p-1.5">{body}</DropdownMenuSubContent>
+      </DropdownMenuSub>
+    );
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -97,65 +184,7 @@ export function ExposedAppsMenu(_props: { sessionId?: string; agentId?: string }
           {apps.length}
         </span>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-80 p-1.5">
-        {apps.map((app) => (
-          <div key={app.id} className="rounded-md px-2 py-2 hover:bg-muted/50">
-            <div className="flex items-center gap-2">
-              <Globe className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                {app.name || app.id}
-              </span>
-              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                :{app.port}
-              </span>
-            </div>
-            <div className="mt-1.5 flex items-center gap-1">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => window.open(appUrl(app.id), "_blank", "noopener")}
-              >
-                <ExternalLink className="size-3" />
-                打开
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                disabled={busyId === app.id}
-                onClick={() => void onCopyShare(app)}
-              >
-                <Copy className="size-3" />
-                复制分享链接
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                disabled={busyId === app.id}
-                onClick={() => void onRevoke(app)}
-                title="使已发出的分享链接全部失效"
-              >
-                <Link2Off className="size-3" />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-                disabled={busyId === app.id}
-                onClick={() => void onOffline(app)}
-                title="下线：停止对外暴露该端口"
-              >
-                <Trash2 className="size-3" />
-              </Button>
-            </div>
-          </div>
-        ))}
-        <div className="border-t border-border px-2 pb-1 pt-2 text-[11px] text-muted-foreground">
-          由智能体通过 expose_port 发布；分享链接无需登录即可访问。
-        </div>
-      </DropdownMenuContent>
+      <DropdownMenuContent align="end" className="w-80 p-1.5">{body}</DropdownMenuContent>
     </DropdownMenu>
   );
 }
