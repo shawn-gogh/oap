@@ -1,8 +1,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::sdk::agents::{
-    response_fields::id, AgentModel, AgentSdkError, AgentWorkspace, ListAgentsParams,
-    ManagedAgent,
+    response_fields::id, AgentModel, AgentSdkError, AgentWorkspace, ListAgentsParams, ManagedAgent,
 };
 
 use super::DEFAULT_ENVIRONMENT_ID;
@@ -10,7 +9,9 @@ use super::DEFAULT_ENVIRONMENT_ID;
 const BASE_AGENT_ID: &str = "antigravity-preview-05-2026";
 const SUPPORTED_TOOL_TYPES: &[&str] = &["code_execution", "google_search", "url_context"];
 
-pub(super) fn create_agent_body(params: crate::sdk::agents::CreateAgentParams) -> Result<Value, AgentSdkError> {
+pub(super) fn create_agent_body(
+    params: crate::sdk::agents::CreateAgentParams,
+) -> Result<Value, AgentSdkError> {
     let options = params.lap_provider_options.clone();
     let base_agent = model_id(&params.model);
     let mut body = Map::new();

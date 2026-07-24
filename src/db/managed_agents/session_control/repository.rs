@@ -366,6 +366,132 @@ pub async fn active_turn(
     Ok(Some(TurnSnapshot { turn, invocations }))
 }
 
+pub async fn get_invocation(
+    pool: &PgPool,
+    invocation_id: &str,
+) -> Result<Option<SessionInvocationRow>, GatewayError> {
+    sqlx::query_as::<_, SessionInvocationRow>(
+        r#"SELECT * FROM "LiteLLM_SessionInvocationsTable" WHERE id = $1"#,
+    )
+    .bind(invocation_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn merge_invocation_metadata(
+    pool: &PgPool,
+    invocation_id: &str,
+    patch: Value,
+) -> Result<SessionInvocationRow, GatewayError> {
+    sqlx::query_as::<_, SessionInvocationRow>(
+        r#"
+        UPDATE "LiteLLM_SessionInvocationsTable"
+        SET metadata = metadata || $2,
+            updated_at = $3
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(patch)
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)?
+    .ok_or_else(|| GatewayError::NotFound(format!("invocation {invocation_id} not found")))
+}
+
+pub async fn mark_a2a_push_consumed(
+    pool: &PgPool,
+    invocation_id: &str,
+    event_digest: &str,
+) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_SessionInvocationsTable"
+        SET metadata = jsonb_set(
+              metadata,
+              '{a2a_push,consumed_digest}',
+              to_jsonb($2::TEXT),
+              true
+            ),
+            updated_at = $3
+        WHERE id = $1
+          AND metadata #>> '{a2a_push,event_digest}' = $2
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(event_digest)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn accept_a2a_push_event(
+    pool: &PgPool,
+    invocation_id: &str,
+    event_digest: &str,
+    event: &Value,
+) -> Result<bool, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_SessionInvocationsTable"
+        SET metadata = jsonb_set(
+              jsonb_set(
+                metadata,
+                '{a2a_push,event_digest}',
+                to_jsonb($2::TEXT),
+                true
+              ),
+              '{a2a_push,event}',
+              $3,
+              true
+            ),
+            updated_at = $4
+        WHERE id = $1
+          AND metadata #>> '{a2a_push,event_digest}' IS DISTINCT FROM $2
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(event_digest)
+    .bind(event)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn set_a2a_push_enabled(
+    pool: &PgPool,
+    invocation_id: &str,
+    enabled: bool,
+) -> Result<(), GatewayError> {
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_SessionInvocationsTable"
+        SET metadata = jsonb_set(
+              metadata,
+              '{a2a_push,enabled}',
+              to_jsonb($2::BOOLEAN),
+              true
+            ),
+            updated_at = $3
+        WHERE id = $1
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(enabled)
+    .bind(now_ms())
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(())
+}
+
 pub async fn get_turn(
     pool: &PgPool,
     session_id: &str,
@@ -830,6 +956,34 @@ pub async fn bind_active_invocation(
     .await
     .map_err(GatewayError::Database)?;
     Ok(())
+}
+
+pub async fn freeze_invocation_protocol_profile(
+    pool: &PgPool,
+    invocation_id: &str,
+    protocol: &str,
+    protocol_version: &str,
+    profile: &Value,
+) -> Result<SessionInvocationRow, GatewayError> {
+    sqlx::query_as::<_, SessionInvocationRow>(
+        r#"
+        UPDATE "LiteLLM_SessionInvocationsTable"
+        SET protocol = $2,
+            protocol_version = $3,
+            metadata = metadata || jsonb_build_object('a2a_profile', $4::JSONB),
+            updated_at = $5
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(invocation_id)
+    .bind(protocol)
+    .bind(protocol_version)
+    .bind(profile)
+    .bind(now_ms())
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
 }
 
 async fn turn_by_request(

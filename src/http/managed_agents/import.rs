@@ -29,22 +29,14 @@ use crate::{
         ExternalAgent, ImportAgent, ImportAgentsRequest, ImportAgentsResponse, ImportItemResult,
         ImportPreviewItem, ImportPreviewResponse, ImportProviderResponse,
     },
+    managed_agents::adapters::{
+        registry::AgentAdapterRegistry,
+        source::{ImportedAgent, SourceAdapter},
+    },
     proxy::{
         auth::master_key::{require_any_gateway_key, AuthContext},
         credential_crypto,
         state::AppState,
-    },
-    sdk::providers::{
-        a2a_import_agents::A2A_IMPORT_AGENTS,
-        acp_import_agents::ACP_IMPORT_AGENTS,
-        crewai_import_agents::CREWAI_IMPORT_AGENTS,
-        dify_import_agents::DIFY_IMPORT_AGENTS,
-        elastic::import_agents::ELASTIC_IMPORT_AGENTS,
-        import_agents::{ImportAgentsProvider, ImportedAgent},
-        langgraph_import_agents::LANGGRAPH_IMPORT_AGENTS,
-        openai_assistants_import_agents::OPENAI_ASSISTANTS_IMPORT_AGENTS,
-        openapi_import_agents::OPENAPI_IMPORT_AGENTS,
-        opencode_import_agents::OPENCODE_IMPORT_AGENTS,
     },
 };
 
@@ -61,10 +53,16 @@ pub async fn discover(
     let agents = provider
         .discover(&state.http, &endpoint, input.api_key.trim())
         .await
-        .map_err(provider_error)?
-        .into_iter()
-        .map(ExternalAgent::from)
-        .collect();
+        .map_err(provider_error)?;
+    for agent in &agents {
+        if let Some(profile) = provider
+            .negotiate_protocol(&endpoint, &agent.raw)
+            .map_err(provider_error)?
+        {
+            super::source_management::validate_connector_endpoint(&profile.interface_url).await?;
+        }
+    }
+    let agents = agents.into_iter().map(ExternalAgent::from).collect();
     Ok(Json(DiscoverAgentsResponse { agents }))
 }
 
@@ -94,7 +92,7 @@ pub async fn import(
     // connector-backed capabilities — webhook push, credential reuse — without
     // the user ever configuring a "connector". ensure_source links sources to
     // it automatically by owner/provider/endpoint.
-    super::source_management::ensure_connector_for_import(
+    let connector = super::source_management::ensure_connector_for_import(
         &state, pool, &owner_id, provider, &endpoint, api_key,
     )
     .await?;
@@ -121,6 +119,25 @@ pub async fn import(
                 issues: Value::Array(issues),
             });
             continue;
+        }
+        if let Some(raw) = agent.raw.as_ref() {
+            if let Some(profile) = provider
+                .negotiate_protocol(&endpoint, raw)
+                .map_err(provider_error)?
+            {
+                super::source_management::validate_connector_endpoint(&profile.interface_url)
+                    .await?;
+                let profile_json = serde_json::to_value(&profile)
+                    .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+                source_repository::set_connector_negotiated_profile(
+                    pool,
+                    &connector.id,
+                    &profile.protocol,
+                    &profile.protocol_version,
+                    profile_json,
+                )
+                .await?;
+            }
         }
         let external_agent_id = agent.external_id.clone();
         let source_hash = source_hash(&agent)?;
@@ -340,7 +357,7 @@ fn blocking_issues(issues: &[Value]) -> Vec<&Value> {
 }
 
 fn preview_item(
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     endpoint: &str,
     agent: ImportAgent,
 ) -> ImportPreviewItem {
@@ -407,8 +424,11 @@ pub(crate) fn source_hash(agent: &ImportAgent) -> Result<String, GatewayError> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-pub(crate) fn import_runtime_providers() -> Vec<ImportProviderResponse> {
-    provider_registry()
+pub(crate) fn import_runtime_providers(
+    registry: &AgentAdapterRegistry,
+) -> Vec<ImportProviderResponse> {
+    registry
+        .source_adapters()
         .into_iter()
         .map(|provider| ImportProviderResponse {
             id: provider.id(),
@@ -425,29 +445,15 @@ pub async fn list_providers(
     headers: HeaderMap,
 ) -> Result<Json<Vec<ImportProviderResponse>>, GatewayError> {
     require_any_gateway_key(&headers, &state).await?;
-    Ok(Json(import_runtime_providers()))
-}
-
-fn provider_registry() -> Vec<&'static dyn ImportAgentsProvider> {
-    vec![
-        &A2A_IMPORT_AGENTS,
-        &ACP_IMPORT_AGENTS,
-        &CREWAI_IMPORT_AGENTS,
-        &DIFY_IMPORT_AGENTS,
-        &LANGGRAPH_IMPORT_AGENTS,
-        &OPENAI_ASSISTANTS_IMPORT_AGENTS,
-        &OPENAPI_IMPORT_AGENTS,
-        &ELASTIC_IMPORT_AGENTS,
-        &OPENCODE_IMPORT_AGENTS,
-    ]
+    Ok(Json(import_runtime_providers(&state.agent_adapters)))
 }
 
 pub(crate) fn provider_for_id(
+    registry: &AgentAdapterRegistry,
     provider_id: &str,
-) -> Result<&'static dyn ImportAgentsProvider, GatewayError> {
-    provider_registry()
-        .into_iter()
-        .find(|provider| provider.id() == provider_id || provider.api_spec() == provider_id)
+) -> Result<&'static dyn SourceAdapter, GatewayError> {
+    registry
+        .source_adapter(provider_id)
         .ok_or_else(|| GatewayError::NotFound(format!("import provider not found: {provider_id}")))
 }
 
@@ -462,13 +468,13 @@ pub(crate) fn provider_for_id(
 async fn resolve_provider(
     state: &AppState,
     provider_id: &str,
-) -> Result<&'static dyn ImportAgentsProvider, GatewayError> {
-    if let Ok(provider) = provider_for_id(provider_id) {
+) -> Result<&'static dyn SourceAdapter, GatewayError> {
+    if let Ok(provider) = provider_for_id(&state.agent_adapters, provider_id) {
         return Ok(provider);
     }
     if let Some(pool) = state.db.as_ref() {
         if let Some(harness) = harnesses::repository::get_by_alias(pool, provider_id).await? {
-            return provider_for_id(&harness.api_spec);
+            return provider_for_id(&state.agent_adapters, &harness.api_spec);
         }
     }
     Err(GatewayError::NotFound(format!(
@@ -479,7 +485,7 @@ async fn resolve_provider(
 #[allow(clippy::too_many_arguments)]
 async fn create_input(
     state: &AppState,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     endpoint: &str,
     owner_id: &str,
     credential_mode: &CredentialMode,
@@ -529,7 +535,7 @@ async fn create_input(
 
 async fn credential_name_for_agent(
     state: &AppState,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     endpoint: &str,
     owner_id: &str,
     credential_mode: &CredentialMode,
@@ -602,7 +608,7 @@ fn agent_name(agent: &ImportAgent) -> &str {
 ///   3. the provider's api_spec (the built-in static runtimes, e.g. Elastic).
 async fn runtime_for_import(
     state: &AppState,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     provider_id: &str,
     endpoint: &str,
 ) -> String {
@@ -623,7 +629,7 @@ async fn runtime_for_import(
 }
 
 fn agent_config(
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     endpoint: &str,
     agent: &ImportAgent,
     credential_mode: &CredentialMode,
@@ -646,7 +652,7 @@ fn agent_config(
 }
 
 fn source_config(
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     endpoint: &str,
     agent: &ImportAgent,
     credential_mode: &CredentialMode,
@@ -665,7 +671,7 @@ fn source_config(
     })
 }
 
-fn credential_info(provider: &dyn ImportAgentsProvider) -> Value {
+fn credential_info(provider: &dyn SourceAdapter) -> Value {
     json!({
         "custom_llm_provider": provider.id(),
         "source": "agent-import",
@@ -696,7 +702,7 @@ fn provider_credential_name(provider_id: &str, external_agent_id: &str) -> Strin
 
 async fn save_provider_credential(
     state: &AppState,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     credential_name: &str,
     endpoint: &str,
     api_key: &str,

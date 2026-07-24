@@ -13,7 +13,10 @@ use super::{
     session_context::SessionContext,
     types::{AgentRuntime, AgentSdkError, LapConfig, ManagedSessionRef},
 };
-use crate::sdk::{providers, providers::base::runtime::RuntimeAdapter};
+use crate::{
+    managed_agents::adapters::registry::AgentAdapterRegistry,
+    sdk::{providers, providers::base::runtime::RuntimeAdapter},
+};
 
 #[derive(Clone)]
 pub struct Lap {
@@ -25,6 +28,7 @@ struct Inner {
     runtimes: HashMap<AgentRuntime, RuntimeConfig>,
     state: Arc<ClientState>,
     elastic_default_agent_id: Option<String>,
+    agent_adapters: Result<Arc<AgentAdapterRegistry>, String>,
 }
 
 impl Lap {
@@ -33,9 +37,13 @@ impl Lap {
         Self::with_http(configured_http_client(), runtime_configs(config), default)
     }
 
-    pub(crate) fn with_http_client(config: LapConfig, http: reqwest::Client) -> Self {
+    pub(crate) fn with_http_client_and_registry(
+        config: LapConfig,
+        http: reqwest::Client,
+        agent_adapters: Arc<AgentAdapterRegistry>,
+    ) -> Self {
         let default = config.elastic_default_agent_id.clone();
-        Self::with_http(http, runtime_configs(config), default)
+        Self::with_http_and_registry(http, runtime_configs(config), default, Ok(agent_adapters))
     }
 
     pub fn register_session(&self, session: ManagedSessionRef) -> Result<(), AgentSdkError> {
@@ -51,12 +59,27 @@ impl Lap {
         runtimes: HashMap<AgentRuntime, RuntimeConfig>,
         elastic_default_agent_id: Option<String>,
     ) -> Self {
+        Self::with_http_and_registry(
+            http,
+            runtimes,
+            elastic_default_agent_id,
+            providers::default_agent_adapter_registry(),
+        )
+    }
+
+    fn with_http_and_registry(
+        http: reqwest::Client,
+        runtimes: HashMap<AgentRuntime, RuntimeConfig>,
+        elastic_default_agent_id: Option<String>,
+        agent_adapters: Result<Arc<AgentAdapterRegistry>, String>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 http,
                 runtimes,
                 state: ClientState::new(),
                 elastic_default_agent_id,
+                agent_adapters,
             }),
         }
     }
@@ -197,7 +220,14 @@ impl Lap {
         &self,
         runtime: AgentRuntime,
     ) -> Result<Arc<dyn RuntimeAdapter>, AgentSdkError> {
-        providers::adapter(runtime).ok_or(AgentSdkError::RuntimeNotConfigured(runtime))
+        let registry = self
+            .inner
+            .agent_adapters
+            .as_ref()
+            .map_err(|error| AgentSdkError::InvalidRequest(error.clone()))?;
+        registry
+            .managed_runtime_adapter(runtime)
+            .ok_or(AgentSdkError::RuntimeNotConfigured(runtime))
     }
 
     pub(super) fn default_runtime(&self) -> Result<AgentRuntime, AgentSdkError> {

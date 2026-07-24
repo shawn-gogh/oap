@@ -4,12 +4,12 @@ pub mod runtime;
 
 use crate::sdk::{
     agents::AgentRuntime,
-    providers::base::{models::ModelEndpointRegistry, runtime::RuntimeAdapterRegistry},
+    providers::base::{models::ModelEndpointRegistry, runtime::RuntimeAdapterBindings},
 };
 
 pub use anthropic_messages::{init, transformation};
 
-pub(crate) fn register_runtime_adapters(registry: &mut RuntimeAdapterRegistry) {
+pub(crate) fn register_runtime_adapters(registry: &mut RuntimeAdapterBindings) {
     registry.register(
         AgentRuntime::ClaudeManagedAgents,
         runtime::RUNTIME_ID,

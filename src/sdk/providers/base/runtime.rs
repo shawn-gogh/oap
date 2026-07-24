@@ -17,6 +17,7 @@ use crate::sdk::agents::{
 pub(crate) type AdapterFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, AgentSdkError>> + Send + 'a>>;
 
+#[derive(Clone)]
 pub(crate) struct RuntimeEntry {
     pub(crate) runtime: AgentRuntime,
     /// String ID stored in the database (e.g. "cursor").
@@ -25,11 +26,11 @@ pub(crate) struct RuntimeEntry {
 }
 
 #[derive(Default)]
-pub(crate) struct RuntimeAdapterRegistry {
+pub(crate) struct RuntimeAdapterBindings {
     entries: Vec<RuntimeEntry>,
 }
 
-impl RuntimeAdapterRegistry {
+impl RuntimeAdapterBindings {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -47,19 +48,8 @@ impl RuntimeAdapterRegistry {
         });
     }
 
-    pub(crate) fn get(&self, runtime: AgentRuntime) -> Option<Arc<dyn RuntimeAdapter>> {
+    pub(crate) fn into_entries(self) -> Vec<RuntimeEntry> {
         self.entries
-            .iter()
-            .find(|e| e.runtime == runtime)
-            .map(|e| e.adapter.clone())
-    }
-
-    pub(crate) fn entry_for_id(&self, id: &str) -> Option<&RuntimeEntry> {
-        self.entries.iter().find(|e| e.id == id)
-    }
-
-    pub(crate) fn validate_id(&self, id: &str) -> bool {
-        self.entries.iter().any(|e| e.id == id)
     }
 }
 

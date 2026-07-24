@@ -114,6 +114,10 @@ services:
   opencode:
     profiles: ["opencode"]
     build: ./templates/opencode
+    # The agent's bash tool runs as root alongside the gateway's PID 1, so a
+    # `kill -TERM 1` from inside a session takes the runtime down with it.
+    # Restart on its own so a session can't permanently strand the runtime.
+    restart: unless-stopped
     environment:
       LITELLM_BASE_URL: http://lap:4000/v1
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}

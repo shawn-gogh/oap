@@ -66,6 +66,7 @@ pub struct AgentSourceSnapshotRow {
     pub digest: String,
     pub raw_spec: Value,
     pub canonical_spec: Value,
+    pub protocol_profile: Value,
     pub normalization_issues: Value,
     pub agent_revision: Option<i32>,
     pub created_by: Option<String>,

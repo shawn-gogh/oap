@@ -48,6 +48,15 @@ pub async fn db<'a>(state: &'a AppState, headers: &HeaderMap) -> Result<&'a PgPo
     state.db.as_ref().ok_or(GatewayError::MissingDatabase)
 }
 
+/// Soft-delete marker written by `DELETE /api/agents/{id}`: the row survives
+/// (list queries filter it out) until the retention sweep hard-deletes it.
+pub(crate) fn agent_deleted_at(agent: &ManagedAgentRow) -> Option<i64> {
+    agent
+        .config
+        .get("deleted_at")
+        .and_then(|value| value.as_i64())
+}
+
 /// Owner-or-admin gate for mutating an agent (and its workspace). Legacy
 /// agents without an owner are admin-only to mutate. NotFound rather than
 /// Forbidden so agent ids aren't enumerable across users.

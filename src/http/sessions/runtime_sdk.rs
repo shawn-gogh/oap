@@ -42,7 +42,11 @@ pub(crate) fn lap_from_credential(
             config.elastic_base_url = resolved.credential.api_base.clone();
         }
     }
-    Ok(Lap::new(config))
+    Ok(Lap::with_http_client_and_registry(
+        config,
+        resolved.http.clone(),
+        resolved.agent_adapters.clone(),
+    ))
 }
 
 pub(super) async fn register_runtime_session(

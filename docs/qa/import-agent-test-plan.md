@@ -46,12 +46,13 @@ http://a2a-agent:8080/scenarios/<name>     # 特定边界场景（见下表）
 | 场景名 | 行为 | 对应的被测逻辑 |
 |---|---|---|
 | （默认，无前缀） | 合法 Agent Card；`message/send` 无 "async" 关键字走同步，含 "async" 走异步轮询 | discover 正常路径、`invoke_a2a` 同步/异步分支 |
-| `missing-name` | Agent Card 缺少 `name` 字段 | `parse_agent_card` 返回 `None` → discover 结果为空数组，非报错 |
-| `no-identity` | 有 `name`/`description`，缺 `id`/`url` | identity 回退到 endpoint；执行时 RPC URL 回退到 `credential.api_base` |
+| `missing-name` | Agent Card 缺少 `name` 字段 | 严格解析失败，discover 返回文档校验错误 |
+| `no-identity` | 有 `name`/`description`，缺少 0.3 必填 `url` | 严格解析失败，不再从 connector endpoint 猜测 RPC 地址 |
 | `malformed-json` | 200 状态码但响应体不是合法 JSON | `ImportAgentsError::Decode` → HTTP 500 `配置无效：invalid provider response` |
 | `http-500` | 返回 HTTP 500 | `ImportAgentsError::Upstream` → HTTP 502 `上游返回 HTTP 500` |
 | `auth-required` | 需要 `Authorization: Bearer test-secret-key`，否则 401 | discover 时 `api_key` 透传校验 |
 | `high-risk` | Agent Card 附带 `permissions`/`network`/`filesystem`/`secrets`/`side_effects` 顶层字段 | `normalize_agent` 的 `unmapped_high_risk_field` → `approval_required` |
+| `v1` | A2A 1.0 `supportedInterfaces`，JSON-RPC PascalCase 方法 | 选择 `1.0 + JSONRPC`，校验 `A2A-Version: 1.0` 和 ProtoJSON 响应 |
 | `task-fail` | 异步任务最终进入 `status.state = failed` | `poll_a2a_task` 的失败终态分支 |
 | `task-input-required` | 异步任务进入 `input-required` | `poll_a2a_task` 的“不支持的续接状态”分支 |
 | `task-timeout` | 异步任务永远停在 `working` | `poll_a2a_task` 60 秒轮询超时分支（120 次 × 500ms） |
@@ -94,8 +95,8 @@ http://a2a-agent:8080/scenarios/<name>     # 特定边界场景（见下表）
 | # | 用例 | 步骤 | 期望结果 |
 |---|---|---|---|
 | D1 | 正常发现单个智能体 | `endpoint=http://a2a-agent:8080`, `api_key=""` | `200`，`agents` 含 1 项，`id=example-a2a-agent`，`raw.url` 指向 `/rpc` |
-| D2 | Agent Card 缺少 name | `endpoint=.../scenarios/missing-name` | `200`，`agents=[]`（静默过滤，不报错） |
-| D3 | Agent Card 无 id/url | `endpoint=.../scenarios/no-identity` | `200`，`agents[0].id == endpoint`（回退到 endpoint 本身） |
+| D2 | Agent Card 缺少 name | `endpoint=.../scenarios/missing-name` | discover 失败并返回 Agent Card 文档校验错误 |
+| D3 | 0.3 Agent Card 缺少 url | `endpoint=.../scenarios/no-identity` | discover 失败，不生成不可执行的导入候选 |
 | D4 | 响应非法 JSON | `endpoint=.../scenarios/malformed-json` | `500`，`invalid provider response` |
 | D5 | 上游返回 500 | `endpoint=.../scenarios/http-500` | `502`，`上游返回 HTTP 500` |
 | D6 | 需要鉴权但未提供 key | `endpoint=.../scenarios/auth-required`, `api_key=""` | `502`（上游 401 被透传为 Upstream 错误） |
@@ -192,9 +193,23 @@ curl -s -X POST http://127.0.0.1:4000/api/agents/import/a2a/discover \
 | E4a | 续接审批 — 批准 | 同上，`POST /api/approvals/{id}/accept` | 用同一 `taskId` 重新 `message/send`；任务 `completed`，助手回复写入聊天记录，会话回 `idle` —— **已实测通过** |
 | E4b | 续接审批 — 拒绝 | 同上，`POST /api/approvals/{id}/reject` | 实际发出 `tasks/cancel`（mock 侧任务状态验证为 `canceled`），turn 转终态 `rejected`，会话回 `idle` —— **已实测通过** |
 | E4c | 多轮续接 | mock 需在 resume 后仍返回 `input-required`（可扩展 mock 支持） | `resume_a2a_task` 重新进入 `poll_a2a_task`，再次暂停生成新的审批项，而不是把二次续接当错误处理 |
-| E5 | 任务永不终态 | `task-timeout` | 轮询 120 次（约 60s）后返回 `A2A task did not reach a terminal state before the bridge deadline` |
+| E5 | 任务永不终态 | `task-timeout` | 到达 Turn `deadline_at` 后 best-effort cancel，Turn 收敛为 `timed_out` |
 | E6 | RPC 层错误 | `rpc-error` | `invoke_a2a` 返回 `A2A request failed` |
 | E7 | 会话取消 | 默认，异步任务进行中取消会话 | 触发 `tasks/cancel`，mock 侧任务状态置为 `canceled` |
+| E8 | A2A 1.0 同步/异步执行 | `v1` | 使用 `SendMessage`/`GetTask`/`CancelTask`，正确解包 task/message 并识别 `TASK_STATE_*` |
+| E9 | 版本头不匹配 | `v1`，发送 `A2A-Version: 0.3` | 返回 `VersionNotSupportedError`（`-32009`），客户端不得降级重试 |
+| E10 | 0.3 富内容与 Artifact | `rich`，发送 text/data/file content | 请求使用 0.3 part discriminator；结果保留 raw A2A，data/file 进入 canonical Artifact 或明确记录 storage unavailable |
+| E11 | 0.3 流式 | `stream` | 调用 `message/stream`，严格校验 SSE，progress/message/Artifact 合并为终态结果 |
+| E12 | 1.0 流式 | `v1-stream` | 调用 `SendStreamingMessage`，发送 ProtoJSON part，消费 1.0 status/artifact update |
+| E13 | A2A 重启恢复 | 已绑定 remote task 后重启 gateway | 使用 Invocation 冻结的 version/interface/task 恢复，不重新协商 |
+| E14 | 0.3 Push | `push` 且配置 `public_base_url` | 注册 `tasks/pushNotificationConfig/set`；正确 token/version 被接受，重复投递幂等 |
+| E15 | 1.0 Push | `v1-push` 且配置 `public_base_url` | 注册 `CreateTaskPushNotificationConfig`；错误 token、版本或 task ID 被拒绝 |
+| E16 | 0.3 重连订阅 | `stream`，流中断且 task 未终态 | 使用冻结版本调用 `tasks/resubscribe`；流再次中断后才回退 `tasks/get` |
+| E17 | 1.0 重连订阅 | `v1-complete`，流中断且 task 未终态 | 使用冻结版本调用 `SubscribeToTask`，不得降级成 0.3 |
+| E18 | Push 生命周期清理 | `push` / `v1-complete`，task 到达任一终态 | 使用注册返回的 config ID 调用对应版本 delete；本地 metadata 标记 disabled |
+| E19 | 必需扩展拒绝 | `required-extension` | discovery 明确拒绝未实现的 required extension，connector 不得进入可执行状态 |
+| E20 | 版本冻结预检 | 已发布 0.3 / 1.0 connector | preflight 使用 negotiated profile 的 URL、binding、版本头和 Send 方法；unverified profile 失败 |
+| E21 | 完整操作矩阵 | 单元测试 | 0.3/1.0 的 subscribe、Push CRUD、extended card 方法逐项锁定；0.3 JSON-RPC `ListTasks` 明确不支持 |
 
 已用 curl 直接对 mock RPC 端点验证 E1/E2/E3 的响应结构正确（同步文本、异步 completed、异步 failed）；
 E4/E4a/E4b 已通过真实 `POST /session` + `/api/approvals` 端到端验证（见 §12 发现 1 的"端到端验证"）。
@@ -246,7 +261,7 @@ E5–E7 仍建议补充为集成测试（`tests/managed_agents_api.rs`，使用 
 以下用例已针对当前运行中的 `lap` 容器（compose 服务，端口 4000）与新起的 `a2a-agent`
 （compose `a2a` profile，端口 8090/内部 8080）实测，均符合预期（均已清理测试数据）：
 
-- D1（正常发现）、D2（missing-name → 空数组）、D4（malformed-json → 500 Decode 错误）、
+- D1（正常发现）、D2（missing-name → 严格校验错误）、D4（malformed-json → 500 Decode 错误）、
   D5（http-500 → 502 Upstream 错误）、D8/D9（localhost、127.0.0.1 均被 SSRF 拒绝）
 - P2（high-risk → 5 条 `approval_required` issue，字段级 issue 与 `unmapped_high_risk_field`
   逐一核对通过）

@@ -15,6 +15,7 @@ use crate::{
     proxy::state::AppState,
 };
 
+mod a2a_push;
 mod artifacts_api;
 mod cloudevents_api;
 mod control_events_api;
@@ -41,6 +42,7 @@ mod storage;
 mod types;
 mod workspace_api;
 
+pub use a2a_push::receive as receive_a2a_push;
 pub use artifacts_api::{create_artifact, get_artifact, list_artifacts};
 pub use cloudevents_api::{egress as cloud_events, ingress as ingest_cloud_event};
 pub use control_events_api::control_event_stream;
@@ -722,8 +724,17 @@ fn spawn_existing_turn_execution(
         };
         match result {
             Ok(()) => {
-                let _ = session_control::repository::transition(&pool, &turn.id, "completed", None)
-                    .await;
+                // Non-runtime `execute_prompt` runs synchronously to the end, so
+                // Ok means the turn is genuinely done — complete it. A runtime
+                // prompt only returns at submit time; its background consumer
+                // completes the turn on the terminal event, so completing here
+                // would mark it done mid-run (UI desync + broken deadline
+                // backstop). Only the synchronous path completes on Ok.
+                if row.runtime.is_none() {
+                    let _ =
+                        session_control::repository::transition(&pool, &turn.id, "completed", None)
+                            .await;
+                }
             }
             Err(error) => {
                 let _ = session_control::repository::transition(
@@ -816,7 +827,8 @@ async fn enqueue_prompt_text_with_runtime_model(
 ) -> Result<(), GatewayError> {
     let session_id = session_id.to_owned();
     let row = session(&pool, &session_id).await?;
-    let descriptor = crate::http::runtime_resolution::describe_session_runtime(&pool, &row).await?;
+    let descriptor =
+        crate::http::runtime_resolution::describe_session_runtime(&state, &pool, &row).await?;
     let contract = run_profile::resolve(&pool, &row, structured_input).await?;
     let deadline_at = turn_deadline_at(&pool, &row).await?;
     let created_turn = {
@@ -878,13 +890,13 @@ async fn enqueue_prompt_text_with_runtime_model(
         tokio::spawn(async move {
             match execute_runtime_prompt(state.clone(), &pool, row, prompt, runtime_model).await {
                 Ok(()) => {
-                    let _ = session_control::repository::transition(
-                        &task_pool,
-                        &task_turn_id,
-                        "completed",
-                        None,
-                    )
-                    .await;
+                    // Runtime prompt: `execute_runtime_prompt` returns at submit
+                    // time, not when the agent finishes. The background consumer
+                    // completes this turn when it sees the terminal event
+                    // (mark_session_status → active_turn). Completing it here
+                    // marked it done mid-run — desyncing the UI and disabling
+                    // the deadline recovery backstop. Leave it running.
+                    let _ = &task_turn_id;
                 }
                 Err(error) => {
                     let _ = session_control::repository::transition(
@@ -1038,8 +1050,53 @@ pub(crate) async fn abort_session_internal(
             )
             .await?;
         }
-        let _ =
-            tokio::time::timeout(CANCEL_GRACE, force_abort_runtime_session(state, pool, row)).await;
+        let forced =
+            tokio::time::timeout(CANCEL_GRACE, force_abort_runtime_session(state, pool, row))
+                .await
+                .unwrap_or(false);
+        // A session with no runtime attached has nothing to interrupt, so
+        // `cancelled == false` there just means "not applicable" and the local
+        // bookkeeping below is the whole story. A runtime-backed session that
+        // acknowledged neither the interrupt nor the forced abort is different:
+        // the provider is still executing the turn. Writing "cancelled" and
+        // flipping the session to idle at that point is a lie the platform then
+        // acts on — it believes no turn is open, accepts new prompts, and the
+        // provider rejects each one with `409 session already has an active
+        // turn`, which is exactly how a cancelled-looking session ends up
+        // burning 20 more minutes of tool calls. Keep the turn in `cancelling`
+        // (so it still counts as active and blocks phantom submissions) and
+        // report the failure instead.
+        if row.runtime.is_some() && !forced {
+            if let Some(snapshot) = active_turn.as_ref() {
+                session_control::repository::append_event(
+                    pool,
+                    session_control::repository::NewControlEvent {
+                        session_id,
+                        turn_id: Some(&snapshot.turn.id),
+                        invocation_id: snapshot
+                            .invocations
+                            .first()
+                            .map(|invocation| invocation.id.as_str()),
+                        request_id: Some(&snapshot.turn.request_id),
+                        event_key: &format!("turn:{}:cancel:unacknowledged", snapshot.turn.id),
+                        event_type: "control.warning",
+                        event: json!({
+                            "code": "cancel_not_acknowledged",
+                            "message": "运行时未确认停止请求，该轮次仍在运行时侧执行"
+                        }),
+                    },
+                )
+                .await?;
+            }
+            tracing::warn!(
+                session_id,
+                "runtime did not acknowledge cancel or abort; leaving turn in cancelling"
+            );
+            return Err(GatewayError::BadRequest(
+                "运行时未确认停止请求：该轮次仍在运行时侧执行，平台不会将其标记为已取消。请稍后重试，或检查运行时容器状态。"
+                    .to_owned(),
+            ));
+        }
     }
     if let Some(snapshot) = active_turn {
         session_control::repository::transition(
@@ -1073,7 +1130,7 @@ async fn force_abort_runtime_session(
     let Some(runtime) = row.runtime.as_deref() else {
         return false;
     };
-    if external_bridge::supports(runtime) {
+    if external_bridge::supports(state, runtime) {
         return external_bridge::abort(state, pool, row).await.is_ok();
     }
     interrupt_runtime_session(state, pool, row).await
@@ -1110,7 +1167,7 @@ pub(crate) async fn interrupt_runtime_session(
     let Some(runtime) = row.runtime.as_deref() else {
         return false;
     };
-    if external_bridge::supports(runtime) {
+    if external_bridge::supports(state, runtime) {
         return external_bridge::cancel(state, pool, row).await.is_ok();
     }
     let Ok(resolved) =

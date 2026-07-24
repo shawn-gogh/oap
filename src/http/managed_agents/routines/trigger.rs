@@ -73,7 +73,7 @@ pub(crate) async fn trigger_routine_run(
     )
     .await?;
     let task_id = task.id.clone();
-    let result = if let Some(runtime) = runtime_from_agent(&agent) {
+    let result = if let Some(runtime) = runtime_from_agent(&state, &agent) {
         trigger_runtime_session(
             state,
             pool.clone(),
@@ -173,7 +173,10 @@ async fn trigger_legacy_run(
     })
 }
 
-fn runtime_from_agent(agent: &registry::schema::ManagedAgentRow) -> Option<String> {
+fn runtime_from_agent(
+    state: &AppState,
+    agent: &registry::schema::ManagedAgentRow,
+) -> Option<String> {
     agent
         .config
         .get("runtime")
@@ -181,13 +184,14 @@ fn runtime_from_agent(agent: &registry::schema::ManagedAgentRow) -> Option<Strin
         .map(str::trim)
         .filter(|runtime| !runtime.is_empty())
         .map(str::to_owned)
-        .or_else(|| builtin_runtime(&agent.harness))
+        .or_else(|| builtin_runtime(state, &agent.harness))
 }
 
-fn builtin_runtime(harness: &str) -> Option<String> {
+fn builtin_runtime(state: &AppState, harness: &str) -> Option<String> {
     let harness = harness.trim();
-    crate::sdk::providers::runtime_registry()
-        .entry_for_id(harness)
+    state
+        .agent_adapters
+        .managed_runtime_entry(harness)
         .map(|_| harness.to_owned())
 }
 

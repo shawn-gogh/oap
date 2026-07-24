@@ -36,9 +36,16 @@ impl CallbackManager {
     }
 
     pub async fn on_event(&self, payload: CallbackEventPayload) {
-        for callback in self.callbacks.iter() {
-            callback.on_event(payload.clone()).await;
-        }
+        // Fan out concurrently rather than awaiting each callback in turn: a
+        // single slow sink (webhook delivery, DB write) would otherwise stall
+        // every later callback — and, because this is awaited on the runtime
+        // event hot path, delay the next event's processing.
+        futures_util::future::join_all(
+            self.callbacks
+                .iter()
+                .map(|callback| callback.on_event(payload.clone())),
+        )
+        .await;
     }
 }
 

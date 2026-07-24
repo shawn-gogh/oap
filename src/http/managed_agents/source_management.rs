@@ -21,17 +21,15 @@ use crate::{
         },
     },
     errors::GatewayError,
+    managed_agents::adapters::source::{ImportedAgent, SourceAdapter, SourceAdapterError},
     proxy::{
         auth::master_key::{authenticate, AuthContext},
         credential_crypto,
         state::AppState,
     },
-    sdk::{
-        agents::{
-            canonical::{normalize_agent, CanonicalAgentSpec},
-            conformance::inspect_runtime_contract_with_api_spec,
-        },
-        providers::import_agents::{ImportAgentsError, ImportAgentsProvider, ImportedAgent},
+    sdk::agents::{
+        canonical::{normalize_agent, CanonicalAgentSpec},
+        conformance::inspect_runtime_contract_with_api_spec,
     },
 };
 
@@ -79,7 +77,7 @@ pub async fn create_connector(
 ) -> Result<Json<SourceConnectorRow>, GatewayError> {
     let auth = authenticate(&headers, &state).await?;
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
-    let provider = provider_for_id(input.provider.trim())?;
+    let provider = provider_for_id(&state.agent_adapters, input.provider.trim())?;
     let name = required(&input.name, "name")?;
     let endpoint = validate_connector_endpoint(&input.endpoint).await?;
     let mut credential_name = input
@@ -118,6 +116,10 @@ pub async fn create_connector(
     }
     let capabilities = serde_json::to_value(provider.capabilities())
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+    let descriptor = state
+        .agent_adapters
+        .source(provider.id())
+        .ok_or_else(|| GatewayError::InvalidConfig("来源适配器描述缺失。".to_owned()))?;
     let connector = sources::create_connector(
         pool,
         &auth.user_id,
@@ -127,7 +129,7 @@ pub async fn create_connector(
             endpoint,
             credential_name,
             adapter_id: provider.id().to_owned(),
-            protocol: provider.api_spec().to_owned(),
+            protocol: descriptor.protocol.to_string(),
             protocol_version: provider.protocol_version().to_owned(),
         },
         capabilities,
@@ -574,12 +576,12 @@ pub async fn suggest_runtime_mapping(
         }
         Err(error) => {
             let reason = match error {
-                ImportAgentsError::Upstream { status, .. } => {
+                SourceAdapterError::Upstream { status, .. } => {
                     format!("来源返回 HTTP {status}")
                 }
-                ImportAgentsError::Request(_) => "无法连接来源".to_owned(),
-                ImportAgentsError::Decode(_) => "来源返回的内容不是有效 JSON".to_owned(),
-                ImportAgentsError::InvalidDocument(message) => message,
+                SourceAdapterError::Request(_) => "无法连接来源".to_owned(),
+                SourceAdapterError::Decode(_) => "来源返回的内容不是有效 JSON".to_owned(),
+                SourceAdapterError::InvalidDocument(message) => message,
             };
             Ok(Json(RuntimeMappingSuggestion {
                 input_field: None,
@@ -850,7 +852,7 @@ pub async fn accept_drift(
     if let Some(source_config) = config.get_mut("source").and_then(Value::as_object_mut) {
         source_config.insert("raw".to_owned(), next_raw);
     }
-    let provider = provider_for_id(&governance.source_provider)?;
+    let provider = provider_for_id(&state.agent_adapters, &governance.source_provider)?;
     config["interaction_profile"] =
         serde_json::to_value(provider.interaction_contract(&snapshot.raw_spec))
             .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
@@ -1068,7 +1070,7 @@ pub(crate) async fn run_health_check(
 /// without this, remote runtimes and A2A pollers keep executing after an
 /// "emergency stop", and an in-flight prompt's completion handler would even
 /// overwrite the swept 'cancelled' status and resurrect the session.
-async fn interrupt_agent_sessions(
+pub(crate) async fn interrupt_agent_sessions(
     state: &Arc<AppState>,
     pool: &sqlx::PgPool,
     agent_id: &str,
@@ -1177,7 +1179,7 @@ pub(crate) async fn reconcile_source(
             }
             let api_key = connector_api_key(state, pool, &connector).await?;
             (
-                provider_for_id(&connector.provider)?,
+                provider_for_id(&state.agent_adapters, &connector.provider)?,
                 connector.endpoint.clone(),
                 api_key,
             )
@@ -1191,7 +1193,7 @@ pub(crate) async fn reconcile_source(
             )
             .await?;
             (
-                provider_for_id(&governance.source_provider)?,
+                provider_for_id(&state.agent_adapters, &governance.source_provider)?,
                 governance.source_endpoint.clone(),
                 api_key,
             )
@@ -1231,6 +1233,24 @@ pub(crate) async fn reconcile_source(
         }
         return Ok(false);
     };
+    if let Some(connector_id) = source.connector_id.as_deref() {
+        if let Some(profile) = provider
+            .negotiate_protocol(&endpoint, &remote.raw)
+            .map_err(super::import_types::provider_error)?
+        {
+            validate_connector_endpoint(&profile.interface_url).await?;
+            let profile_json = serde_json::to_value(&profile)
+                .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+            sources::set_connector_negotiated_profile(
+                pool,
+                connector_id,
+                &profile.protocol,
+                &profile.protocol_version,
+                profile_json,
+            )
+            .await?;
+        }
+    }
     let imported = import_agent(&remote);
     let digest = source_hash(&imported)?;
     if digest == governance.source_hash {
@@ -1254,7 +1274,7 @@ pub(crate) async fn reconcile_source(
 pub(crate) async fn record_drift_candidate(
     state: &AppState,
     agent: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     source: &ManagedAgentSourceRow,
     remote: &ImportedAgent,
     digest: &str,
@@ -1295,7 +1315,7 @@ pub(crate) async fn record_drift_candidate(
 
 fn candidate_agent(
     current: &crate::db::managed_agents::registry::schema::ManagedAgentRow,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     remote: &ImportedAgent,
 ) -> crate::db::managed_agents::registry::schema::ManagedAgentRow {
     let mut candidate = current.clone();
@@ -1369,7 +1389,7 @@ async fn test_connector_inner(
     connector: &SourceConnectorRow,
 ) -> Result<SourceConnectorRow, GatewayError> {
     validate_connector_endpoint(&connector.endpoint).await?;
-    let provider = provider_for_id(&connector.provider)?;
+    let provider = provider_for_id(&state.agent_adapters, &connector.provider)?;
     let api_key = connector_api_key(state, pool, connector).await?;
     let started = Instant::now();
     let discovered = tokio::time::timeout(
@@ -1378,14 +1398,35 @@ async fn test_connector_inner(
     )
     .await;
     let (status, detail) = match discovered {
-        Ok(Ok(agents)) => (
-            "healthy",
-            format!(
-                "连接成功，发现 {} 个智能体，耗时 {}ms。",
-                agents.len(),
-                started.elapsed().as_millis()
-            ),
-        ),
+        Ok(Ok(agents)) => {
+            if let Some(profile) = agents
+                .first()
+                .map(|agent| provider.negotiate_protocol(&connector.endpoint, &agent.raw))
+                .transpose()
+                .map_err(super::import_types::provider_error)?
+                .flatten()
+            {
+                validate_connector_endpoint(&profile.interface_url).await?;
+                let profile_json = serde_json::to_value(&profile)
+                    .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+                sources::set_connector_negotiated_profile(
+                    pool,
+                    &connector.id,
+                    &profile.protocol,
+                    &profile.protocol_version,
+                    profile_json,
+                )
+                .await?;
+            }
+            (
+                "healthy",
+                format!(
+                    "连接成功，发现 {} 个智能体，耗时 {}ms。",
+                    agents.len(),
+                    started.elapsed().as_millis()
+                ),
+            )
+        }
         Ok(Err(error)) => (
             "unreachable",
             format!("连接失败：{}", super::import_types::provider_error(error)),
@@ -1421,7 +1462,7 @@ pub(crate) async fn ensure_connector_for_import(
     state: &AppState,
     pool: &sqlx::PgPool,
     owner_id: &str,
-    provider: &dyn ImportAgentsProvider,
+    provider: &dyn SourceAdapter,
     endpoint: &str,
     api_key: Option<&str>,
 ) -> Result<SourceConnectorRow, GatewayError> {
@@ -1449,6 +1490,10 @@ pub(crate) async fn ensure_connector_for_import(
         .unwrap_or_else(|| endpoint.to_owned());
     let capabilities = serde_json::to_value(provider.capabilities())
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+    let descriptor = state
+        .agent_adapters
+        .source(provider.id())
+        .ok_or_else(|| GatewayError::InvalidConfig("来源适配器描述缺失。".to_owned()))?;
     let connector = sources::create_connector(
         pool,
         owner_id,
@@ -1458,7 +1503,7 @@ pub(crate) async fn ensure_connector_for_import(
             endpoint: endpoint.to_owned(),
             credential_name,
             adapter_id: provider.id().to_owned(),
-            protocol: provider.api_spec().to_owned(),
+            protocol: descriptor.protocol.to_string(),
             protocol_version: provider.protocol_version().to_owned(),
         },
         capabilities,

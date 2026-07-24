@@ -1,8 +1,6 @@
 use crate::sdk::{
     agents::{AgentRuntime, Lap, ListModelsParams},
-    providers::base::models::{
-        list_openai_shape, ModelEndpoint, ModelListFuture,
-    },
+    providers::base::models::{list_openai_shape, ModelEndpoint, ModelListFuture},
 };
 
 pub(crate) struct CursorModels;

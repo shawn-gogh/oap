@@ -49,7 +49,7 @@ pub async fn runtime_events(
     // Gateway-hosted sessions have no provider stream: replay the local event
     // store, then stay subscribed to the session's local event channel so new
     // turns stream in real time instead of waiting on the UI's poll loop.
-    if is_gateway_event_runtime(pool, runtime).await? {
+    if is_gateway_event_runtime(&state, pool, runtime).await? {
         // Subscribe before the replay query so events appended in between
         // are not lost (they'd be duplicated instead, which the UI dedupes).
         let mut local_rx = state.local_session_events.subscribe(&row.id);
@@ -316,11 +316,19 @@ async fn drive_provider_stream(
                     terminal_status = None;
                     terminal_error = None;
                 }
-                let _ = persist_runtime_event(pool, session_id, &event).await;
-                emit_runtime_event(&callbacks, session_id, &event).await;
+                // Push to live SSE subscribers FIRST. The local channel is an
+                // in-memory broadcast (microseconds); persistence and callbacks
+                // are a row-locked DB transaction and a chain of awaited
+                // callbacks (webhook delivery, etc.) that together added 1-2s
+                // of head-of-line latency per event before the browser saw it.
+                // The SSE stream is a live view, not the source of truth: the
+                // durable copy dedups by event_key and re-entry repaints from
+                // the snapshot, so publishing ahead of the write is safe.
                 if let Ok(value) = serde_json::to_value(&event) {
                     state.local_session_events.publish(session_id, value);
                 }
+                let _ = persist_runtime_event(pool, session_id, &event).await;
+                emit_runtime_event(&callbacks, session_id, &event).await;
                 if terminal_status == Some("error") {
                     break;
                 }
@@ -396,7 +404,7 @@ pub async fn runtime_event_list(
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
     // Gateway-hosted runtimes: the local store IS the source of truth.
-    if is_gateway_event_runtime(pool, runtime).await? {
+    if is_gateway_event_runtime(&state, pool, runtime).await? {
         let events = json!({ "data": stored });
         reconcile_terminal_status_from_events(&state, pool, &row.id, &row.status, &events).await?;
         return Ok(Json(events));
@@ -441,7 +449,7 @@ pub(crate) async fn runtime_event_stream_for_session(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("session is not a runtime session".to_owned())
     })?;
-    if is_gateway_event_runtime(pool, runtime).await? {
+    if is_gateway_event_runtime(state, pool, runtime).await? {
         let mut local_rx = state.local_session_events.subscribe(&row.id);
         let stored = runtime_events::repository::list(pool, &row.id).await?;
         let replay = futures_util::stream::iter(stored.into_iter().map(|value| {
@@ -473,8 +481,12 @@ pub(crate) async fn runtime_event_stream_for_session(
         .map_err(agent_sdk_error)
 }
 
-async fn is_gateway_event_runtime(pool: &PgPool, runtime: &str) -> Result<bool, GatewayError> {
-    Ok(super::external_bridge::supports(runtime)
+async fn is_gateway_event_runtime(
+    state: &AppState,
+    pool: &PgPool,
+    runtime: &str,
+) -> Result<bool, GatewayError> {
+    Ok(super::external_bridge::supports(state, runtime)
         || super::generic_chat::is_generic_chat(pool, runtime).await?)
 }
 

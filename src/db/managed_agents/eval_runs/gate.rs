@@ -42,6 +42,21 @@ pub async fn evaluate(
             latest_run: None,
         });
     }
+    // The creation wizard fills a template suite in to release its own
+    // "继续设计" button, so most agents carry cases nobody wrote. Asserting
+    // "能够完成工作流程" passes every judge while testing nothing, and gating
+    // on it would force a full re-run on every revision for zero signal.
+    // Editing any case clears the marker and turns the gate on for real.
+    if definition.generated {
+        return Ok(EvalGateStatus {
+            required: false,
+            passed: true,
+            state: "not_required".to_owned(),
+            message: "当前黄金用例仍是向导生成的模板，未被视为有效评估定义；编辑任一用例后发布门禁才会生效。"
+                .to_owned(),
+            latest_run: None,
+        });
+    }
     if !definition.complete {
         return Ok(blocked(
             "invalid_definition",
@@ -116,6 +131,8 @@ impl From<EvalRunRow> for EvalGateRun {
 struct Definition {
     has_cases: bool,
     complete: bool,
+    /// Cases are still the wizard's untouched template (`evaluation.generated`).
+    generated: bool,
 }
 
 impl Definition {
@@ -124,6 +141,7 @@ impl Definition {
             return Self {
                 has_cases: false,
                 complete: false,
+                generated: false,
             };
         };
         let category_counts = [
@@ -141,6 +159,10 @@ impl Definition {
         Self {
             has_cases,
             complete: has_criteria && category_counts.iter().all(|count| *count > 0),
+            generated: evaluation
+                .get("generated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -188,5 +210,38 @@ mod tests {
 
         let absent = Definition::from_config(&json!({ "design": { "evaluation": {} } }));
         assert!(!absent.has_cases);
+    }
+
+    #[test]
+    fn generated_marker_is_read_and_defaults_to_false() {
+        let generated = Definition::from_config(&json!({
+            "design": {
+                "evaluation": {
+                    "success_criteria": "准确回答",
+                    "normal_cases": ["正常"],
+                    "edge_cases": ["边界"],
+                    "recovery_cases": ["恢复"],
+                    "safety_cases": ["安全"],
+                    "generated": true
+                }
+            }
+        }));
+        assert!(generated.complete);
+        assert!(generated.generated);
+
+        // A hand-written suite (and every agent created before the marker
+        // existed) must stay gated.
+        let authored = Definition::from_config(&json!({
+            "design": {
+                "evaluation": {
+                    "success_criteria": "准确回答",
+                    "normal_cases": ["正常"],
+                    "edge_cases": ["边界"],
+                    "recovery_cases": ["恢复"],
+                    "safety_cases": ["安全"]
+                }
+            }
+        }));
+        assert!(!authored.generated);
     }
 }

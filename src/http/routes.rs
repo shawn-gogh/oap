@@ -238,6 +238,10 @@ fn session_routes() -> Router<Arc<AppState>> {
         .route("/session/{session_id}/interrupt", post(sessions::interrupt))
         .route("/session/{session_id}/abort", post(sessions::abort))
         .route(
+            "/api/a2a/push/{invocation_id}",
+            post(sessions::receive_a2a_push),
+        )
+        .route(
             "/api/sessions/{session_id}/turns",
             get(sessions::list_turns).post(sessions::create_turn),
         )

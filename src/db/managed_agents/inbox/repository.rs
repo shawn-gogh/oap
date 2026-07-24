@@ -212,32 +212,36 @@ pub async fn get(pool: &PgPool, item_id: &str) -> Result<Option<InboxItemRow>, G
     .map_err(GatewayError::Database)
 }
 
-pub async fn create_approval(
+/// Inserts the inbox row. `status` is 'pending' for a real approval request
+/// and a terminal status for an after-the-fact audit record.
+#[allow(clippy::too_many_arguments)]
+async fn insert_approval(
     pool: &PgPool,
     kind: &str,
     title: String,
-    session_id: Option<String>,
+    session_id: Option<&str>,
     agent: Option<String>,
     body: Option<String>,
     arguments: Option<serde_json::Value>,
+    status: &str,
 ) -> Result<InboxItemRow, GatewayError> {
     let policy = approval_policy(kind);
     let created_at = now_ms();
     let args_json = arguments.map(|value| value.to_string());
-    let item = sqlx::query_as::<_, InboxItemRow>(
+    sqlx::query_as::<_, InboxItemRow>(
         r#"
         INSERT INTO "LiteLLM_ManagedAgentInboxItemsTable"
           (id, kind, title, session_id, agent, body, args_json, status, created_at,
            enforcement_owner, effect_handler, required_role, delivery_status, expires_at,
            escalation_role, escalate_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, 'pending', $12, $13, $14)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $15, $8, $9, $10, $11, 'pending', $12, $13, $14)
         RETURNING *
         "#,
     )
     .bind(id("appr"))
     .bind(kind)
     .bind(title)
-    .bind(session_id.as_deref())
+    .bind(session_id)
     .bind(agent)
     .bind(body)
     .bind(args_json)
@@ -252,9 +256,72 @@ pub async fn create_approval(
             .escalation_role
             .map(|_| created_at + policy.ttl_ms / 2),
     )
+    .bind(status)
     .fetch_one(pool)
     .await
+    .map_err(GatewayError::Database)
+}
+
+/// Files an audit record for a decision that was already enforced elsewhere
+/// (the egress proxy's allow/deny, for example). Deliberately does NOT go
+/// through `create_approval`: that binds the session's live turn and parks it
+/// at `waiting_approval`, so recording an already-made decision through it
+/// would flip the running turn into "审批中" and straight back out on every
+/// outbound connection — a storm of approval.requested/resolved events for an
+/// item that is never actually pending.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_decided_approval(
+    pool: &PgPool,
+    kind: &str,
+    title: String,
+    session_id: Option<&str>,
+    body: Option<String>,
+    arguments: Option<serde_json::Value>,
+    accepted: bool,
+    actor: &str,
+    reason: Option<String>,
+) -> Result<InboxItemRow, GatewayError> {
+    let status = if accepted { "accepted" } else { "rejected" };
+    let item =
+        insert_approval(pool, kind, title, session_id, None, body, arguments, status).await?;
+    let decided_at = now_ms();
+    sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentInboxItemsTable"
+        SET resolved_at = $2, decided_by = $3, feedback = $4, delivery_status = 'delivered'
+        WHERE id = $1
+        "#,
+    )
+    .bind(&item.id)
+    .bind(decided_at)
+    .bind(actor)
+    .bind(reason)
+    .execute(pool)
+    .await
     .map_err(GatewayError::Database)?;
+    Ok(item)
+}
+
+pub async fn create_approval(
+    pool: &PgPool,
+    kind: &str,
+    title: String,
+    session_id: Option<String>,
+    agent: Option<String>,
+    body: Option<String>,
+    arguments: Option<serde_json::Value>,
+) -> Result<InboxItemRow, GatewayError> {
+    let item = insert_approval(
+        pool,
+        kind,
+        title,
+        session_id.as_deref(),
+        agent,
+        body,
+        arguments,
+        "pending",
+    )
+    .await?;
 
     let Some(session_id) = session_id.as_deref() else {
         return Ok(item);

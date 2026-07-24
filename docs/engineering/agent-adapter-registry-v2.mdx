@@ -1,0 +1,353 @@
+---
+title: "Agent adapter registry v2"
+description: "Behavior baseline and migration guardrails for converging agent adapter registries."
+---
+
+# Agent adapter registry v2
+
+## Status
+
+S0 recorded the behavior baseline before registry convergence. S1 established
+Registry V2 as a validated, application-scoped shadow registry. S2 moved source
+selection, S3 moved federated invocation selection, and S4 moved managed
+runtime selection into Registry V2 while preserving provider traffic,
+persistence, and public APIs.
+
+## Problem
+
+Managed-agent integration currently uses three independently selected adapter
+surfaces:
+
+1. import providers implement `ImportAgentsProvider` and are selected from a
+   fixed list in the managed-agent import module;
+2. federated execution uses the private `ExternalRuntimeAdapter` bridge in the
+   Session HTTP module;
+3. managed runtimes implement the SDK `RuntimeAdapter` and are selected from a
+   registry rebuilt by `providers::runtime_registry()`.
+
+The provider-neutral adapter traits under `managed_agents::adapters` describe
+the intended source and invocation boundary, but they are not yet the sole
+selection path. Registry v2 will converge selection without combining
+unrelated lifecycle responsibilities into one broad trait.
+
+## Current behavior baseline
+
+### Source import
+
+The import provider lookup accepts either a provider ID or its API
+specification ID. The current mappings are:
+
+| Provider ID | API specification |
+| --- | --- |
+| `a2a` | `a2a_v1` |
+| `acp` | `acp_legacy` |
+| `crewai` | `crewai_crew` |
+| `dify` | `dify_app` |
+| `langgraph` | `langgraph_assistant` |
+| `openai_assistants` | `openai_assistant` |
+| `openapi` | `openapi_rest` |
+| `elastic` | `elastic_agent_builder` |
+| `opencode` | `claude_managed_agents` |
+
+A custom harness alias is resolved through its database `api_spec`, then
+matched to the same import-provider lookup. An imported agent persists the
+provider ID as `source.provider`, the API specification as `source.api_spec`,
+and the selected runtime alias separately as `runtime`.
+
+Import-provider protocol versions default to `unverified`. A2A additionally
+declares the concrete `0.3` and `1.0` versions that its source parser can
+negotiate. `a2a_v1` remains a runtime/API-spec alias and is never treated as
+proof that an Agent Card negotiated A2A protocol version 1.0.
+
+### Federated execution
+
+The external Session bridge recognizes exactly these runtime/API-spec IDs:
+
+- `a2a_v1`;
+- `dify_app`;
+- `openapi_rest`;
+- `langgraph_assistant`;
+- `crewai_crew`;
+- `acp_legacy`.
+
+ACP participates in lookup so inventory and compatibility behavior remain
+stable, but invocation fails closed until a compatibility profile is selected.
+Unknown IDs are not external bridges.
+
+### Managed runtimes
+
+The SDK runtime registry contains every entry in `AgentRuntime::CATALOG`:
+
+- `claude_managed_agents`;
+- `cursor`;
+- `gemini_antigravity`;
+- `elastic_agent_builder`.
+
+Each entry resolves both by enum and by its persisted string ID. Their current
+static adapter protocol version is `unverified`. Custom harnesses reuse the
+adapter registered for their `api_spec`; the harness alias remains the
+persisted runtime name.
+
+### Session runtime description
+
+Runtime description currently follows this precedence:
+
+1. a built-in SDK runtime entry;
+2. a database harness whose `api_spec` resolves to an SDK runtime entry;
+3. the raw runtime string with protocol version `unverified`;
+4. imported-agent source metadata may replace `adapter_id` with
+   `source.provider` and `protocol` with `source.api_spec`.
+
+The selected protocol version is not replaced from imported source evidence.
+Registry v2 must preserve this behavior until explicit protocol negotiation is
+implemented.
+
+## Target boundary
+
+Registry v2 will contain one registration per adapter with optional, narrow
+facets:
+
+```text
+AgentAdapterRegistry
+  AdapterDescriptor
+  SourceAdapter?
+  InvocationAdapter?
+  ManagedRuntimeDriver?
+  EventNormalizer?
+  ConformanceProfile
+```
+
+`SourceAdapter` owns validation, discovery, synchronization, and source
+evidence. `InvocationAdapter` owns one Turn Invocation, remote binding,
+events, state, continuation, cancellation, and recovery.
+`ManagedRuntimeDriver` owns provider-managed Agent, Environment, and Session
+lifecycle operations. A provider implements only the facets it supports.
+
+## Migration invariants
+
+1. Registry v2 is constructed once at application startup and reused.
+2. Shadow lookup must be read-only and must not make additional provider
+   requests.
+3. Existing provider IDs, API-spec IDs, runtime aliases, and persisted source
+   fields remain compatible during migration.
+4. Adapter selection changes before provider implementations are rewritten;
+   legacy implementations are initially exposed through compatibility facets.
+5. HTTP handlers perform authentication and response shaping but do not select
+   providers with provider-specific branches.
+6. Protocol family, negotiated protocol version, transport binding, adapter
+   implementation, and provider product version remain distinct values.
+7. `unverified` is preserved until a connector has real negotiation evidence.
+8. Historical Invocation protocol evidence is never rewritten by a connector
+   migration.
+9. Provider-native events remain immutable evidence; only canonical events
+   drive Session and Turn projections.
+10. Every migration slice must keep legacy text conversations and published
+    agents operational.
+
+## S1 implementation
+
+Registry V2 is built once during `AppState` construction. Startup fails with
+an invalid-configuration error if a descriptor is malformed, an adapter ID is
+duplicated, or an alias conflicts within the same facet.
+
+Aliases are indexed separately for source import, federated invocation, and
+managed runtime lifecycle. This is required because a persisted value can have
+different meanings at different boundaries. For example,
+`claude_managed_agents` identifies the OpenCode source API specification while
+also identifying the Claude managed runtime.
+
+Registry descriptors do not infer a protocol version from an API-spec alias.
+They preserve `unverified` unless the Source implementation declares a pinned
+transport contract; OpenAI Assistants currently declares `assistants=v2`. In
+S1 the registry was read-only after construction and used only for shadow
+lookup.
+
+## S2 implementation
+
+The production source SPI now lives at
+`managed_agents::adapters::source::SourceAdapter`. Existing provider modules
+implement this SPI through the former `ImportAgentsProvider` name, which is
+retained as a compatibility re-export for downstream code during migration.
+There is no second provider trait or fixed HTTP-layer provider list.
+
+Registry construction binds every source descriptor to exactly one
+implementation. Startup fails if a source implementation is unknown,
+duplicated, attached to a descriptor without the source facet, or missing for
+an enabled source facet.
+
+Import discovery, connector creation, source synchronization, connector health
+tests, federated preflight probes, and source-provider catalog generation all
+resolve their adapter through the application-scoped Registry V2 instance.
+Provider IDs and API-spec aliases remain facet-scoped and backward compatible.
+
+S2 intentionally preserves the current discovery request and normalized import
+shapes. Cursor-based incremental discovery and richer typed source evidence are
+future SourceAdapter contract extensions; they are not inferred from current
+providers.
+
+## S3 implementation
+
+Federated Session execution now resolves an `InvocationAdapter` through
+Registry V2. The six existing A2A, Dify, OpenAPI, LangGraph, CrewAI, and
+fail-closed ACP implementations are bound once during application startup.
+Invocation, cooperative cancellation, enforced abort, runtime capability
+checks, recovery, and event routing no longer scan a private HTTP-layer adapter
+array.
+
+Startup rejects unknown, duplicated, missing, or facet-incompatible Invocation
+implementations, as well as undeclared aliases and protocol versions. Existing
+request, polling, continuation, cancellation, event, and error behavior remains
+unchanged.
+
+## S4 implementation
+
+Managed runtime drivers for Claude Managed Agents, Cursor, Gemini Antigravity,
+and Elastic Agent Builder are bound into Registry V2 at startup. Runtime
+resolution, custom-harness API-spec resolution, Session runtime descriptions,
+model discovery, harness validation, routines, and the SDK client all select
+drivers through Registry V2.
+
+The former `RuntimeAdapterRegistry` lookup structure has been removed. Provider
+modules now contribute runtime bindings to the unified registry builder. Each
+application SDK client receives the application-scoped registry and shared HTTP
+client; standalone SDK clients cache one validated Registry V2 instance instead
+of rebuilding a runtime registry for every operation.
+
+## S5-S6 A2A strict source negotiation
+
+A2A source discovery uses separate typed parsers for legacy 0.3 Agent Cards
+and 1.0 `supportedInterfaces` cards. It validates required card fields,
+protocol versions, bindings, and absolute interface URLs before producing an
+import candidate. Version selection prefers 1.0 and records any 0.3-only
+selection as an explicit legacy compatibility reason; it never retries network
+traffic with another protocol version.
+
+The selected version, binding, interface URL, tenant, Agent Card digest, agent
+version, selection reason, and advertised interfaces are stored in the source
+connector's `negotiated_profile`. Each source snapshot freezes a copy of that
+profile alongside the raw Agent Card. Existing snapshots retain empty protocol
+evidence, and existing `a2a_v1` connector protocol values migrate to `a2a` with
+an `unverified` version unless they already contain an explicit `0.3` or `1.0`
+version.
+
+This stage does not switch Session traffic to the A2A 1.0 request shapes. The
+existing invocation bridge remains unchanged until the versioned JSON-RPC
+client lands.
+
+## S7 A2A versioned JSON-RPC invocation
+
+A2A Session invocation freezes the connector's negotiated profile into the
+primary invocation before sending network traffic. The invocation persists
+protocol `a2a`, exact version `0.3` or `1.0`, and the complete profile in
+`metadata.a2a_profile`. Polling, cancellation, and human continuation reuse
+that profile even if the connector changes while the task is running.
+
+| Operation | A2A 0.3 | A2A 1.0 |
+| --- | --- | --- |
+| Send | `message/send` | `SendMessage` |
+| Get task | `tasks/get` | `GetTask` |
+| Cancel task | `tasks/cancel` | `CancelTask` |
+
+Every request carries `A2A-Version`, validates the JSON-RPC version and request
+ID, rejects ambiguous result/error responses, and maps standard A2A error codes
+to named errors. The 1.0 client emits ProtoJSON roles and parts, unwraps the
+`task`/`message` SendMessage response, and normalizes ProtoJSON task states. It
+never retries with another A2A version.
+
+## S8 A2A content, Artifact, deadline, and recovery
+
+A2A invocation accepts text, structured data, and file input parts. The client
+emits the appropriate 0.3 discriminator form or 1.0 ProtoJSON form without
+changing the frozen protocol version. Completed messages and tasks retain the
+raw A2A response as protocol evidence instead of reducing the result to a
+single string.
+
+Remote data and file Artifact parts are normalized through the canonical
+Artifact adapter. Embedded bytes are verified and stored when Session object
+storage is configured; HTTP(S) references remain explicitly unverified
+external references. When embedded Artifact storage is unavailable, the raw
+A2A evidence remains in the Turn result and `artifact_errors` records why no
+canonical object was created.
+
+`GetTask` requests include bounded history. Polling is governed by the Turn's
+persisted `deadline_at`, not a bridge-local retry count. An elapsed deadline
+causes a best-effort remote cancellation and terminalizes the Turn as
+`timed_out`. Recovery uses the frozen invocation profile and remote task ID to
+resume A2A reconciliation after a gateway restart; it never renegotiates or
+switches versions.
+
+## S9 A2A streaming and Push Notification
+
+Streaming is selected only when the negotiated Agent Card advertises
+`capabilities.streaming`. The frozen profile maps the operation to
+`message/stream` for 0.3 and `SendStreamingMessage` for 1.0. The client
+requires `text/event-stream`, incrementally parses JSON-RPC SSE frames,
+publishes canonical progress events, and accumulates message, status, and
+Artifact updates into the same S8 result shape.
+
+Push Notification is selected only when the card advertises
+`capabilities.pushNotifications` and the gateway has a configured public base
+URL. The gateway registers a versioned task callback, generates a
+per-invocation random bearer token, and stores only its SHA-256 digest.
+Callbacks must match the frozen `A2A-Version`, invocation, remote task ID, and
+bearer digest. Duplicate payloads are idempotent. Accepted events are persisted
+as provider evidence and consumed by the normal task state machine; they do
+not bypass Turn deadlines, Artifact validation, or terminal-state rules.
+
+Neither streaming nor Push capability failure causes a cross-version retry.
+
+## S10 A2A protocol-completeness boundary
+
+The versioned JSON-RPC operation matrix now covers send, stream, task get/list,
+cancel, task subscription, Push Notification create/get/list/delete, and
+authenticated extended Agent Card retrieval. Unsupported version/transport
+combinations fail before network I/O; in particular, JSON-RPC `ListTasks` is
+not synthesized for A2A 0.3.
+
+Recovery prefers the frozen version's task-subscription operation
+(`tasks/resubscribe` or `SubscribeToTask`) when streaming was negotiated, then
+falls back to authoritative `GetTask` polling if a non-terminal stream closes.
+Push registrations retain their returned configuration ID and are deleted
+best-effort on completion, failure, rejection, cancellation, and timeout.
+The 0.3 and 1.0 Push payloads and identifiers remain distinct.
+
+Negotiation records advertised extension URIs and authenticated/extended-card
+capability. Required protocol extensions are fail-closed because the platform
+does not yet implement an A2A extension handler; optional extensions remain
+evidence and cannot silently alter runtime semantics.
+
+## S11 versioned rollout and conformance gate
+
+Registry preflight is now a version-frozen execution smoke test rather than a
+generic HTTP reachability check. It requires a verified negotiated profile,
+uses its exact interface URL, binding, and protocol version, sends the matching
+`SendMessage` shape and `A2A-Version` header, strictly decodes the response,
+and issues a matching best-effort cancel when the smoke request creates a task.
+An unverified legacy connector cannot pass this rollout gate.
+
+The conformance catalog advertises A2A event recovery. Network-call diagnostics
+record bounded-cardinality adapter, protocol, version, binding, method,
+duration, and success fields; task, invocation, and session identities remain
+in tracing context rather than metric labels. The mock and QA matrix cover
+both supported versions, reconnect/resubscribe, Push lifecycle cleanup,
+required-extension rejection, and preflight version mismatch.
+
+## S0 acceptance criteria
+
+- the source-import mapping is locked by unit tests;
+- the documented external-bridge IDs and their separation from managed
+  runtimes are locked by unit tests;
+- the managed-runtime catalog and current protocol-version behavior are locked
+  by unit tests;
+- existing conformance tests continue to pass;
+- no production selection path or provider request changes.
+
+## Out of scope for S0
+
+- constructing registry v2;
+- adding fields to `AppState`;
+- changing database schemas;
+- moving provider modules;
+- changing A2A request or response shapes;
+- assigning a verified protocol version to existing connectors;
+- deleting any legacy registry or adapter.

@@ -86,7 +86,40 @@ pub async fn run_once(state: Arc<AppState>, now: i64) -> Result<usize, GatewayEr
         let Some(row) = sessions::repository::get(pool, &candidate.session_id).await? else {
             continue;
         };
-        if super::external_bridge::supports(runtime)
+        if super::external_bridge::is_a2a_runtime(&state, runtime) {
+            let recoverable = session_control::repository::active_turn(pool, &candidate.session_id)
+                .await?
+                .and_then(|snapshot| snapshot.invocations.into_iter().next())
+                .is_some_and(|invocation| invocation.remote_task_id.is_some());
+            if !recoverable {
+                reconcile_unknown_state(
+                    &state,
+                    &candidate,
+                    now,
+                    "A2A request outcome is unknown before remote task binding",
+                )
+                .await?;
+                continue;
+            }
+            let session_id = candidate.session_id.clone();
+            let consumer_key = session_id.clone();
+            let worker_state = state.clone();
+            let cleanup_state = state.clone();
+            if state.provider_consumers.install(&consumer_key, || {
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        super::external_bridge::recover_a2a_turn(worker_state, row).await
+                    {
+                        tracing::warn!(%error, "A2A task recovery failed");
+                    }
+                    cleanup_state.provider_consumers.remove(&session_id);
+                })
+            }) {
+                reconciled += 1;
+            }
+            continue;
+        }
+        if super::external_bridge::supports(&state, runtime)
             || super::generic_chat::is_generic_chat(pool, runtime).await?
         {
             reconcile_unknown_state(&state, &candidate, now, "gateway runtime cannot resume")

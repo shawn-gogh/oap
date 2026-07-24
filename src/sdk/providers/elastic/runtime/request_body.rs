@@ -93,10 +93,7 @@ impl ElasticBinding {
                     .and_then(Value::as_str)
                     .unwrap_or(encoded)
                     .to_owned(),
-                space: map
-                    .get("space")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                space: map.get("space").and_then(Value::as_str).map(str::to_owned),
                 connector_id: map
                     .get("connector_id")
                     .and_then(Value::as_str)

@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::{
     db::managed_agents::registry::schema::ManagedAgentRow,
     errors::GatewayError,
-    sdk::providers::import_agents::{ImportAgentsError, ImportProviderCapabilities, ImportedAgent},
+    managed_agents::adapters::source::{ImportedAgent, SourceAdapterError, SourceCapabilities},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -12,7 +12,7 @@ pub struct ImportProviderResponse {
     pub id: &'static str,
     pub name: &'static str,
     pub api_spec: &'static str,
-    pub capabilities: ImportProviderCapabilities,
+    pub capabilities: SourceCapabilities,
     pub expose_runtime_harness: bool,
 }
 
@@ -99,14 +99,14 @@ pub struct ImportPreviewItem {
     pub can_import: bool,
 }
 
-pub(crate) fn provider_error(error: ImportAgentsError) -> GatewayError {
+pub(crate) fn provider_error(error: SourceAdapterError) -> GatewayError {
     match error {
-        ImportAgentsError::Request(error) => GatewayError::Upstream(error),
-        ImportAgentsError::Upstream { status, body } => GatewayError::UpstreamHttp(status, body),
-        ImportAgentsError::Decode(error) => {
+        SourceAdapterError::Request(error) => GatewayError::Upstream(error),
+        SourceAdapterError::Upstream { status, body } => GatewayError::UpstreamHttp(status, body),
+        SourceAdapterError::Decode(error) => {
             GatewayError::InvalidConfig(format!("invalid provider response: {error}"))
         }
-        ImportAgentsError::InvalidDocument(error) => {
+        SourceAdapterError::InvalidDocument(error) => {
             GatewayError::BadRequest(format!("invalid provider document: {error}"))
         }
     }

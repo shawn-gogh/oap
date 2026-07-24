@@ -45,6 +45,23 @@ pub async fn run_cleanup_once(state: &AppState) -> Result<(), GatewayError> {
 
     for agent_id in due_agents {
         tracing::info!(agent_id = %agent_id, "permanently deleting soft-deleted agent");
+        // Safety net for rows soft-deleted before delete started stamping, and
+        // for any session created between the soft delete and this sweep: once
+        // the agent row is gone the session's agent_id points at nothing.
+        if let Some(agent) = registry::repository::get(pool, &agent_id).await? {
+            let snapshot = serde_json::json!({
+                "agent_id": agent.id,
+                "name": agent.name,
+                "model": agent.model,
+                "harness": agent.harness,
+                "runtime": agent.config.get("runtime").and_then(|value| value.as_str()),
+                "deleted_at": crate::http::managed_agents::agent_deleted_at(&agent),
+            });
+            let _ = crate::db::managed_agents::sessions::repository::stamp_deleted_agent(
+                pool, &agent_id, &snapshot,
+            )
+            .await;
+        }
         if registry::repository::delete(pool, &agent_id).await? {
             let _ = memory::repository::delete_all(pool, &agent_id).await;
             let _ = crate::db::managed_agents::agent_grants::repository::delete_all_for_agent(

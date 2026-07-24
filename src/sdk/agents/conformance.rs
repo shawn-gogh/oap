@@ -59,15 +59,16 @@ fn runtime_contract_capabilities(
             event_recovery: true,
         };
     }
-    if matches!(
-        runtime,
-        Some("a2a_v1" | "dify_app" | "openapi_rest" | "crewai_crew")
-    ) {
+    if runtime == Some("a2a_v1") {
+        return RuntimeContractCapabilities {
+            terminal_events: true,
+            interrupt_or_abort: true,
+            approval_terminal_result: true,
+            event_recovery: true,
+        };
+    }
+    if matches!(runtime, Some("dify_app" | "openapi_rest" | "crewai_crew")) {
         // Bridges that sessions::external_bridge actually executes:
-        // - a2a_v1: poll_a2a_task maps completed/failed/cancelled/rejected to
-        //   terminal events; cancel() sends tasks/cancel; resolve_continuation
-        //   resumes or cancels a task paused on input/auth-required, so an
-        //   approval rejection converges to a terminal turn state.
         // - dify_app / openapi_rest issue provider calls whose lifecycle is
         //   owned by the platform and always converges to a terminal state.
         // These bridges do not expose replayable provider event streams.
@@ -240,7 +241,7 @@ mod tests {
         let report = inspect_runtime_contract(&agent(Some("a2a_v1")));
         assert_eq!(report.status, "conformant");
         assert!(
-            !report
+            report
                 .checks
                 .iter()
                 .find(|check| check.id == "event_recovery")

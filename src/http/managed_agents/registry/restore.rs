@@ -25,6 +25,8 @@ pub async fn restore(
     if !registry::repository::restore(pool, &agent_id).await? {
         return Err(GatewayError::NotFound("not found".to_owned()));
     }
+    // The agent is live again, so its sessions are no longer tombstones.
+    crate::db::managed_agents::sessions::repository::clear_deleted_agent(pool, &agent_id).await?;
 
     Ok(Json(DeleteResponse { ok: true }))
 }

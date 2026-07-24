@@ -28,6 +28,37 @@ export function normalizedRuntimeEventType(ev: RuntimeAgentEvent): string {
   return typeof type === "string" ? type : "";
 }
 
+/** A live-status "still working" signal (opencode emits one every ~16s while a
+ *  turn runs), not content. It carries no id, so it never dedups and would
+ *  otherwise grow the event array and re-render the whole transcript on every
+ *  tick — it must be pulled out of the content stream and used only to drive
+ *  the activity indicator. */
+export function isRuntimeHeartbeatEvent(type: string): boolean {
+  return type === "session.heartbeat";
+}
+
+export interface RuntimeActivity {
+  /** Coarse lifecycle phase, e.g. "tool_running" | "submitting" | "thinking". */
+  phase?: string;
+  /** Names of the tools the runtime reports as in-flight, if any. */
+  tools: string[];
+}
+
+/** Extracts what the runtime says it is currently doing from a heartbeat, so
+ *  the composer can show "正在执行：bash" instead of a silent, flickering UI. */
+export function runtimeActivityFromHeartbeat(ev: RuntimeAgentEvent): RuntimeActivity {
+  const phase = typeof ev.phase === "string" ? ev.phase : undefined;
+  const rawTools = Array.isArray(ev.tools) ? ev.tools : [];
+  const tools = rawTools
+    .map((tool) =>
+      tool && typeof tool === "object" && typeof (tool as { name?: unknown }).name === "string"
+        ? ((tool as { name: string }).name)
+        : "",
+    )
+    .filter((name): name is string => name.length > 0);
+  return { phase, tools };
+}
+
 function runtimeEventPartKind(ev: RuntimeAgentEvent): "text" | "thinking" {
   const part = ev.part;
   if (part && typeof part === "object") {

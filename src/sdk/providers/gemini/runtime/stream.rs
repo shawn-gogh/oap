@@ -162,7 +162,11 @@ mod tests {
         }));
         assert_eq!(
             event_types(&events),
-            ["session.status_running", "agent.message", "session.status_idle"]
+            [
+                "session.status_running",
+                "agent.message",
+                "session.status_idle"
+            ]
         );
     }
 

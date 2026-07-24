@@ -127,7 +127,7 @@ fn runtime_client(state: &AppState, created: &CreatedRuntimeSession) -> Lap {
             config.elastic_base_url = created.resolved.credential.api_base.clone();
         }
     }
-    Lap::with_http_client(config, state.http.clone())
+    Lap::with_http_client_and_registry(config, state.http.clone(), state.agent_adapters.clone())
 }
 
 async fn create_provider_agent(

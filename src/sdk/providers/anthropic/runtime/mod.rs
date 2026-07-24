@@ -2,9 +2,9 @@ use serde_json::Value;
 
 use crate::sdk::agents::{
     response_fields::id, AgentEventStream, AgentRuntime, AgentSdkError, CreateAgentParams,
-    CreateEnvironmentParams, CreateSessionParams, Environment, Lap, ListAgentsParams,
-    ManagedAgent, ManagedAgentList, SendEventsParams, SendEventsRequest, SendEventsResponse,
-    Session, CLAUDE_MANAGED_AGENTS,
+    CreateEnvironmentParams, CreateSessionParams, Environment, Lap, ListAgentsParams, ManagedAgent,
+    ManagedAgentList, SendEventsParams, SendEventsRequest, SendEventsResponse, Session,
+    CLAUDE_MANAGED_AGENTS,
 };
 use crate::sdk::providers::base::runtime::{AdapterFuture, RuntimeAdapter};
 
@@ -31,13 +31,27 @@ impl RuntimeAdapter for ClaudeManagedAgentsRuntime {
                 id: id(&raw)?,
                 version: raw.get("version").and_then(Value::as_u64),
                 name: raw.get("name").and_then(Value::as_str).map(str::to_owned),
-                description: raw.get("description").and_then(Value::as_str).map(str::to_owned),
-                model: raw.get("model").and_then(|m| m.get("id")).and_then(Value::as_str)
+                description: raw
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                model: raw
+                    .get("model")
+                    .and_then(|m| m.get("id"))
+                    .and_then(Value::as_str)
                     .or_else(|| raw.get("model").and_then(Value::as_str))
                     .map(str::to_owned),
                 system: raw.get("system").and_then(Value::as_str).map(str::to_owned),
-                tools: raw.get("tools").and_then(Value::as_array).cloned().unwrap_or_default(),
-                mcp_servers: raw.get("mcp_servers").and_then(Value::as_array).cloned().unwrap_or_default(),
+                tools: raw
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+                mcp_servers: raw
+                    .get("mcp_servers")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
                 metadata: raw.get("metadata").cloned(),
                 created_at: raw.get("created_at").and_then(Value::as_i64),
                 updated_at: raw.get("updated_at").and_then(Value::as_i64),
@@ -105,7 +119,10 @@ impl RuntimeAdapter for ClaudeManagedAgentsRuntime {
             let session = Session {
                 id: id(&raw)?,
                 agent: raw.get("agent").and_then(Value::as_str).map(str::to_owned),
-                environment_id: raw.get("environment_id").and_then(Value::as_str).map(str::to_owned),
+                environment_id: raw
+                    .get("environment_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 status: raw.get("status").and_then(Value::as_str).map(str::to_owned),
                 metadata: raw.get("metadata").cloned(),
                 created_at: raw.get("created_at").and_then(Value::as_i64),
@@ -248,7 +265,10 @@ fn managed_agent(raw: Value) -> Result<ManagedAgent, AgentSdkError> {
         id: id(&raw)?,
         version: raw.get("version").and_then(Value::as_u64),
         name: raw.get("name").and_then(Value::as_str).map(str::to_owned),
-        description: raw.get("description").and_then(Value::as_str).map(str::to_owned),
+        description: raw
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         model: raw
             .get("model")
             .and_then(|m| m.get("id"))
@@ -286,7 +306,10 @@ fn normalize_mcp_servers(body: &mut Value) {
         // Anthropic never sets this field (it uses the vault), so retaining it
         // is a no-op there.
         server.retain(|key, _| {
-            matches!(key.as_str(), "type" | "name" | "url" | "authorization_token")
+            matches!(
+                key.as_str(),
+                "type" | "name" | "url" | "authorization_token"
+            )
         });
     }
 }

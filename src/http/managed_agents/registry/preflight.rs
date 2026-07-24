@@ -23,11 +23,21 @@ use sqlx::PgPool;
 
 use crate::{
     db::{
-        managed_agents::registry::{repository, schema::ManagedAgentRow},
+        managed_agents::{
+            registry::{repository, schema::ManagedAgentRow},
+            sources,
+        },
         mcp_servers, vault_keys,
     },
     errors::GatewayError,
     http::{agent_runtime_tools::runtime_tools, runtime_resolution::resolve_runtime_for_agent},
+    managed_agents::{
+        a2a::{
+            decode_json_rpc_response, json_rpc_request, send_message_params, task_params,
+            A2aJsonRpcOperation, A2aRuntimeProfile,
+        },
+        adapters::source::NegotiatedSourceProfile,
+    },
     proxy::{auth::master_key::authenticate, credential_crypto, state::AppState},
     sdk::agents::{
         canonical::{normalize_agent, NormalizationSeverity},
@@ -338,17 +348,40 @@ async fn check_execution_smoke(
     if source.get("api_spec").and_then(serde_json::Value::as_str) != Some("a2a_v1") {
         return None;
     }
-    let endpoint = source
-        .get("endpoint")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let rpc_url = source
-        .pointer("/raw/url")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| endpoint.to_owned());
+    let negotiated = match sources::repository::get_source_by_agent(pool, &agent.id).await {
+        Ok(Some(managed_source)) => match managed_source.connector_id.as_deref() {
+            Some(connector_id) => {
+                match sources::repository::get_connector(pool, connector_id).await {
+                    Ok(Some(connector)) => serde_json::from_value::<NegotiatedSourceProfile>(
+                        connector.negotiated_profile,
+                    )
+                    .ok(),
+                    _ => None,
+                }
+            }
+            None => None,
+        },
+        _ => None,
+    };
+    let Some(negotiated) = negotiated else {
+        return Some(PreflightCheck {
+            id: "execution_smoke",
+            label: "执行冒烟".to_owned(),
+            verdict: FAILED,
+            detail: "A2A Connector 尚未形成严格协商 Profile，请先同步来源。".to_owned(),
+        });
+    };
+    let profile = match A2aRuntimeProfile::try_from(&negotiated) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("A2A 协商 Profile 无法执行：{error}"),
+            });
+        }
+    };
     let credential_mode = source
         .get("credential_mode")
         .and_then(serde_json::Value::as_str);
@@ -394,43 +427,55 @@ async fn check_execution_smoke(
             });
         }
     };
-    let rpc_url =
-        match crate::http::managed_agents::source_management::validate_connector_endpoint(&rpc_url)
-            .await
-        {
-            Ok(url) => url,
-            Err(error) => {
-                return Some(PreflightCheck {
-                    id: "execution_smoke",
-                    label: "执行冒烟".to_owned(),
-                    verdict: FAILED,
-                    detail: format!("执行端点校验失败：{error}"),
-                });
-            }
-        };
-    let started = std::time::Instant::now();
-    let response = tokio::time::timeout(
-        PROBE_TIMEOUT,
-        state
-            .http
-            .post(&rpc_url)
-            .bearer_auth(&api_key)
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": crate::db::managed_agents::id("rpc"),
-                "method": "message/send",
-                "params": {
-                    "message": {
-                        "kind": "message",
-                        "role": "user",
-                        "messageId": crate::db::managed_agents::id("msg"),
-                        "parts": [{"kind": "text", "text": "ping：这是平台运行检查的执行冒烟，请直接简短回复。"}]
-                    }
-                }
-            }))
-            .send(),
+    let rpc_url = match crate::http::managed_agents::source_management::validate_connector_endpoint(
+        &profile.interface_url,
     )
-    .await;
+    .await
+    {
+        Ok(url) => url,
+        Err(error) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("执行端点校验失败：{error}"),
+            });
+        }
+    };
+    let request_id = crate::db::managed_agents::id("rpc");
+    let request_body = match json_rpc_request(
+        &profile,
+        A2aJsonRpcOperation::SendMessage,
+        &request_id,
+        send_message_params(
+            &profile,
+            &crate::db::managed_agents::id("msg"),
+            "ping：这是平台运行检查的执行冒烟，请直接简短回复。",
+            None,
+            None,
+        ),
+    ) {
+        Ok(body) => body,
+        Err(error) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("无法构造 A2A 冒烟请求：{error}"),
+            });
+        }
+    };
+    let mut request = state
+        .http
+        .post(&rpc_url)
+        .header("accept", "application/json")
+        .header("A2A-Version", profile.protocol_version.as_str())
+        .json(&request_body);
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(&api_key);
+    }
+    let started = std::time::Instant::now();
+    let response = tokio::time::timeout(PROBE_TIMEOUT, request.send()).await;
     let latency = started.elapsed().as_millis();
     let payload = match response {
         Ok(Ok(response)) if response.status().is_success() => {
@@ -471,48 +516,56 @@ async fn check_execution_smoke(
             });
         }
     };
-    if payload.get("error").is_some() {
-        return Some(PreflightCheck {
-            id: "execution_smoke",
-            label: "执行冒烟".to_owned(),
-            verdict: FAILED,
-            detail: format!(
-                "message/send 返回 JSON-RPC 错误：{}",
-                payload
-                    .pointer("/error/message")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown")
-            ),
-        });
-    }
+    let result = match decode_json_rpc_response(
+        payload,
+        &request_id,
+        A2aJsonRpcOperation::SendMessage,
+        profile.protocol_version,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            return Some(PreflightCheck {
+                id: "execution_smoke",
+                label: "执行冒烟".to_owned(),
+                verdict: FAILED,
+                detail: format!("A2A {} 执行冒烟失败：{error}", profile.protocol_version),
+            });
+        }
+    };
     // Either an immediate text reply or an accepted async task proves the
     // execution path (URL + auth + protocol). If a task was created, cancel
     // it best-effort so the smoke doesn't leave remote work running.
-    let result = payload.get("result").cloned().unwrap_or_default();
     let task_id = result
         .get("id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
     if let Some(task_id) = task_id.as_deref() {
-        let _ = state
+        let cancel_id = crate::db::managed_agents::id("rpc");
+        let cancel_body = json_rpc_request(
+            &profile,
+            A2aJsonRpcOperation::CancelTask,
+            &cancel_id,
+            task_params(task_id),
+        );
+        let mut cancel = state
             .http
             .post(&rpc_url)
-            .bearer_auth(&api_key)
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": crate::db::managed_agents::id("rpc"),
-                "method": "tasks/cancel",
-                "params": {"id": task_id}
-            }))
-            .send()
-            .await;
+            .header("accept", "application/json")
+            .header("A2A-Version", profile.protocol_version.as_str());
+        if !api_key.trim().is_empty() {
+            cancel = cancel.bearer_auth(&api_key);
+        }
+        if let Ok(cancel_body) = cancel_body {
+            let _ = cancel.json(&cancel_body).send().await;
+        }
     }
     Some(PreflightCheck {
         id: "execution_smoke",
         label: "执行冒烟".to_owned(),
         verdict: VERIFIED,
         detail: format!(
-            "message/send 执行链路验证通过（{}，{latency}ms）。",
+            "A2A {} 执行链路验证通过（{}，{latency}ms）。",
+            profile.protocol_version,
             if task_id.is_some() {
                 "远端以异步任务受理，已即时取消"
             } else {
@@ -621,7 +674,9 @@ async fn check_federated_source(
     }
     let source = agent.config.get("source")?;
     let provider_id = source.get("provider").and_then(serde_json::Value::as_str)?;
-    let provider = crate::http::managed_agents::import::provider_for_id(provider_id).ok()?;
+    let provider =
+        crate::http::managed_agents::import::provider_for_id(&state.agent_adapters, provider_id)
+            .ok()?;
     if provider.expose_runtime_harness() {
         return None;
     }

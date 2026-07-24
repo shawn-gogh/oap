@@ -2,8 +2,9 @@ use serde_json::{json, Value};
 
 use crate::sdk::agents::{
     response_fields::id, AgentEventStream, AgentRuntime, AgentSdkError, CreateAgentParams,
-    CreateEnvironmentParams, CreateSessionParams, Environment, Lap, ManagedAgent, ManagedSessionRef,
-    SendEventsParams, SendEventsResponse, Session, SessionContext, ELASTIC_AGENT_BUILDER,
+    CreateEnvironmentParams, CreateSessionParams, Environment, Lap, ManagedAgent,
+    ManagedSessionRef, SendEventsParams, SendEventsResponse, Session, SessionContext,
+    ELASTIC_AGENT_BUILDER,
 };
 use crate::sdk::providers::base::runtime::{AdapterFuture, RuntimeAdapter};
 
@@ -42,7 +43,9 @@ impl RuntimeAdapter for ElasticAgentBuilderRuntime {
         SessionContext::elastic(
             binding,
             agent_id,
-            session.provider_run_id.filter(|id| id != PENDING_RUN_MARKER),
+            session
+                .provider_run_id
+                .filter(|id| id != PENDING_RUN_MARKER),
         )
     }
 

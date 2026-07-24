@@ -53,14 +53,13 @@ fn resolve_prefers_agent_config_then_default() {
         "elastic_space_id": "ops",
         "elastic_connector_id": "conn-1"
     });
-    let resolved =
-        ElasticBinding::resolve(Some(&opts), Some("default-agent".to_owned())).unwrap();
+    let resolved = ElasticBinding::resolve(Some(&opts), Some("default-agent".to_owned())).unwrap();
     assert_eq!(resolved.agent_id, "agent-from-config");
     assert_eq!(resolved.space.as_deref(), Some("ops"));
     assert_eq!(resolved.connector_id.as_deref(), Some("conn-1"));
 
-    let fallback = ElasticBinding::resolve(Some(&json!({})), Some("default-agent".to_owned()))
-        .unwrap();
+    let fallback =
+        ElasticBinding::resolve(Some(&json!({})), Some("default-agent".to_owned())).unwrap();
     assert_eq!(fallback.agent_id, "default-agent");
 }
 
@@ -99,16 +98,11 @@ fn event(value: Value) -> AgentEvent {
 }
 
 fn source_stream(events: Vec<AgentEvent>) -> AgentEventStream {
-    Box::pin(stream::iter(
-        events.into_iter().map(Ok::<_, AgentSdkError>),
-    ))
+    Box::pin(stream::iter(events.into_iter().map(Ok::<_, AgentSdkError>)))
 }
 
 async fn collect(stream: AgentEventStream) -> Vec<AgentEvent> {
-    stream
-        .map(|event| event.unwrap())
-        .collect::<Vec<_>>()
-        .await
+    stream.map(|event| event.unwrap()).collect::<Vec<_>>().await
 }
 
 #[tokio::test]
@@ -151,16 +145,25 @@ fn assert_normalized_round(events: &[AgentEvent]) {
             "session.status_idle",
         ]
     );
-    assert_eq!(event_data(events, "session.status_idle")["provider_run_id"], json!("conv-42"));
+    assert_eq!(
+        event_data(events, "session.status_idle")["provider_run_id"],
+        json!("conv-42")
+    );
     assert_eq!(
         event_data(events, "agent.message")["content"],
         json!([{ "type": "text", "text": "Hello world" }])
     );
     assert_eq!(event_data(events, "agent.tool_use")["id"], json!("call-1"));
-    assert_eq!(event_data(events, "agent.tool_use")["name"], json!("search"));
+    assert_eq!(
+        event_data(events, "agent.tool_use")["name"],
+        json!("search")
+    );
 }
 
-fn event_data<'a>(events: &'a [AgentEvent], event_type: &str) -> &'a serde_json::Map<String, Value> {
+fn event_data<'a>(
+    events: &'a [AgentEvent],
+    event_type: &str,
+) -> &'a serde_json::Map<String, Value> {
     &events
         .iter()
         .find(|event| event.event_type == event_type)
@@ -178,7 +181,11 @@ async fn emits_idle_when_stream_ends_without_round_complete() {
     let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
     assert_eq!(
         types,
-        vec!["session.status_running", "agent.message", "session.status_idle"]
+        vec![
+            "session.status_running",
+            "agent.message",
+            "session.status_idle"
+        ]
     );
 }
 

@@ -1,6 +1,14 @@
 use serde_json::json;
 
 use super::*;
+use crate::sdk::providers::{
+    a2a_import_agents::A2A_IMPORT_AGENTS, elastic::import_agents::ELASTIC_IMPORT_AGENTS,
+    opencode_import_agents::OPENCODE_IMPORT_AGENTS,
+};
+
+fn source_registry() -> AgentAdapterRegistry {
+    crate::sdk::providers::agent_adapter_registry().unwrap()
+}
 
 #[test]
 fn elastic_agent_config_uses_runtime_api_spec() {
@@ -88,10 +96,73 @@ fn imported_agent_config_persists_provider_interaction_contract() {
 
 #[test]
 fn elastic_import_provider_resolves_by_api_spec() {
-    let provider = provider_for_id("elastic_agent_builder").unwrap();
+    let registry = source_registry();
+    let provider = provider_for_id(&registry, "elastic_agent_builder").unwrap();
 
     assert_eq!(provider.id(), "elastic");
     assert_eq!(provider.api_spec(), "elastic_agent_builder");
+}
+
+#[test]
+fn import_provider_lookup_preserves_provider_and_api_spec_aliases() {
+    let registry = source_registry();
+    let expected = [
+        ("a2a", "a2a_v1"),
+        ("acp", "acp_legacy"),
+        ("crewai", "crewai_crew"),
+        ("dify", "dify_app"),
+        ("langgraph", "langgraph_assistant"),
+        ("openai_assistants", "openai_assistant"),
+        ("openapi", "openapi_rest"),
+        ("elastic", "elastic_agent_builder"),
+        ("opencode", "claude_managed_agents"),
+    ];
+
+    for (provider_id, api_spec) in expected {
+        let by_provider = provider_for_id(&registry, provider_id).unwrap();
+        let by_api_spec = provider_for_id(&registry, api_spec).unwrap();
+
+        assert_eq!(by_provider.id(), provider_id);
+        assert_eq!(by_provider.api_spec(), api_spec);
+        assert_eq!(by_api_spec.id(), provider_id);
+        assert_eq!(by_api_spec.api_spec(), api_spec);
+    }
+}
+
+#[test]
+fn imported_source_keeps_adapter_protocol_and_runtime_identities_separate() {
+    let agent = ImportAgent {
+        external_id: "remote-a2a".to_owned(),
+        name: Some("Remote A2A".to_owned()),
+        description: None,
+        model: None,
+        raw: Some(json!({"name": "Remote A2A"})),
+    };
+
+    let config = agent_config(
+        &A2A_IMPORT_AGENTS,
+        "https://a2a.example.com",
+        &agent,
+        &CredentialMode::Byo,
+        None,
+        "a2a_v1",
+    );
+
+    assert_eq!(config["runtime"], "a2a_v1");
+    assert_eq!(config["source"]["provider"], "a2a");
+    assert_eq!(config["source"]["api_spec"], "a2a_v1");
+    assert_eq!(A2A_IMPORT_AGENTS.protocol_version(), "unverified");
+}
+
+#[test]
+fn unknown_import_provider_is_rejected() {
+    let registry = source_registry();
+    let error = match provider_for_id(&registry, "unknown-provider") {
+        Ok(_) => panic!("unknown provider unexpectedly resolved"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("import provider not found"));
 }
 
 #[test]
@@ -225,7 +296,23 @@ fn importable_agent_has_no_blocking_issues() {
         name: Some("Remote".to_owned()),
         description: None,
         model: None,
-        raw: Some(json!({ "url": "https://agents.example.com/rpc" })),
+        raw: Some(json!({
+            "protocolVersion": "0.3",
+            "name": "Remote",
+            "description": "Remote agent",
+            "url": "https://agents.example.com/rpc",
+            "preferredTransport": "JSONRPC",
+            "version": "1.0.0",
+            "capabilities": {},
+            "defaultInputModes": ["text/plain"],
+            "defaultOutputModes": ["text/plain"],
+            "skills": [{
+                "id": "remote",
+                "name": "Remote",
+                "description": "Handles remote work",
+                "tags": ["remote"]
+            }]
+        })),
     };
 
     let issues = import_issues(&A2A_IMPORT_AGENTS, &agent);
@@ -235,7 +322,8 @@ fn importable_agent_has_no_blocking_issues() {
 
 #[test]
 fn provider_catalog_exposes_import_capabilities() {
-    let providers = import_runtime_providers();
+    let registry = source_registry();
+    let providers = import_runtime_providers(&registry);
     let opencode = providers
         .iter()
         .find(|provider| provider.id == "opencode")

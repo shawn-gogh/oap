@@ -2,14 +2,26 @@ use serde_json::{json, Value};
 
 use crate::{
     http::managed_agents::import_types::ImportAgent,
-    sdk::providers::import_agents::ImportAgentsProvider,
+    managed_agents::adapters::source::SourceAdapter,
 };
 
-pub(super) fn import_issues(
-    provider: &dyn ImportAgentsProvider,
-    agent: &ImportAgent,
-) -> Vec<Value> {
+pub(super) fn import_issues(provider: &dyn SourceAdapter, agent: &ImportAgent) -> Vec<Value> {
     let mut issues = identity_and_risk_issues(agent);
+    if let Some(raw) = agent.raw.as_ref() {
+        let missing_a2a_interface = provider.id() == "a2a"
+            && raw.get("url").and_then(Value::as_str).is_none()
+            && raw.get("supportedInterfaces").is_none();
+        if !missing_a2a_interface {
+            if let Err(error) = provider.negotiate_protocol("", raw) {
+                issues.push(json!({
+                    "severity": "blocking",
+                    "code": "source_protocol_negotiation_failed",
+                    "field": "source.raw",
+                    "message": error.to_string()
+                }));
+            }
+        }
+    }
     if let Some(issue) = provider_issue(provider.id(), agent.raw.as_ref()) {
         issues.push(issue);
     }
@@ -53,12 +65,17 @@ fn identity_and_risk_issues(agent: &ImportAgent) -> Vec<Value> {
 fn provider_issue(provider_id: &str, raw: Option<&Value>) -> Option<Value> {
     let raw = raw.cloned().unwrap_or(Value::Null);
     match provider_id {
-        "a2a" if raw.get("url").and_then(Value::as_str).is_none() => Some(json!({
-            "severity": "blocking",
-            "code": "a2a_runtime_url_missing",
-            "field": "source.raw.url",
-            "message": "A2A Agent Card 缺少运行端点 URL。"
-        })),
+        "a2a"
+            if raw.get("url").and_then(Value::as_str).is_none()
+                && raw.get("supportedInterfaces").is_none() =>
+        {
+            Some(json!({
+                "severity": "blocking",
+                "code": "a2a_runtime_url_missing",
+                "field": "source.raw.supportedInterfaces",
+                "message": "A2A Agent Card 缺少可协商的运行接口。"
+            }))
+        }
         "openapi" if raw.get("x-lap-runtime").is_none() => Some(json!({
             "severity": "approval_required",
             "code": "openapi_runtime_mapping_required",

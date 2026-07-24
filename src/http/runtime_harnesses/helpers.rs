@@ -19,7 +19,7 @@ pub(crate) async fn build_harnesses_list(
 ) -> Result<Vec<HarnessResponse>, GatewayError> {
     let mut result = default_harnesses(state).await?;
     result.extend(custom_harnesses(state, pool).await?);
-    append_import_providers(&mut result);
+    append_import_providers(&state.agent_adapters, &mut result);
     Ok(result)
 }
 
@@ -85,8 +85,11 @@ async fn custom_harnesses(
     Ok(result)
 }
 
-fn append_import_providers(result: &mut Vec<HarnessResponse>) {
-    for provider in import_runtime_providers() {
+fn append_import_providers(
+    registry: &crate::managed_agents::adapters::registry::AgentAdapterRegistry,
+    result: &mut Vec<HarnessResponse>,
+) {
+    for provider in import_runtime_providers(registry) {
         if !provider.expose_runtime_harness {
             continue;
         }
@@ -166,7 +169,8 @@ mod tests {
             builtin("claude_managed_agents", "https://api.anthropic.com"),
         ];
 
-        append_import_providers(&mut harnesses);
+        let registry = crate::sdk::providers::agent_adapter_registry().unwrap();
+        append_import_providers(&registry, &mut harnesses);
 
         assert_eq!(harnesses.len(), 2);
         assert!(harnesses

@@ -49,7 +49,7 @@ pub(super) async fn create_runtime_session(
     // against; the gateway itself is the runtime.
     if let Some(alias) = input.runtime.as_deref() {
         if super::generic_chat::is_generic_chat(pool, alias).await?
-            || super::external_bridge::supports(alias)
+            || super::external_bridge::supports(&state, alias)
         {
             return create_generic_chat_session(state, pool, input, owner, traceparent, tracestate)
                 .await;
@@ -195,10 +195,18 @@ pub(super) async fn create_runtime_session(
                 .await
             {
                 Ok(()) => {
-                    if let Some(turn) = initial_turn.as_ref() {
-                        session_control::repository::transition(pool, &turn.id, "completed", None)
-                            .await?;
-                    }
+                    // Do NOT complete the turn here. `execute_runtime_prompt`
+                    // returns as soon as the prompt is submitted and the
+                    // background event consumer is spawned — the agent then
+                    // runs autonomously for minutes. Completing the turn now
+                    // marked it done at submit time, which (a) desynced the UI
+                    // (turn "completed" while events streamed → status flicker)
+                    // and (b) removed the only active turn, so the deadline
+                    // recovery sweep could never rescue a session whose runtime
+                    // died mid-run. The consumer completes the turn for real
+                    // when it observes the terminal event (mark_session_status
+                    // → active_turn → "completed"); the deadline sweep is the
+                    // backstop if the runtime never emits one.
                 }
                 Err(error) => {
                     if let Some(turn) = initial_turn.as_ref() {
@@ -287,7 +295,7 @@ async fn create_generic_chat_session(
             crate::managed_agents::adapters::types::InteractionProfileV1::default(),
         )?;
         let descriptor =
-            crate::http::runtime_resolution::describe_session_runtime(pool, &row).await?;
+            crate::http::runtime_resolution::describe_session_runtime(&state, pool, &row).await?;
         let turn = session_control::repository::create_or_get(
             pool,
             session_control::repository::NewTurn {
@@ -324,7 +332,7 @@ async fn create_generic_chat_session(
         let state = state.clone();
         let pool_bg = pool.clone();
         let row_bg = row.clone();
-        let external_bridge = super::external_bridge::supports(&alias);
+        let external_bridge = super::external_bridge::supports(&state, &alias);
         tokio::spawn(async move {
             let result = if external_bridge {
                 super::external_bridge::execute_prompt(state, &pool_bg, &row_bg, &prompt).await
@@ -607,7 +615,7 @@ pub(super) async fn execute_runtime_prompt(
     let runtime = row.runtime.as_deref().ok_or_else(|| {
         GatewayError::InvalidConfig("runtime session is missing runtime".to_owned())
     })?;
-    if super::external_bridge::supports(runtime) {
+    if super::external_bridge::supports(&state, runtime) {
         return super::external_bridge::execute_prompt(state, pool, &row, &prompt).await;
     }
     if super::generic_chat::is_generic_chat(pool, runtime).await? {

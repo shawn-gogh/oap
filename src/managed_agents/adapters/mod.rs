@@ -1,15 +1,18 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin};
 
 use types::{
-    ApprovalResult, ArtifactReference, CanonicalRuntimeEvent, ConnectorContext, DiscoveredAgent,
-    InvocationBinding, InvocationEnvelope, InvocationState, NegotiatedCapabilities,
-    RuntimeCapabilityProfile, SourceCursor, SourceHealth,
+    ApprovalResult, ArtifactReference, CanonicalRuntimeEvent, ConnectorContext, InvocationBinding,
+    InvocationEnvelope, InvocationState, NegotiatedCapabilities, RuntimeCapabilityProfile,
 };
 
 pub mod artifacts;
 pub mod cloudevents;
+pub mod descriptor;
+pub(crate) mod invocation;
 pub mod mcp_grants;
 pub mod platform_identity;
+pub mod registry;
+pub mod source;
 pub mod telemetry;
 pub mod types;
 
@@ -35,21 +38,6 @@ pub enum AdapterError {
     BlockedIdentity(String),
     #[error("adapter storage request failed: {0}")]
     Storage(String),
-}
-
-pub trait SourceAdapter: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn protocol(&self) -> &'static str;
-    fn protocol_version(&self) -> &'static str;
-    fn declared_capabilities(&self) -> RuntimeCapabilityProfile;
-
-    fn validate<'a>(&'a self, connector: &'a ConnectorContext) -> AdapterFuture<'a, SourceHealth>;
-
-    fn discover<'a>(
-        &'a self,
-        connector: &'a ConnectorContext,
-        cursor: Option<&'a SourceCursor>,
-    ) -> AdapterFuture<'a, Vec<DiscoveredAgent>>;
 }
 
 pub trait RuntimeAdapter: Send + Sync {
@@ -160,34 +148,4 @@ pub trait TelemetryAdapter: Send + Sync {
         context: &'a types::TelemetryContext,
         state: &'a InvocationState,
     ) -> AdapterFuture<'a, ()>;
-}
-
-#[derive(Default)]
-pub struct AdapterRegistry {
-    sources: HashMap<String, Arc<dyn SourceAdapter>>,
-    runtimes: HashMap<String, Arc<dyn RuntimeAdapter>>,
-}
-
-impl AdapterRegistry {
-    pub fn register_source(&mut self, adapter: Arc<dyn SourceAdapter>) {
-        self.sources.insert(adapter.id().to_owned(), adapter);
-    }
-
-    pub fn register_runtime(&mut self, adapter: Arc<dyn RuntimeAdapter>) {
-        self.runtimes.insert(adapter.id().to_owned(), adapter);
-    }
-
-    pub fn source(&self, id: &str) -> Option<Arc<dyn SourceAdapter>> {
-        self.sources.get(id).cloned()
-    }
-
-    pub fn runtime(&self, id: &str) -> Option<Arc<dyn RuntimeAdapter>> {
-        self.runtimes.get(id).cloned()
-    }
-
-    pub fn source_ids(&self) -> Vec<&str> {
-        let mut ids = self.sources.keys().map(String::as_str).collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
-    }
 }

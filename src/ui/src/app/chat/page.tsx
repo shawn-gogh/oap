@@ -70,24 +70,26 @@ import { ApprovalDock } from "@/components/approval-dock";
 import { RunDrawer } from "@/components/run/RunDrawer";
 import { ExposedAppsMenu } from "@/components/exposed-apps-menu";
 import { toast } from "sonner";
-import type { Agent, AgentRuntimeId, HarnessMessage, RuntimeHarness } from "@/lib/types";
-import { resolveApiSpec } from "@/lib/types";
+import type { Agent, AgentRuntimeId, DeletedAgentSnapshot, HarnessMessage, RuntimeHarness } from "@/lib/types";
+import { deletedAgentSnapshot, resolveApiSpec } from "@/lib/types";
 import { defaultModelForRuntime, runtimeSupportsModelDiscovery } from "@/lib/model-options";
 import type { Frame } from "@/components/inspector-panel";
 import {
   isRuntimeAssistantTextEvent,
+  isRuntimeHeartbeatEvent,
   isRuntimeThinkingEvent,
   isRuntimeToolEvent,
   isRuntimeTurnStartEvent,
   makeQueuedPromptMessage,
   mergeRuntimeEventList,
   normalizedRuntimeEventType,
+  runtimeActivityFromHeartbeat,
   runtimeErrorMessage,
   runtimeEventsToMessages,
   runtimeSessionStatusFromMetadata,
   runtimeStatusFromEvents,
 } from "@/lib/runtime-events";
-import type { QueuedPrompt } from "@/lib/runtime-events";
+import type { QueuedPrompt, RuntimeActivity } from "@/lib/runtime-events";
 import {
   workspaceAgentTaskPrompt,
   workspaceConversationReference,
@@ -151,6 +153,13 @@ function ChatInner() {
   const [contextPanel, setContextPanel] = useState<"workspace" | "inspector" | null>(null);
   const [workspaceBucket, setWorkspaceBucket] = useState<string | undefined>();
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
+  // Set when the session's agent has been deleted: history stays readable but
+  // the backend refuses new turns, so the composer must say so up front
+  // instead of letting the send fail.
+  const [deletedAgent, setDeletedAgent] = useState<DeletedAgentSnapshot | null>(null);
+  // What the runtime last reported it was doing (from heartbeats). Drives the
+  // activity indicator without pushing heartbeats into the transcript.
+  const [runtimeActivity, setRuntimeActivity] = useState<RuntimeActivity | null>(null);
   const [composerDraft, setComposerDraft] = useState("");
   const [composerFocusVersion, setComposerFocusVersion] = useState(0);
   const [promptOpen, setPromptOpen] = useState(false);
@@ -323,7 +332,29 @@ function ChatInner() {
   const sessionStatusLoading = !sessionLoaded || sessionContentLoading || !approvalsLoaded;
   const waitingForApproval = approvals.length > 0;
   const waitingForAuthorizedApprover = approvals.some((approval) => !approval.canDecide);
+  // Human-readable "what the agent is doing right now", derived from the latest
+  // heartbeat. Only shown while busy (the render site gates on sessionStatus).
+  const runtimeActivityLabel = useMemo(() => {
+    if (!runtimeActivity) return null;
+    const { phase, tools } = runtimeActivity;
+    if (tools.length > 0) return `正在执行：${tools.join("、")}`;
+    switch (phase) {
+      case "tool_running":
+        return "正在执行工具…";
+      case "submitting":
+        return "正在提交…";
+      case "thinking":
+        return "正在思考…";
+      default:
+        return phase ? `运行中：${phase}` : "运行中…";
+    }
+  }, [runtimeActivity]);
   const hasStarted = Boolean(displayMessages && displayMessages.length > 0);
+  // The turn is over — drop the stale "正在执行 bash" so the indicator doesn't
+  // linger after the runtime went quiet.
+  useEffect(() => {
+    if (sessionStatus !== "busy" && runtimeActivity) setRuntimeActivity(null);
+  }, [sessionStatus, runtimeActivity]);
   const modelOptions = useMemo(() => {
     if (sessionRuntime) return models;
     return models.length > 0 ? models : FALLBACK_MODELS;
@@ -396,6 +427,7 @@ function ChatInner() {
     setSessionRuntime(undefined);
     setSessionLoaded(false);
     setSessionStatus("idle");
+    setRuntimeActivity(null);
     setActiveTurn(undefined);
     terminalSessionSnapshotRef.current = false;
     canonicalTurnObservedRef.current = false;
@@ -408,6 +440,7 @@ function ChatInner() {
     decidedApprovalsRef.current.clear();
     setWorkspaceBucket(undefined);
     setApprovalMode("ask");
+    setDeletedAgent(null);
     const resumed = sp.get("resumed") === "true";
     getSession(sid).then(s => {
       if (activeSessionRef.current !== sid) return;
@@ -422,6 +455,7 @@ function ChatInner() {
       setWorkspaceBucket(s.workspace_bucket);
       const mode = (s.environment as Record<string, unknown> | undefined)?.approval_mode;
       if (mode === "auto" || mode === "full") setApprovalMode(mode);
+      setDeletedAgent(deletedAgentSnapshot(s));
       if (s.title) setSessionTitle(s.title);
     }).catch(() => {}).finally(() => {
       if (activeSessionRef.current === sid) setSessionLoaded(true);
@@ -476,12 +510,25 @@ function ChatInner() {
 
   const appendRuntimeEvent = useCallback((ev: RuntimeAgentEvent) => {
     lastRuntimeEventAtRef.current = Date.now();
+
+    const type = normalizedRuntimeEventType(ev);
+
+    // Heartbeats are liveness pings, not content. They carry no id (so they
+    // never dedup) and arrive every ~16s: routing them through the event
+    // array re-rendered the whole transcript on every tick — the "刷新" the
+    // user reported. Consume them only to keep the activity indicator fresh,
+    // and confirm the session is still busy, then stop.
+    if (isRuntimeHeartbeatEvent(type)) {
+      setRuntimeActivity(runtimeActivityFromHeartbeat(ev));
+      terminalSessionSnapshotRef.current = false;
+      setSessionStatus((current) => (current === "busy" ? current : "busy"));
+      return;
+    }
+
     eventBufferRef.current = [
       ...eventBufferRef.current.slice(-499),
       { ts: Date.now(), ev: ev as Frame["ev"] },
     ];
-
-    const type = normalizedRuntimeEventType(ev);
 
     if (type === "approval.asked" || type === "approval.replied") {
       const raw = ev.approval as
@@ -786,9 +833,24 @@ function ChatInner() {
     let cancelled = false;
     if (sessionRuntime) {
       listRuntimeEvents(sid, { snapshot: true })
-        .then((events) => {
+        .then((rawEvents) => {
           if (activeSessionRef.current !== sid) return;
+          // The persisted snapshot includes every heartbeat; keep them out of
+          // the transcript (same reason as the live path) but seed the
+          // activity indicator from the most recent one.
+          const lastHeartbeat = [...rawEvents]
+            .reverse()
+            .find((ev) => isRuntimeHeartbeatEvent(normalizedRuntimeEventType(ev)));
+          if (lastHeartbeat) setRuntimeActivity(runtimeActivityFromHeartbeat(lastHeartbeat));
+          const events = rawEvents.filter(
+            (ev) => !isRuntimeHeartbeatEvent(normalizedRuntimeEventType(ev)),
+          );
           eventBufferRef.current = events.slice(-500).map((ev) => ({ ts: Date.now(), ev: ev as Frame["ev"] }));
+          // Treat the snapshot as a fresh observation so the getActiveTurn poll
+          // doesn't immediately consider the runtime "quiet" (ref still 0) and
+          // force idle before the first live event lands. mergeRuntimeEventsAndStatus
+          // sets the correct busy/idle from the events themselves.
+          lastRuntimeEventAtRef.current = Date.now();
           mergeRuntimeEventsAndStatus(events);
           if (cancelled) return;
           unsub = subscribeRuntimeEvents({
@@ -872,7 +934,19 @@ function ChatInner() {
             setSessionStatus("busy");
           } else {
             if (turn) setActiveTurn(turn);
-            if (canonicalTurnObservedRef.current || !isBusyTurn) {
+            // A runtime session's submit-turn completes within seconds while the
+            // agent then runs autonomously for minutes, streaming events that
+            // belong to no open turn. Trusting the completed turn here forced
+            // sessionStatus back to "idle" every poll while the live stream set
+            // it "busy" — the two fought and flickered the whole UI (no stable
+            // status, no send-button busy state). For runtime sessions the
+            // event stream owns busy/idle; only let the poll declare idle once
+            // the runtime has genuinely gone quiet (observed max inter-event
+            // gap during long tools is ~134s, so 180s is a safe floor) to
+            // still rescue a session whose terminal event was dropped.
+            const runtimeQuietMs = Date.now() - lastRuntimeEventAtRef.current;
+            const mayForceIdle = !sessionRuntime || runtimeQuietMs > 180_000;
+            if (mayForceIdle && (canonicalTurnObservedRef.current || !isBusyTurn)) {
               terminalSessionSnapshotRef.current = true;
               setSessionStatus("idle");
             }
@@ -889,7 +963,7 @@ function ChatInner() {
       mounted = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [sessionLoaded, sessionStatus, sid]);
+  }, [sessionLoaded, sessionStatus, sid, sessionRuntime]);
 
   useEffect(() => {
     if (!sid || !sessionRuntime) return;
@@ -1403,6 +1477,13 @@ function ChatInner() {
               />
             ))}
 
+            {sessionStatus === "busy" && sessionRuntime && !waitingForApproval && runtimeActivityLabel && (
+              <div className="flex items-center gap-2 pt-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3 shrink-0 animate-spin" />
+                <span className="truncate">{runtimeActivityLabel}</span>
+              </div>
+            )}
+
             {sessionStatus === "idle" && sessionRuntime && (lastTurnFailed || error) && lastUserPrompt && (
               <div className="flex items-center gap-2 pt-2">
                 <Button variant="outline" size="sm" className="h-7 text-xs bg-card" onClick={retryLastPrompt}>
@@ -1433,8 +1514,14 @@ function ChatInner() {
           } : undefined}
           onAbort={sessionRuntime ? () => void stopRuntimeTurn() : undefined}
           busy={Boolean(sessionRuntime && sessionStatus === "busy")}
-          disabled={sessionContentLoading || Boolean(sessionRuntime && !model.trim())}
-          disabledHint={sessionContentLoading ? "正在加载对话数据..." : undefined}
+          disabled={sessionContentLoading || Boolean(deletedAgent) || Boolean(sessionRuntime && !model.trim())}
+          disabledHint={
+            sessionContentLoading
+              ? "正在加载对话数据..."
+              : deletedAgent
+                ? `智能体「${deletedAgent.name || deletedAgent.agent_id || "未知"}」已删除，本会话为只读历史。`
+                : undefined
+          }
           mentionFiles={mentionFiles}
           queuedCount={queuedPrompts.length}
           draftValue={composerDraft}

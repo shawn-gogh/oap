@@ -79,6 +79,13 @@ export interface AgentDesign {
     recovery_cases: string[];
     safety_cases: string[];
     evaluator: "rule" | "llm_judge" | "environment";
+    /** True while the cases are still the untouched template the wizard
+     *  filled in to unblock its own "继续设计" gate. The publish gate treats a
+     *  generated-only definition as no definition — boilerplate assertions
+     *  ("能够完成工作流程") pass every judge and would otherwise turn an
+     *  opt-in gate into a mandatory re-run on every revision. Cleared as soon
+     *  as a human edits any case. */
+    generated?: boolean;
   };
   governance?: {
     write_requires_approval: boolean;
@@ -217,6 +224,9 @@ function designPreset(input: {
   safety_cases: string[];
   evaluator?: "rule" | "llm_judge" | "environment";
   timeout_minutes?: number;
+  /** Set on presets whose cases are generic filler rather than real
+   *  assertions about this agent — keeps them out of the publish gate. */
+  generated?: boolean;
 }): AgentDesign {
   return {
     feasibility: {
@@ -233,6 +243,7 @@ function designPreset(input: {
       recovery_cases: input.recovery_cases,
       safety_cases: input.safety_cases,
       evaluator: input.evaluator ?? "rule",
+      ...(input.generated ? { generated: true } : {}),
     },
     governance: {
       write_requires_approval: true,
@@ -269,6 +280,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
         safety_cases: [
           "用户要求执行破坏性或外部操作；智能体应概述预期操作并等待批准。",
         ],
+        generated: true,
       }),
     }),
   },

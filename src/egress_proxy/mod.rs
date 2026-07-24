@@ -233,32 +233,22 @@ async fn audit(
         Decision::Deny(reason) => (format!("已拒绝的数据外发：{host}"), reason.clone()),
     };
     let args = serde_json::json!({ "host": host, "via": "egress_proxy" });
-    let Ok(item) = inbox::repository::create_approval(
+    // The proxy has already allowed or denied the connection at the network
+    // layer — this is a record, not a request. It must not go through
+    // `create_approval`, which parks the session's live turn at
+    // `waiting_approval` and emits approval.requested: a retrying pip or npm
+    // would flip the running turn in and out of "审批中" several times per
+    // second while the inbox stays empty (the item is never pending).
+    let _ = inbox::repository::record_decided_approval(
         pool,
         "data_egress",
         title,
-        Some(session.id.clone()),
-        None,
+        Some(&session.id),
         Some(format!("出站代理判定：{reason}")),
         Some(args),
-    )
-    .await
-    else {
-        return;
-    };
-    let decision_str = if matches!(decision, Decision::Allow(_)) {
-        "accept"
-    } else {
-        "reject"
-    };
-    let _ = inbox::repository::decide_approval(
-        pool,
-        &item.id,
-        decision_str,
-        None,
-        None,
-        &reason,
-        "once",
+        matches!(decision, Decision::Allow(_)),
+        "egress_proxy",
+        Some(reason),
     )
     .await;
 }

@@ -6,16 +6,13 @@ use crate::{
     db::{
         credentials,
         managed_agents::{
-            harnesses, registry::schema::ManagedAgentRow, sessions::schema::SessionRow,
+            harnesses, registry::schema::ManagedAgentRow, sessions::schema::SessionRow, sources,
         },
     },
     errors::GatewayError,
     http::agent_runtimes::{load_credential, RuntimeCredential},
     proxy::{credential_crypto, state::AppState},
-    sdk::{
-        agents::AgentRuntime,
-        providers::{self, base::runtime::RuntimeAdapter},
-    },
+    sdk::{agents::AgentRuntime, providers::base::runtime::RuntimeAdapter},
 };
 
 pub(crate) struct ResolvedRuntime {
@@ -26,6 +23,8 @@ pub(crate) struct ResolvedRuntime {
     pub agent_runtime: AgentRuntime,
     pub credential: RuntimeCredential,
     pub adapter: Arc<dyn RuntimeAdapter>,
+    pub agent_adapters: Arc<crate::managed_agents::adapters::registry::AgentAdapterRegistry>,
+    pub http: reqwest::Client,
     /// True when this runtime came from a DB-registered custom harness (e.g.
     /// opencode) rather than a built-in static runtime. Custom harnesses speak
     /// an api_spec like `claude_managed_agents` but don't implement
@@ -46,22 +45,20 @@ pub(crate) async fn resolve_runtime(
     state: &AppState,
     alias: &str,
 ) -> Result<ResolvedRuntime, GatewayError> {
-    // 1. Try static registry first.
-    {
-        let registry = providers::runtime_registry();
-        if let Some(entry) = registry.entry_for_id(alias) {
-            let credential = load_credential(state, alias).await?;
-            return Ok(ResolvedRuntime {
-                alias: alias.to_owned(),
-                adapter_id: entry.id.to_owned(),
-                protocol: entry.id.to_owned(),
-                protocol_version: entry.adapter.protocol_version().to_owned(),
-                agent_runtime: entry.runtime,
-                credential,
-                adapter: entry.adapter.clone(),
-                is_custom_harness: false,
-            });
-        }
+    if let Some(entry) = state.agent_adapters.managed_runtime_entry(alias) {
+        let credential = load_credential(state, alias).await?;
+        return Ok(ResolvedRuntime {
+            alias: alias.to_owned(),
+            adapter_id: entry.id.to_owned(),
+            protocol: entry.id.to_owned(),
+            protocol_version: entry.adapter.protocol_version().to_owned(),
+            agent_runtime: entry.runtime,
+            credential,
+            adapter: entry.adapter.clone(),
+            agent_adapters: state.agent_adapters.clone(),
+            http: state.http.clone(),
+            is_custom_harness: false,
+        });
     }
 
     // 2. Custom harness: DB lookup
@@ -69,10 +66,12 @@ pub(crate) async fn resolve_runtime(
         .await?
         .ok_or_else(|| GatewayError::InvalidJsonMessage(format!("unsupported runtime: {alias}")))?;
 
-    let registry = providers::runtime_registry();
-    let entry = registry.entry_for_id(&harness.api_spec).ok_or_else(|| {
-        GatewayError::InvalidConfig(format!("unknown api_spec: {}", harness.api_spec))
-    })?;
+    let entry = state
+        .agent_adapters
+        .managed_runtime_entry(&harness.api_spec)
+        .ok_or_else(|| {
+            GatewayError::InvalidConfig(format!("unknown api_spec: {}", harness.api_spec))
+        })?;
 
     let credential = harness_credential(pool, state, alias).await?;
 
@@ -84,6 +83,8 @@ pub(crate) async fn resolve_runtime(
         agent_runtime: entry.runtime,
         credential,
         adapter: entry.adapter.clone(),
+        agent_adapters: state.agent_adapters.clone(),
+        http: state.http.clone(),
         is_custom_harness: true,
     })
 }
@@ -140,6 +141,7 @@ pub(crate) async fn resolve_runtime_for_agent(
 }
 
 pub(crate) async fn describe_session_runtime(
+    state: &AppState,
     pool: &PgPool,
     session: &SessionRow,
 ) -> Result<RuntimeDescriptor, GatewayError> {
@@ -151,17 +153,17 @@ pub(crate) async fn describe_session_runtime(
         });
     };
 
-    let registry = providers::runtime_registry();
-    let (mut adapter_id, mut protocol, protocol_version) =
-        if let Some(entry) = registry.entry_for_id(runtime) {
+    let (mut adapter_id, mut protocol, mut protocol_version) =
+        if let Some(entry) = state.agent_adapters.managed_runtime_entry(runtime) {
             (
                 entry.id.to_owned(),
                 entry.id.to_owned(),
                 entry.adapter.protocol_version().to_owned(),
             )
         } else if let Some(harness) = harnesses::repository::get_by_alias(pool, runtime).await? {
-            let version = registry
-                .entry_for_id(&harness.api_spec)
+            let version = state
+                .agent_adapters
+                .managed_runtime_entry(&harness.api_spec)
                 .map(|entry| entry.adapter.protocol_version())
                 .unwrap_or("unverified");
             (
@@ -189,6 +191,26 @@ pub(crate) async fn describe_session_runtime(
                     .filter(|value| !value.is_empty())
                 {
                     adapter_id = provider.to_owned();
+                    if provider == "a2a" {
+                        protocol = "a2a".to_owned();
+                        if let Some(managed_source) =
+                            sources::repository::get_source_by_agent(pool, &agent.id).await?
+                        {
+                            if let Some(connector_id) = managed_source.connector_id.as_deref() {
+                                if let Some(connector) =
+                                    sources::repository::get_connector(pool, connector_id).await?
+                                {
+                                    if matches!(
+                                        connector.protocol_version.as_deref(),
+                                        Some("0.3" | "1.0")
+                                    ) {
+                                        protocol_version =
+                                            connector.protocol_version.unwrap_or_default();
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 if let Some(api_spec) = source
                     .get("api_spec")
@@ -196,7 +218,9 @@ pub(crate) async fn describe_session_runtime(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
-                    protocol = api_spec.to_owned();
+                    if adapter_id != "a2a" {
+                        protocol = api_spec.to_owned();
+                    }
                 }
             }
         }

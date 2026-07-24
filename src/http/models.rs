@@ -108,7 +108,7 @@ async fn runtime_models(state: &AppState, alias: &str) -> Result<ModelList, Gate
     // reject them as "unsupported runtime" before we even get to the
     // "model discovery isn't supported" check below. They're never model
     // registry entries, so route straight to that error instead.
-    if crate::http::sessions::external_bridge::supports(alias) {
+    if crate::http::sessions::external_bridge::supports(state, alias) {
         return Err(GatewayError::InvalidJsonMessage(format!(
             "model discovery is not supported for runtime: {alias}"
         )));
@@ -140,8 +140,7 @@ async fn runtime_for_alias(state: &AppState, alias: &str) -> Result<AgentRuntime
         return Ok(entry.runtime);
     }
 
-    let runtime_registry = providers::runtime_registry();
-    if let Some(entry) = runtime_registry.entry_for_id(alias) {
+    if let Some(entry) = state.agent_adapters.managed_runtime_entry(alias) {
         return Ok(entry.runtime);
     }
 
@@ -157,8 +156,9 @@ async fn runtime_for_alias(state: &AppState, alias: &str) -> Result<AgentRuntime
         return Ok(entry.runtime);
     }
 
-    runtime_registry
-        .entry_for_id(&harness.api_spec)
+    state
+        .agent_adapters
+        .managed_runtime_entry(&harness.api_spec)
         .map(|entry| entry.runtime)
         .ok_or_else(|| {
             GatewayError::InvalidConfig(format!("unknown api_spec: {}", harness.api_spec))

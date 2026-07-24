@@ -87,10 +87,11 @@ pub async fn create(
 
     // Validate api_spec is a known runtime id (or the built-in generic_chat
     // spec, which is served by the gateway itself rather than an SDK adapter)
-    let valid_spec = input.api_spec == "generic_chat" || {
-        let registry = crate::sdk::providers::runtime_registry();
-        registry.validate_id(&input.api_spec)
-    };
+    let valid_spec = input.api_spec == "generic_chat"
+        || state
+            .agent_adapters
+            .managed_runtime_entry(&input.api_spec)
+            .is_some();
     if !valid_spec {
         return Err(GatewayError::InvalidJsonMessage(format!(
             "unknown api_spec: {}",

@@ -15,7 +15,10 @@ pub(super) fn create_agent_body(params: CreateAgentParams) -> Value {
                 json!([{ "url": workspace.repository, "startingRef": ref_name }]),
             );
         }
-        body.insert("autoCreatePR".to_owned(), Value::Bool(workspace.auto_create_pr));
+        body.insert(
+            "autoCreatePR".to_owned(),
+            Value::Bool(workspace.auto_create_pr),
+        );
     }
     if !params.mcp_servers.is_empty() {
         body.insert(

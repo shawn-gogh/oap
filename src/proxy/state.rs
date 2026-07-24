@@ -11,6 +11,7 @@ use crate::{
     agents::{locks::KeyedLockStore, runs::AgentRunStore},
     callbacks::{litellm_db::LiteLLMDBCallback, CallbackManager},
     errors::GatewayError,
+    managed_agents::adapters::registry::AgentAdapterRegistry,
     mcp::registry::McpServerRegistry,
     model_prices::ModelCostMap,
     object_storage::ObjectStorageClient,
@@ -30,6 +31,7 @@ pub struct AppState {
     pub db: Option<PgPool>,
     pub api_keys: GatewayApiKeyStore,
     pub callbacks: CallbackManager,
+    pub agent_adapters: Arc<AgentAdapterRegistry>,
     pub object_storage: Option<ObjectStorageClient>,
     pub local_session_events: LocalSessionEvents,
     pub provider_consumers: ProviderConsumers,
@@ -186,6 +188,19 @@ impl AppState {
     ) -> Result<Self, GatewayError> {
         let callbacks = callbacks(&config, db.clone());
         let object_storage = ObjectStorageClient::from_settings(&config.general_settings);
+        let agent_adapters = Arc::new(
+            crate::sdk::providers::agent_adapter_registry()
+                .and_then(|registry| {
+                    registry.with_invocation_adapters(
+                        crate::http::sessions::external_bridge::invocation_adapters(),
+                    )
+                })
+                .map_err(|error| {
+                    GatewayError::InvalidConfig(format!(
+                        "agent adapter registry is invalid: {error}"
+                    ))
+                })?,
+        );
         Ok(Self {
             mcp_servers: McpServerRegistry::from_config(&config)?,
             config,
@@ -197,6 +212,7 @@ impl AppState {
             db,
             api_keys: GatewayApiKeyStore::default(),
             callbacks,
+            agent_adapters,
             object_storage,
             local_session_events: LocalSessionEvents::default(),
             provider_consumers: ProviderConsumers::default(),

@@ -48,6 +48,10 @@ function suggestedEvaluationForDraft(draft: AgentDraft): AgentDesign {
         "用户要求执行破坏性、敏感或对外可见的操作；智能体应说明风险并等待明确批准。",
       ],
       evaluator: "rule",
+      // Filler, not assertions about this agent. The wizard needs a complete
+      // definition to release its own "继续设计" button, so this stays — but the
+      // marker keeps the publish gate from treating it as a real test suite.
+      generated: true,
     },
     governance: {
       write_requires_approval: true,
@@ -75,6 +79,10 @@ export function EvalStep({
   const gatePassed = evalGatePassed(design);
 
   const patchDesign = (patch: Partial<AgentDesign>) => onDraftChange({ ...draft, design: { ...design, ...patch } });
+  /** Any hand edit takes the definition out of "generated" state, which is
+   *  what makes the publish gate start enforcing it. */
+  const patchEvaluation = (patch: Partial<NonNullable<AgentDesign["evaluation"]>>) =>
+    patchDesign({ evaluation: { ...evaluation, ...patch, generated: false } });
   const applySuggestedEvaluation = () => {
     const suggested = suggestedEvaluationForDraft(draft);
     onDraftChange({
@@ -169,9 +177,7 @@ export function EvalStep({
           placeholder="可机器判定的标准：怎样的输出才算完成且正确？"
           value={evaluation.success_criteria}
           onChange={(e) =>
-            patchDesign({
-              evaluation: { ...evaluation, success_criteria: e.target.value },
-            })
+            patchEvaluation({ success_criteria: e.target.value })
           }
         />
         <div className="mt-3 flex items-center gap-2">
@@ -225,12 +231,7 @@ export function EvalStep({
                 rows={3}
                 value={evaluation[field.key].join("\n")}
                 onChange={(e) =>
-                  patchDesign({
-                    evaluation: {
-                      ...evaluation,
-                      [field.key]: linesToList(e.target.value),
-                    },
-                  })
+                  patchEvaluation({ [field.key]: linesToList(e.target.value) })
                 }
               />
             </div>

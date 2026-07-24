@@ -172,7 +172,10 @@ impl RuntimeAdapter for GeminiAntigravityRuntime {
             client.remember_session_context(
                 &session.id,
                 SessionContext::gemini(
-                    session.environment_id.clone().unwrap_or_else(|| DEFAULT_ENVIRONMENT_ID.to_owned()),
+                    session
+                        .environment_id
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_ENVIRONMENT_ID.to_owned()),
                     session.agent.clone().unwrap_or_default(),
                     None,
                 ),
@@ -261,11 +264,7 @@ impl RuntimeAdapter for GeminiAntigravityRuntime {
         })
     }
 
-    fn list_events<'a>(
-        &'a self,
-        client: &'a Lap,
-        session_id: &'a str,
-    ) -> AdapterFuture<'a, Value> {
+    fn list_events<'a>(&'a self, client: &'a Lap, session_id: &'a str) -> AdapterFuture<'a, Value> {
         Box::pin(async move {
             let context = gemini_context(client, session_id)?;
             let Some(interaction_id) = context.interaction_id else {
@@ -287,11 +286,6 @@ fn environment_id(config: Value) -> String {
     config
         .as_str()
         .map(str::to_owned)
-        .or_else(|| {
-            config
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
+        .or_else(|| config.get("id").and_then(Value::as_str).map(str::to_owned))
         .unwrap_or_else(|| DEFAULT_ENVIRONMENT_ID.to_owned())
 }

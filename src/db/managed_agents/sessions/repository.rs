@@ -229,6 +229,53 @@ pub async fn set_approval_mode(
     Ok(result.rows_affected() > 0)
 }
 
+/// Freezes the agent's identity into every one of its sessions when the agent
+/// is deleted. `agent_id` is a plain column with no foreign key, so once the
+/// retention sweep hard-deletes the agent row nothing can recover what the
+/// session belonged to — the snapshot is what keeps the history readable
+/// (and lets the UI render a tombstone instead of a blank card).
+pub async fn stamp_deleted_agent(
+    pool: &PgPool,
+    agent_id: &str,
+    snapshot: &serde_json::Value,
+) -> Result<u64, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentSessionsTable"
+        SET environment_json = jsonb_set(
+                COALESCE(environment_json, '{}'::jsonb),
+                '{deleted_agent}',
+                $2::jsonb,
+                true
+            )
+        WHERE agent_id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(snapshot)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected())
+}
+
+/// Undoes `stamp_deleted_agent` when the agent is restored within the
+/// retention window.
+pub async fn clear_deleted_agent(pool: &PgPool, agent_id: &str) -> Result<u64, GatewayError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentSessionsTable"
+        SET environment_json = COALESCE(environment_json, '{}'::jsonb) - 'deleted_agent'
+        WHERE agent_id = $1
+        "#,
+    )
+    .bind(agent_id)
+    .execute(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(result.rows_affected())
+}
+
 pub async fn set_title(pool: &PgPool, session_id: &str, title: &str) -> Result<bool, GatewayError> {
     let result = sqlx::query(
         r#"

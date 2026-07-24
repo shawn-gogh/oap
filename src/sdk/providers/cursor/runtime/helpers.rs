@@ -43,10 +43,7 @@ pub(crate) fn prompt_from_events(events: &[Value]) -> Result<Value, AgentSdkErro
     Ok(json!({ "text": text.join("\n\n") }))
 }
 
-pub(crate) fn agent_id_from_context(
-    session_id: &str,
-    context: Option<&SessionContext>,
-) -> String {
+pub(crate) fn agent_id_from_context(session_id: &str, context: Option<&SessionContext>) -> String {
     context
         .and_then(|context| context.agent_id.clone())
         .or_else(|| context.and_then(|context| context.provider_session_id.clone()))

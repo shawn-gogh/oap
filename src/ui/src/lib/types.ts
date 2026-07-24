@@ -20,6 +20,26 @@ export interface OpencodeSession {
   [k: string]: unknown;
 }
 
+/** Frozen copy of the agent a session belonged to, stamped into
+ *  `environment.deleted_agent` when the agent is deleted. Sessions outlive
+ *  agents, so this is the only thing that still names the agent after the
+ *  retention sweep removes its row. */
+export interface DeletedAgentSnapshot {
+  agent_id?: string;
+  name?: string;
+  model?: string;
+  harness?: string;
+  runtime?: string | null;
+  deleted_at?: number | null;
+}
+
+export function deletedAgentSnapshot(
+  session: OpencodeSession,
+): DeletedAgentSnapshot | null {
+  const raw = session.environment?.deleted_agent;
+  return raw && typeof raw === "object" ? (raw as DeletedAgentSnapshot) : null;
+}
+
 export type AgentRuntimeId = string;
 export type BuiltinRuntimeId = "claude_managed_agents" | "cursor" | "gemini_antigravity";
 export function isBuiltinRuntime(id: string): id is BuiltinRuntimeId {

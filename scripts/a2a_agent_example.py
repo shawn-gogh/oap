@@ -25,8 +25,24 @@ def get_agent_card(request: Request):
         "id": "example-a2a-agent",
         "name": "A2A 示例智能体",
         "description": "一个用于演示 A2A 协议交互的示例智能体，支持同步和异步任务处理。",
+        "protocolVersion": "0.3",
         "url": f"{base_url}/rpc",
-        "version": "1.0.0"
+        "preferredTransport": "JSONRPC",
+        "version": "1.0.0",
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+        },
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [
+            {
+                "id": "example",
+                "name": "示例交互",
+                "description": "返回同步结果或创建异步任务。",
+                "tags": ["example", "test"],
+            }
+        ],
     }
 
 # 2. JSON-RPC 2.0 Endpoint

@@ -9,14 +9,12 @@ mod stream;
 
 use crate::sdk::agents::{
     response_fields::{id, nested_id, nested_string_field},
-    AgentEventStream, AgentRuntime, AgentSdkError, CreateAgentParams,
-    CreateEnvironmentParams, CreateSessionParams, Environment, Lap, ManagedAgent,
-    ManagedSessionRef, SendEventsParams, SendEventsResponse, Session, SessionContext,
+    AgentEventStream, AgentRuntime, AgentSdkError, CreateAgentParams, CreateEnvironmentParams,
+    CreateSessionParams, Environment, Lap, ManagedAgent, ManagedSessionRef, SendEventsParams,
+    SendEventsResponse, Session, SessionContext,
 };
 use crate::sdk::providers::base::runtime::{AdapterFuture, RuntimeAdapter};
-use helpers::{
-    agent_id_from_context, cursor_agent_id, latest_run_id, prompt_from_events, run_id,
-};
+use helpers::{agent_id_from_context, cursor_agent_id, latest_run_id, prompt_from_events, run_id};
 use request_body::create_agent_body;
 use stream::normalize_cursor_stream;
 
@@ -56,8 +54,16 @@ impl RuntimeAdapter for CursorRuntime {
         raw.get("url")
             .and_then(Value::as_str)
             .or_else(|| raw.get("webUrl").and_then(Value::as_str))
-            .or_else(|| raw.get("agent").and_then(|a| a.get("url")).and_then(Value::as_str))
-            .or_else(|| raw.get("agent").and_then(|a| a.get("webUrl")).and_then(Value::as_str))
+            .or_else(|| {
+                raw.get("agent")
+                    .and_then(|a| a.get("url"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                raw.get("agent")
+                    .and_then(|a| a.get("webUrl"))
+                    .and_then(Value::as_str)
+            })
             .map(str::to_owned)
     }
 
@@ -85,7 +91,10 @@ impl RuntimeAdapter for CursorRuntime {
             Ok(ManagedAgent {
                 id: agent_id,
                 version: None,
-                name: raw.get("agent").and_then(|a| a.get("name")).and_then(Value::as_str)
+                name: raw
+                    .get("agent")
+                    .and_then(|a| a.get("name"))
+                    .and_then(Value::as_str)
                     .or_else(|| raw.get("name").and_then(Value::as_str))
                     .map(str::to_owned),
                 description: None,

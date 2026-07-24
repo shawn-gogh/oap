@@ -1,18 +1,12 @@
 use crate::sdk::{
     agents::{AgentRuntime, Lap, ListModelsParams},
-    providers::base::models::{
-        list_openai_shape, ModelEndpoint, ModelListFuture,
-    },
+    providers::base::models::{list_openai_shape, ModelEndpoint, ModelListFuture},
 };
 
 pub(crate) struct AnthropicModels;
 
 impl ModelEndpoint for AnthropicModels {
-    fn list_models<'a>(
-        &'a self,
-        client: &'a Lap,
-        params: ListModelsParams,
-    ) -> ModelListFuture<'a> {
+    fn list_models<'a>(&'a self, client: &'a Lap, params: ListModelsParams) -> ModelListFuture<'a> {
         Box::pin(async move {
             list_openai_shape(
                 client,

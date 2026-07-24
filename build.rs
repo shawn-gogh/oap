@@ -73,7 +73,7 @@ fn generated_source(providers: &[ProviderModule]) -> String {
         })
         .collect();
     format!(
-        "{mods}\npub fn register_all(registry: &mut crate::sdk::providers::base::ProviderRegistry) {{\n{inits}}}\n\npub(crate) fn register_runtime_adapters(registry: &mut crate::sdk::providers::base::runtime::RuntimeAdapterRegistry) {{\n{runtime_inits}}}\n\npub(crate) fn register_model_endpoints(registry: &mut crate::sdk::providers::base::models::ModelEndpointRegistry) {{\n{model_inits}}}\n"
+        "{mods}\npub fn register_all(registry: &mut crate::sdk::providers::base::ProviderRegistry) {{\n{inits}}}\n\npub(crate) fn register_runtime_adapters(registry: &mut crate::sdk::providers::base::runtime::RuntimeAdapterBindings) {{\n{runtime_inits}}}\n\npub(crate) fn register_model_endpoints(registry: &mut crate::sdk::providers::base::models::ModelEndpointRegistry) {{\n{model_inits}}}\n"
     )
 }
 

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowUp, Bot, Loader2, MessageSquareText, MessagesSquare, Sparkles } from "lucide-react";
+import { ArrowUp, Bot, Loader2, MessageSquareText, MessagesSquare, Sparkles, Trash2 } from "lucide-react";
 import { BrandIcon } from "@/components/brand-icons";
 import { EmptyState } from "@/components/empty-state";
 import { StatusDot } from "@/components/status-dot";
@@ -30,6 +30,7 @@ import {
 import { defaultModelForRuntime, isFederatedBridgeRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
 import { importedSource } from "@/app/agents/agent-row-utils";
+import { deletedAgentSnapshot } from "@/lib/types";
 import type { Agent, AgentRuntimeId, OpencodeSession, RuntimeHarness } from "@/lib/types";
 
 const TEMPORARY_SESSION_VALUE = "__temporary_session__";
@@ -549,6 +550,9 @@ function RecentSessionCard({
   const agent = agents.find(
     (item) => item.id === session.agent_id || item.id === session.agent,
   );
+  // `agents` only carries live agents, so a deleted agent's sessions would
+  // otherwise render with no attribution at all.
+  const deletedAgent = agent ? null : deletedAgentSnapshot(session);
   const busy = sessionIsBusy(session);
   const runtime = session.runtime ?? "";
   return (
@@ -574,6 +578,15 @@ function RecentSessionCard({
           </span>
           <span className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
             {agent && <span className="truncate font-medium">{agent.name}</span>}
+            {deletedAgent && (
+              <span className="flex min-w-0 items-center gap-1 text-amber-600 dark:text-amber-500">
+                <Trash2 className="size-3 shrink-0" />
+                <span className="truncate font-medium">
+                  {deletedAgent.name || session.agent_id}
+                </span>
+                <span className="shrink-0">（已删除）</span>
+              </span>
+            )}
             <span className="shrink-0 font-mono">{relativeTimeLabel(sessionTimestamp(session))}</span>
           </span>
         </span>

@@ -1,8 +1,11 @@
 use serde_json::Value;
 
-use crate::sdk::providers::import_agents::{
-    ImportAgentsError, ImportAgentsFuture, ImportAgentsProvider, ImportProviderCapabilities,
-    ImportedAgent, ImportedInteractionContract,
+use crate::{
+    managed_agents::a2a::{parse_agent_card, A2aSelectionPolicy},
+    sdk::providers::import_agents::{
+        ImportAgentsError, ImportAgentsFuture, ImportAgentsProvider, ImportProviderCapabilities,
+        ImportedAgent, ImportedInteractionContract, NegotiatedSourceProfile,
+    },
 };
 
 pub static A2A_IMPORT_AGENTS: A2aImportAgents = A2aImportAgents;
@@ -39,7 +42,26 @@ impl ImportAgentsProvider for A2aImportAgents {
             },
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {"message": {"type": "string"}},
+                "properties": {
+                    "message": {"type": "string"},
+                    "content": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "enum": ["text", "data", "json", "file", "image", "audio", "video", "document"]
+                                        }
+                                    },
+                                    "required": ["type"]
+                                }
+                            ]
+                        }
+                    }
+                },
                 "required": ["message"]
             }),
             progress_mode: "status",
@@ -100,7 +122,16 @@ impl ImportAgentsProvider for A2aImportAgents {
                 });
             }
             let raw: Value = serde_json::from_str(&body)?;
-            Ok(parse_agent_card(endpoint, raw).into_iter().collect())
+            let card = parse_agent_card(endpoint, &raw, &A2aSelectionPolicy::default())
+                .map_err(ImportAgentsError::InvalidDocument)?;
+            Ok(vec![ImportedAgent {
+                id: card.stable_id,
+                name: card.name,
+                description: card.description,
+                model: None,
+                provider: "a2a".to_owned(),
+                raw,
+            }])
         })
     }
 
@@ -110,6 +141,16 @@ impl ImportAgentsProvider for A2aImportAgents {
 
     fn system_prompt(&self, external_agent_id: &str) -> String {
         format!("Route this request to the governed A2A agent {external_agent_id}.")
+    }
+
+    fn negotiate_protocol(
+        &self,
+        endpoint: &str,
+        raw: &Value,
+    ) -> Result<Option<NegotiatedSourceProfile>, ImportAgentsError> {
+        parse_agent_card(endpoint, raw, &A2aSelectionPolicy::default())
+            .map(|card| Some(card.profile.into()))
+            .map_err(ImportAgentsError::InvalidDocument)
     }
 }
 
@@ -129,55 +170,41 @@ fn card_modes(raw: &Value, field: &str, fallback: &[&str]) -> Vec<String> {
         .unwrap_or_else(|| fallback.iter().map(|mode| (*mode).to_owned()).collect())
 }
 
-fn parse_agent_card(endpoint: &str, raw: Value) -> Option<ImportedAgent> {
-    let name = raw.get("name")?.as_str()?.trim();
-    if name.is_empty() {
-        return None;
-    }
-    let id = raw
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| raw.get("url").and_then(Value::as_str))
-        .unwrap_or(endpoint)
-        .trim()
-        .to_owned();
-    Some(ImportedAgent {
-        id,
-        name: name.to_owned(),
-        description: raw
-            .get("description")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned),
-        model: None,
-        provider: "a2a".to_owned(),
-        raw,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{parse_agent_card, A2A_IMPORT_AGENTS};
+    use super::A2A_IMPORT_AGENTS;
+    use crate::managed_agents::a2a::{parse_agent_card, A2aProtocolVersion, A2aSelectionPolicy};
     use crate::sdk::providers::import_agents::ImportAgentsProvider;
 
     #[test]
     fn parses_agent_card_with_stable_url_identity() {
         let agent = parse_agent_card(
             "https://example.test/agent",
-            json!({
+            &json!({
+                "protocolVersion": "0.3",
                 "name": "Threat analyst",
                 "description": "Assesses open-source intelligence",
                 "url": "https://example.test/a2a",
+                "preferredTransport": "JSONRPC",
                 "version": "1.2.0",
-                "skills": [{"id": "threat-assessment", "name": "Threat assessment"}]
+                "capabilities": {},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["text/plain"],
+                "skills": [{
+                    "id": "threat-assessment",
+                    "name": "Threat assessment",
+                    "description": "Assesses threats",
+                    "tags": ["threat"]
+                }]
             }),
+            &A2aSelectionPolicy::default(),
         )
         .unwrap();
-        assert_eq!(agent.id, "https://example.test/a2a");
+        assert_eq!(agent.stable_id, "https://example.test/a2a");
         assert_eq!(agent.name, "Threat analyst");
+        assert_eq!(agent.profile.protocol_version, A2aProtocolVersion::V0_3);
     }
 
     #[test]

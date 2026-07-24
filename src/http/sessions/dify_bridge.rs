@@ -8,12 +8,11 @@ use crate::{
     db::managed_agents::{artifacts, runtime_events, session_control, sessions},
     errors::GatewayError,
     managed_agents::adapters::{
-        artifacts::DatabaseArtifactAdapter, types::ArtifactReference, ArtifactAdapter,
+        artifacts::DatabaseArtifactAdapter, invocation::TraceHeaders, types::ArtifactReference,
+        ArtifactAdapter,
     },
     proxy::state::AppState,
 };
-
-use super::external_bridge::TraceHeaders;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DifyAppMode {

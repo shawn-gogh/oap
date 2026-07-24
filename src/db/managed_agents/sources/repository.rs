@@ -52,7 +52,10 @@ pub async fn create_connector(
           status, capabilities, adapter_id, protocol, protocol_version,
           negotiated_profile, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'unknown', $7, $8, $9, $10, $7, $11, $11)
+        VALUES (
+          $1, $2, $3, $4, $5, $6, 'unknown', $7, $8, $9, $10,
+          '{}'::JSONB, $11, $11
+        )
         RETURNING *
         "#,
     )
@@ -177,6 +180,32 @@ pub async fn set_connector_test(
     .map_err(GatewayError::Database)
 }
 
+pub async fn set_connector_negotiated_profile(
+    pool: &PgPool,
+    connector_id: &str,
+    protocol: &str,
+    protocol_version: &str,
+    negotiated_profile: Value,
+) -> Result<SourceConnectorRow, GatewayError> {
+    sqlx::query_as::<_, SourceConnectorRow>(
+        r#"
+        UPDATE "LiteLLM_AgentSourceConnectorsTable"
+        SET protocol = $2, protocol_version = $3, negotiated_profile = $4,
+            updated_at = $5
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(connector_id)
+    .bind(protocol)
+    .bind(protocol_version)
+    .bind(negotiated_profile)
+    .bind(now_ms())
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn delete_connector(pool: &PgPool, connector_id: &str) -> Result<bool, GatewayError> {
     let mut transaction = pool.begin().await.map_err(GatewayError::Database)?;
     sqlx::query(
@@ -269,6 +298,7 @@ pub async fn record_import_snapshot(
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
     let issues = serde_json::to_value(&report.issues)
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+    let protocol_profile = source_protocol_profile(pool, &source.id).await?;
     let version = sqlx::query_scalar::<_, i32>(
         r#"
         SELECT COALESCE(MAX(version), 0) + 1
@@ -283,9 +313,9 @@ pub async fn record_import_snapshot(
         r#"
         INSERT INTO "LiteLLM_AgentSourceSnapshotsTable" (
           id, source_id, version, digest, raw_spec, canonical_spec,
-          normalization_issues, agent_revision, created_by, created_at
+          protocol_profile, normalization_issues, agent_revision, created_by, created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (source_id, digest) DO UPDATE SET
           agent_revision = COALESCE("LiteLLM_AgentSourceSnapshotsTable".agent_revision, EXCLUDED.agent_revision)
         RETURNING *
@@ -297,6 +327,7 @@ pub async fn record_import_snapshot(
     .bind(digest)
     .bind(raw_spec)
     .bind(canonical_spec)
+    .bind(protocol_profile)
     .bind(issues)
     .bind(agent_revision)
     .bind(actor)
@@ -335,6 +366,7 @@ pub async fn record_candidate_snapshot(
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
     let issues = serde_json::to_value(&report.issues)
         .map_err(|error| GatewayError::InvalidConfig(error.to_string()))?;
+    let protocol_profile = source_protocol_profile(pool, &source.id).await?;
     let version = sqlx::query_scalar::<_, i32>(
         r#"
         SELECT COALESCE(MAX(version), 0) + 1
@@ -349,8 +381,8 @@ pub async fn record_candidate_snapshot(
         r#"
         INSERT INTO "LiteLLM_AgentSourceSnapshotsTable" (
           id, source_id, version, digest, raw_spec, canonical_spec,
-          normalization_issues, created_by, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          protocol_profile, normalization_issues, created_by, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (source_id, digest) DO UPDATE SET digest = EXCLUDED.digest
         RETURNING *
         "#,
@@ -361,6 +393,7 @@ pub async fn record_candidate_snapshot(
     .bind(digest)
     .bind(raw_spec)
     .bind(canonical_spec)
+    .bind(protocol_profile)
     .bind(issues)
     .bind(actor)
     .bind(now_ms())
@@ -384,6 +417,23 @@ pub async fn record_candidate_snapshot(
     .await
     .map_err(GatewayError::Database)?;
     Ok(snapshot)
+}
+
+async fn source_protocol_profile(pool: &PgPool, source_id: &str) -> Result<Value, GatewayError> {
+    sqlx::query_scalar::<_, Value>(
+        r#"
+        SELECT COALESCE(connector.negotiated_profile, '{}'::JSONB)
+        FROM "LiteLLM_ManagedAgentSourcesTable" source
+        LEFT JOIN "LiteLLM_AgentSourceConnectorsTable" connector
+          ON connector.id = source.connector_id
+        WHERE source.id = $1
+        "#,
+    )
+    .bind(source_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+    .map(|profile| profile.unwrap_or_else(|| serde_json::json!({})))
 }
 
 pub async fn replace_drift_findings(
