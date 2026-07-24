@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import {
   Activity,
   AlertTriangle,
+  AppWindow,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -42,6 +43,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Sidebar } from "@/components/sidebar";
 import { InspectorPanel } from "@/components/inspector-panel";
 import { WorkspacePanel } from "@/components/workspace-panel";
+import { BrowserPanel } from "@/components/browser-panel";
 import { JumpToBottomButton } from "@/components/jump-to-bottom-button";
 import { SessionLoadingSkeleton } from "@/components/session-loading-skeleton";
 import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
@@ -152,7 +154,7 @@ function ChatInner() {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [approvalsLoaded, setApprovalsLoaded] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
-  const [contextPanel, setContextPanel] = useState<"workspace" | "inspector" | null>(null);
+  const [contextPanel, setContextPanel] = useState<"workspace" | "inspector" | "browser" | null>(null);
   const [workspaceBucket, setWorkspaceBucket] = useState<string | undefined>();
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("ask");
   // Set when the session's agent has been deleted: history stays readable but
@@ -174,6 +176,7 @@ function ChatInner() {
   const [interruptingQueuedPromptId, setInterruptingQueuedPromptId] = useState<string | null>(null);
   const workspacePanelOpen = contextPanel === "workspace";
   const inspectorOpen = contextPanel === "inspector";
+  const browserPanelOpen = contextPanel === "browser";
   const dispatchingQueuedPromptRef = useRef(false);
   const [runtimeStreamVersion, setRuntimeStreamVersion] = useState(0);
   const [sessionHarness, setSessionHarness] = useState<string>("claude-code");
@@ -1247,6 +1250,15 @@ function ChatInner() {
                   sessionId={sid}
                   agentId={sessionHarness.startsWith("agent_") ? sessionHarness : undefined}
                 />
+                <DropdownMenuCheckboxItem
+                  checked={browserPanelOpen}
+                  onCheckedChange={() =>
+                    setContextPanel((panel) => (panel === "browser" ? null : "browser"))
+                  }
+                >
+                  <AppWindow className="size-3.5" />
+                  应用预览
+                </DropdownMenuCheckboxItem>
                 {workspaceBucket && (
                   <DropdownMenuCheckboxItem
                     checked={workspacePanelOpen}
@@ -1545,6 +1557,13 @@ function ChatInner() {
         onClose={() => setContextPanel(null)}
         sessionId={sid}
         initialFrames={eventBufferRef.current}
+      />
+
+      <BrowserPanel
+        open={browserPanelOpen}
+        onClose={() => setContextPanel(null)}
+        sessionId={sid}
+        agentId={sessionHarness.startsWith("agent_") ? sessionHarness : undefined}
       />
 
       {activeTurn && (

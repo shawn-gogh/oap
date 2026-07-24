@@ -331,6 +331,28 @@ fn forward_response_headers(
         if HOP_BY_HOP.contains(&lower.as_str()) {
             continue;
         }
+        // The app is embedded same-origin in the chat "应用预览" panel, so drop
+        // framing guards the upstream app may emit — otherwise a dev server
+        // sending `X-Frame-Options: DENY` (or CSP `frame-ancestors 'none'`)
+        // would blank the iframe.
+        if lower == "x-frame-options" {
+            continue;
+        }
+        if lower == "content-security-policy" || lower == "content-security-policy-report-only" {
+            if let Ok(policy) = value.to_str() {
+                if let Some(stripped) = strip_frame_ancestors(policy) {
+                    if let (Ok(name), Ok(value)) = (
+                        HeaderName::from_bytes(name.as_str().as_bytes()),
+                        HeaderValue::from_str(&stripped),
+                    ) {
+                        if !stripped.is_empty() {
+                            copied.append(name, value);
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
         let Ok(name) = HeaderName::from_bytes(name.as_str().as_bytes()) else {
             continue;
         };
@@ -352,6 +374,28 @@ fn forward_response_headers(
         copied.append(name, value);
     }
     copied
+}
+
+/// Remove the `frame-ancestors` directive from a CSP header so the app can be
+/// framed in the same-origin preview panel, leaving every other directive
+/// intact. Returns `None` when the policy has no such directive (caller then
+/// forwards the header unchanged).
+fn strip_frame_ancestors(policy: &str) -> Option<String> {
+    if !policy.to_ascii_lowercase().contains("frame-ancestors") {
+        return None;
+    }
+    let kept = policy
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| {
+            !directive
+                .to_ascii_lowercase()
+                .starts_with("frame-ancestors")
+        })
+        .filter(|directive| !directive.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(kept)
 }
 
 fn rewrite_location(location: &str, app_id: &str) -> Option<String> {
