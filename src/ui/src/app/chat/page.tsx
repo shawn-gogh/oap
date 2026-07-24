@@ -17,6 +17,7 @@ import {
   FolderOpen,
   KeyRound,
   Loader2,
+  MoreHorizontal,
   Square,
   Wrench,
   X,
@@ -25,12 +26,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { BrandIcon } from "@/components/brand-icons";
+import { runtimeBrandIconId } from "@/lib/runtime-branding";
 import { ModelSelect } from "@/components/model-select";
 import { MessageBlock, isTodoTool } from "@/components/message-block";
 import { TodoList, parseTodoItems, todoProgress } from "@/components/todo-list";
@@ -45,7 +48,6 @@ import { useStickToBottom } from "@/lib/hooks/use-stick-to-bottom";
 import {
   getMessages,
   getSession,
-  createSession,
   deleteSession,
   renameSession,
   subscribeRuntimeEvents,
@@ -481,20 +483,16 @@ function ChatInner() {
     listRuntimeHarnesses().then(setHarnesses).catch(() => {});
   }, []);
 
-  const onHarnessChange = useCallback(async (next: string) => {
-    if (!sid || next === sessionHarness) return;
+  // A session's agent is fixed once created, so "switching" really means
+  // starting a new session — that lives in the /sessions launcher, which also
+  // offers the runtime and model. A session that never received a prompt is
+  // disposable, so drop it on the way out instead of leaving an empty shell in
+  // the history.
+  const openAgentSwitcher = useCallback(async () => {
     setSwitchingAgent(true);
-    setError(null);
-    try {
-      if (!hasStarted) await deleteSession(sid).catch(() => {});
-      const options = next.startsWith("agent_") && sessionRuntime ? { runtime: sessionRuntime } : undefined;
-      const s = await createSession(undefined, next, options);
-      router.replace(`/chat/?id=${encodeURIComponent(s.id)}`);
-    } catch (err) {
-      setError(apiErrorMessage(err, "切换智能体失败"));
-      setSwitchingAgent(false);
-    }
-  }, [hasStarted, sid, sessionHarness, sessionRuntime, router]);
+    if (sid && !hasStarted) await deleteSession(sid).catch(() => {});
+    router.push("/sessions/");
+  }, [hasStarted, sid, router]);
 
   const mergeRuntimeEventsAndStatus = useCallback((events: RuntimeAgentEvent | RuntimeAgentEvent[]) => {
     setRuntimeEvents((prev) => {
@@ -1198,78 +1196,79 @@ function ChatInner() {
             )}
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted-foreground font-medium">智能体</span>
-              <Select
-                value={activeAgent?.id ?? ""}
-                onValueChange={(v) => v && onHarnessChange(v)}
-                disabled={switchingAgent || sessionStatus === "busy"}
+          <div className="flex shrink-0 items-center gap-2">
+            {/* The agent is fixed for the life of a session — switching starts
+                a new one — so it reads as a badge here, and the switch itself
+                belongs to the new-session flow. */}
+            <button
+              type="button"
+              onClick={() => void openAgentSwitcher()}
+              disabled={switchingAgent}
+              title={`当前智能体：${activeAgentName}（切换智能体会开启新会话）`}
+              className="flex h-8 max-w-[180px] shrink-0 items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              {switchingAgent ? (
+                <Loader2 className="size-3.5 shrink-0 animate-spin" />
+              ) : (
+                <BrandIcon
+                  id={runtimeBrandIconId(sessionRuntime ?? sessionHarness, null)}
+                  className="size-3.5 shrink-0"
+                />
+              )}
+              <span className="truncate font-medium">{activeAgentName}</span>
+            </button>
+
+            <ModelSelect
+              value={model}
+              models={modelOptions}
+              onValueChange={setModel}
+              ariaLabel="接入模型"
+            />
+
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                aria-label="更多会话工具"
+                title="更多会话工具"
               >
-                <SelectTrigger className="h-8 text-xs w-[180px] bg-card">
-                  <SelectValue placeholder={activeAgent ? activeAgentName : "默认智能体"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {savedAgents.length > 0 && (
-                    <>
-                      <div className="mt-1 border-t px-2 py-1.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">可调度的智能体</div>
-                      {savedAgents.map(a => (
-                        <SelectItem key={a.id} value={a.id} className="text-xs">{a.name}</SelectItem>
-                      ))}
-                    </>
-                  )}
-                  <div className="px-2 py-2 text-[11px] text-muted-foreground border-t mt-1">
-                    切换智能体会开启新会话。
-                  </div>
-                </SelectContent>
-              </Select>
-              {switchingAgent && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted-foreground font-medium">接入模型</span>
-              <ModelSelect value={model} models={modelOptions} onValueChange={setModel} />
-            </div>
-
-            {providerLink && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs gap-1"
-                render={
-                  <a href={providerLink} target="_blank" rel="noreferrer">
+                <MoreHorizontal className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                {providerLink && (
+                  <DropdownMenuItem
+                    onClick={() => window.open(providerLink, "_blank", "noopener,noreferrer")}
+                  >
                     <ExternalLink className="size-3.5" />
                     提供方会话
-                  </a>
-                }
-              />
-            )}
-            <ExposedAppsMenu
-              sessionId={sid}
-              agentId={sessionHarness.startsWith("agent_") ? sessionHarness : undefined}
-            />
-            {workspaceBucket && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setContextPanel((panel) => panel === "workspace" ? null : "workspace")}
-                className={`h-8 gap-1.5 text-xs ${workspacePanelOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
-                aria-pressed={workspacePanelOpen}
-              >
-                <FolderOpen className="size-3.5" />
-                工作区文件
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setContextPanel((panel) => panel === "inspector" ? null : "inspector")}
-              className={`h-8 gap-1.5 text-xs ${inspectorOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
-              aria-pressed={inspectorOpen}
-            >
-              <Activity className="size-3.5" />
-              轨迹检查器
-            </Button>
+                  </DropdownMenuItem>
+                )}
+                <ExposedAppsMenu
+                  asSubmenu
+                  sessionId={sid}
+                  agentId={sessionHarness.startsWith("agent_") ? sessionHarness : undefined}
+                />
+                {workspaceBucket && (
+                  <DropdownMenuCheckboxItem
+                    checked={workspacePanelOpen}
+                    onCheckedChange={() =>
+                      setContextPanel((panel) => (panel === "workspace" ? null : "workspace"))
+                    }
+                  >
+                    <FolderOpen className="size-3.5" />
+                    工作区文件
+                  </DropdownMenuCheckboxItem>
+                )}
+                <DropdownMenuCheckboxItem
+                  checked={inspectorOpen}
+                  onCheckedChange={() =>
+                    setContextPanel((panel) => (panel === "inspector" ? null : "inspector"))
+                  }
+                >
+                  <Activity className="size-3.5" />
+                  轨迹检查器
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <ThemeToggle />
           </div>
         </header>
