@@ -433,16 +433,30 @@ pub async fn set_workspace_bucket(
     Ok(())
 }
 
+/// Minimum interval between `updated_at` writes for the same session. `touch`
+/// fires on every runtime-event and message append; during a dense agent
+/// stream that put several writes per second onto the session row, contending
+/// with the append's `FOR UPDATE` lock and status updates — the multi-second
+/// waits seen in the slow-statement log. `updated_at` only feeds session-list
+/// ordering, where 5s granularity is ample.
+const TOUCH_THROTTLE_MS: i64 = 5_000;
+
+/// Bumps the session's `updated_at`, but skips the write when the row was
+/// touched within `TOUCH_THROTTLE_MS`. The throttle lives in the `WHERE`: a
+/// recently-touched row matches nothing, so no row lock is taken and the
+/// statement is a near-instant no-op instead of a lock-contending UPDATE.
 pub async fn touch(pool: &PgPool, session_id: &str) -> Result<(), GatewayError> {
     sqlx::query(
         r#"
         UPDATE "LiteLLM_ManagedAgentSessionsTable"
         SET updated_at = $2
         WHERE id = $1
+          AND (updated_at IS NULL OR updated_at < $2 - $3)
         "#,
     )
     .bind(session_id)
     .bind(now_ms())
+    .bind(TOUCH_THROTTLE_MS)
     .execute(pool)
     .await
     .map_err(GatewayError::Database)?;
